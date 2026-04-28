@@ -1,4 +1,13 @@
 ---
+- name: Normalize Linux service manager
+  ansible.builtin.set_fact:
+    node_deploy_linux_service_manager_normalized: "{{ node_deploy_linux_service_manager | default('systemd') | lower | regex_replace('_', '-') }}"
+
+- name: Validate Linux service manager
+  ansible.builtin.fail:
+    msg: "Unsupported node_deploy_linux_service_manager={{ node_deploy_linux_service_manager }}. Use systemd, systemv, or openrc."
+  when: node_deploy_linux_service_manager_normalized not in ['systemd', 'systemv', 'sysv', 'sysvinit', 'initd', 'init-d', 'openrc']
+
 - name: Ensure service group exists
   ansible.builtin.group:
     name: "{{ node_deploy_linux_service_group }}"
@@ -9,7 +18,7 @@
     name: "{{ node_deploy_linux_service_user }}"
     group: "{{ node_deploy_linux_service_group }}"
     system: true
-    shell: /usr/sbin/nologin
+    shell: "{{ '/sbin/nologin' if ansible_os_family == 'Alpine' else '/usr/sbin/nologin' }}"
     home: "{{ node_deploy_app_dir_linux }}"
 
 - name: Ensure directories exist
@@ -36,10 +45,33 @@
     src: node-app.service.j2
     dest: "/etc/systemd/system/{{ node_deploy_project_name }}.service"
     mode: "0644"
+  when: node_deploy_linux_service_manager_normalized == 'systemd'
 
-- name: Enable and restart service
+- name: Enable and restart systemd service
   ansible.builtin.systemd:
     name: "{{ node_deploy_project_name }}"
     enabled: true
     state: restarted
     daemon_reload: true
+  when: node_deploy_linux_service_manager_normalized == 'systemd'
+
+- name: Render System V init script
+  ansible.builtin.template:
+    src: node-app.sysv.j2
+    dest: "/etc/init.d/{{ node_deploy_project_name }}"
+    mode: "0755"
+  when: node_deploy_linux_service_manager_normalized in ['systemv', 'sysv', 'sysvinit', 'initd', 'init-d']
+
+- name: Render OpenRC init script
+  ansible.builtin.template:
+    src: node-app.openrc.j2
+    dest: "/etc/init.d/{{ node_deploy_project_name }}"
+    mode: "0755"
+  when: node_deploy_linux_service_manager_normalized == 'openrc'
+
+- name: Enable and restart init service
+  ansible.builtin.service:
+    name: "{{ node_deploy_project_name }}"
+    enabled: true
+    state: restarted
+  when: node_deploy_linux_service_manager_normalized != 'systemd'

@@ -25,6 +25,8 @@ Get-EventLog Application -Newest 50
 systemctl status <app-name>
 systemctl restart <app-name>
 journalctl -u <app-name> -n 200 --no-pager
+service <app-name> restart
+rc-service <app-name> restart
 ```
 
 ## Emergency Recovery

@@ -5,7 +5,7 @@
 - Use a dedicated service account.
 - Avoid local administrator/root service execution unless required.
 - Bind the Node.js app to `127.0.0.1`.
-- Expose only IIS/Nginx/load balancer ports.
+- Expose only IIS/Nginx/Apache/load balancer ports.
 - Rotate logs.
 - Keep Node.js and dependencies patched.
 - Use `npm ci --omit=dev` for deterministic production installs.
@@ -22,7 +22,7 @@
 ## Linux
 
 - Use systemd sandboxing options where possible.
-- Use Nginx TLS configuration from your enterprise baseline.
+- Use Nginx or Apache TLS configuration from your enterprise baseline.
 - Use firewall rules to block external access to the Node.js port.
 - Collect journald and log files into Wazuh, Graylog, or your logging platform.
 

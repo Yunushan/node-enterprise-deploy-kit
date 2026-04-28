@@ -12,8 +12,10 @@
 | Port | `Port` | `APP_PORT` | Local Node.js port |
 | Health URL | `HealthUrl` | `HEALTH_URL` | HTTP health probe URL |
 | Log directory | `LogDirectory` | `LOG_DIR` | Production log directory |
-| Reverse proxy | `ReverseProxy` | `REVERSE_PROXY` | `iis`, `nginx`, or `none` |
-| Service manager | `ServiceManager` | `SERVICE_MANAGER` | `winsw`, `nssm`, `pm2`, `systemd` |
+| Reverse proxy | `ReverseProxy` | `REVERSE_PROXY` | Windows: `iis` or `none`; Linux: `nginx`, `apache`, or `none` |
+| Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Linux: `systemd`, `systemv`, or `openrc` |
+| Apache site name | n/a | `APACHE_SITE_NAME` | Linux Apache virtual host name |
+| Nginx site name | n/a | `NGINX_SITE_NAME` | Linux Nginx config name |
 
 ## Recommended Defaults
 
@@ -24,7 +26,7 @@
 | Windows service manager | WinSW |
 | Linux service manager | systemd |
 | Windows reverse proxy | IIS |
-| Linux reverse proxy | Nginx |
+| Linux reverse proxy | Nginx or Apache |
 | Restart policy | Always restart after service failure |
 | Health check | Every 1 minute |
 

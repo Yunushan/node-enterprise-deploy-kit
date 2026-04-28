@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+
+name="{{ node_deploy_display_name }}"
+description="{{ node_deploy_display_name }}"
+command="{{ node_deploy_linux_node_bin }}"
+command_args="{{ node_deploy_start_script }} {{ node_deploy_node_arguments | default('') }}"
+command_user="{{ node_deploy_linux_service_user }}:{{ node_deploy_linux_service_group }}"
+directory="{{ node_deploy_app_dir_linux }}"
+pidfile="/run/{{ node_deploy_project_name }}/{{ node_deploy_project_name }}.pid"
+command_background="yes"
+output_log="{{ node_deploy_linux_log_dir }}/stdout.log"
+error_log="{{ node_deploy_linux_log_dir }}/stderr.log"
+
+depend() {
+  need net
+  after firewall
+}
+
+start_pre() {
+  checkpath --directory --owner "{{ node_deploy_linux_service_user }}:{{ node_deploy_linux_service_group }}" --mode 0750 "/run/{{ node_deploy_project_name }}"
+  checkpath --directory --owner "{{ node_deploy_linux_service_user }}:{{ node_deploy_linux_service_group }}" --mode 0750 "{{ node_deploy_linux_log_dir }}"
+  checkpath --file --owner "{{ node_deploy_linux_service_user }}:{{ node_deploy_linux_service_group }}" --mode 0640 "{{ node_deploy_linux_log_dir }}/stdout.log"
+  checkpath --file --owner "{{ node_deploy_linux_service_user }}:{{ node_deploy_linux_service_group }}" --mode 0640 "{{ node_deploy_linux_log_dir }}/stderr.log"
+  if [ -f "/etc/{{ node_deploy_project_name }}.env" ]; then
+    set -a
+    . "/etc/{{ node_deploy_project_name }}.env"
+    set +a
+  fi
+}

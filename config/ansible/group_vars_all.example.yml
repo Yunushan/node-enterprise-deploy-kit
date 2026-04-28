@@ -10,6 +10,7 @@ node_deploy_bind_address: 127.0.0.1
 node_deploy_health_url: http://127.0.0.1:3000/health
 node_deploy_install_command: npm ci --omit=dev
 node_deploy_build_command: npm run build
+node_deploy_node_arguments: ""
 node_deploy_windows_service_manager: winsw
 node_deploy_windows_node_exe: C:\Program Files\nodejs\node.exe
 node_deploy_windows_service_dir: C:\services\ExampleNodeApp

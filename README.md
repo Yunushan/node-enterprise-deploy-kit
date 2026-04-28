@@ -11,9 +11,9 @@
 <p align="center">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="windows" src="https://img.shields.io/badge/windows-10%20%7C%2011%20%7C%20Server%202012--2025-0078D4.svg">
-  <img alt="linux" src="https://img.shields.io/badge/linux-Ubuntu%20%7C%20Debian%20%7C%20RHEL%20%7C%20Fedora%20%7C%20Alma%20%7C%20Rocky-success.svg">
-  <img alt="service managers" src="https://img.shields.io/badge/service-WinSW%20%7C%20systemd%20%7C%20PM2%20fallback-orange.svg">
-  <img alt="reverse proxy" src="https://img.shields.io/badge/proxy-IIS%20%7C%20Nginx%20%7C%20none-6f42c1.svg">
+  <img alt="linux" src="https://img.shields.io/badge/linux-Ubuntu%20%7C%20Debian%20%7C%20RHEL%20%7C%20Fedora%20%7C%20Alpine-success.svg">
+  <img alt="service managers" src="https://img.shields.io/badge/service-WinSW%20%7C%20systemd%20%7C%20System%20V%20%7C%20OpenRC-orange.svg">
+  <img alt="reverse proxy" src="https://img.shields.io/badge/proxy-IIS%20%7C%20Nginx%20%7C%20Apache%20%7C%20none-6f42c1.svg">
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ This project provides a clean, repeatable deployment pattern:
 Client
   |
   v
-IIS / Nginx / existing load balancer
+IIS / Nginx / Apache / existing load balancer
   |
   v
 127.0.0.1:<APP_PORT>
@@ -54,7 +54,7 @@ Recommended default:
 
 ```text
 Windows: IIS + WinSW Windows Service + scheduled health check
-Linux:   Nginx + systemd service + systemd timer health check
+Linux:   Nginx or Apache + systemd service + systemd timer health check
 ```
 
 This repository contains no private hostnames, secrets, credentials, IP addresses, or customer data. All sensitive values are variables.
@@ -115,19 +115,32 @@ cp config/linux/app.env.example config/linux/app.env
 nano config/linux/app.env
 ```
 
-2. Install service:
+2. Select Linux service and proxy mode in `config/linux/app.env`:
+
+```bash
+SERVICE_MANAGER="systemd"   # systemd, systemv, or openrc
+REVERSE_PROXY="nginx"       # nginx, apache, or none
+```
+
+3. Install service:
 
 ```bash
 sudo ./scripts/linux/install-node-service.sh config/linux/app.env
 ```
 
-3. Optional Nginx reverse proxy:
+4. Optional Nginx reverse proxy:
 
 ```bash
 sudo ./scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
 ```
 
-4. Optional health check timer:
+5. Optional Apache reverse proxy:
+
+```bash
+sudo ./scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
+```
+
+6. Optional systemd health check timer:
 
 ```bash
 sudo ./scripts/linux/install-healthcheck-timer.sh config/linux/app.env
@@ -155,9 +168,10 @@ This project is a deployment kit, not a vendor support guarantee. Older operatin
 
 | Family | Distro examples | Service mode | Reverse proxy |
 |---|---|---|---|
-| Debian family | Ubuntu, Debian | systemd | Nginx |
-| RHEL family | RHEL, Rocky Linux, AlmaLinux | systemd | Nginx |
-| Fedora family | Fedora | systemd | Nginx |
+| Debian family | Ubuntu, Debian | systemd / System V | Nginx / Apache |
+| RHEL family | RHEL, Rocky Linux, AlmaLinux | systemd / System V | Nginx / Apache |
+| Fedora family | Fedora | systemd | Nginx / Apache |
+| OpenRC family | Alpine, Gentoo-style hosts | OpenRC | Nginx / Apache |
 
 ---
 
@@ -167,9 +181,9 @@ Configure deployment style by editing variables.
 
 | Mode | Windows | Linux | Best for |
 |---|---|---|---|
-| `standalone` | WinSW service + IIS optional | systemd + Nginx optional | Single app host |
-| `reverse_proxy` | IIS -> Node localhost | Nginx -> Node localhost | Normal production deployment |
-| `service_only` | WinSW/NSSM only | systemd only | Existing external load balancer |
+| `standalone` | WinSW service + IIS optional | Linux service + Nginx/Apache optional | Single app host |
+| `reverse_proxy` | IIS -> Node localhost | Nginx/Apache -> Node localhost | Normal production deployment |
+| `service_only` | WinSW/NSSM only | systemd/System V/OpenRC only | Existing external load balancer |
 | `pm2_fallback` | PM2 as fallback only | PM2 optional | Migration from existing PM2 setups |
 | `ansible` | WinRM automation | SSH automation | Multi-server repeatable deployment |
 
@@ -195,9 +209,9 @@ node-enterprise-deploy-kit/
 ├── config/                          # Changeable variables and examples
 ├── docs/                            # Architecture, hardening, troubleshooting
 ├── scripts/
-│   ├── linux/                       # systemd, Nginx, health checks, diagnostics
+│   ├── linux/                       # systemd/System V/OpenRC, Nginx/Apache, health checks
 │   └── windows/                     # WinSW, IIS, scheduled tasks, diagnostics
-├── templates/                       # WinSW, systemd, IIS, Nginx templates
+├── templates/                       # WinSW, Linux init, IIS, Nginx, Apache templates
 ├── tools/                           # Place external wrappers here; no binaries included
 ├── .github/workflows/               # Basic CI checks
 ├── LICENSE
@@ -212,7 +226,7 @@ This kit supports three health check layers:
 
 ```text
 1. Process/service check
-   Windows Service or systemd is running.
+   Windows Service or Linux service manager is running.
 
 2. Port check
    Node.js listens on localhost:<APP_PORT>.
@@ -239,7 +253,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
 |---|---|
 | Service user | Dedicated non-admin service account |
 | App bind address | `127.0.0.1` |
-| Public access | IIS/Nginx only |
+| Public access | IIS/Nginx/Apache only |
 | Logs | Dedicated directory with rotation |
 | Secrets | Environment file or external secret manager, never committed |
 | Restart | Service-level restart policy |
@@ -282,6 +296,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
 APP_NAME="example-node-app"
 APP_DISPLAY_NAME="Example Node App"
 APP_DIR="/opt/example-node-app"
+SERVICE_MANAGER="systemd"
 NODE_BIN="/usr/bin/node"
 START_SCRIPT="server.js"
 APP_PORT="3000"
@@ -292,6 +307,8 @@ LOG_DIR="/var/log/example-node-app"
 REVERSE_PROXY="nginx"
 PUBLIC_HOSTNAME="app.example.local"
 ```
+
+Set `SERVICE_MANAGER` to `systemv` for legacy init hosts or `openrc` for OpenRC hosts. Set `REVERSE_PROXY` to `apache` to install the Apache virtual host template instead of Nginx.
 
 ---
 
@@ -325,6 +342,7 @@ Use this kit when you need to deploy:
 - Internal admin panels
 - IIS-to-Node reverse proxy apps
 - Nginx-to-Node reverse proxy apps
+- Apache-to-Node reverse proxy apps
 - Windows Server hosted Node apps
 - Linux hosted Node apps
 

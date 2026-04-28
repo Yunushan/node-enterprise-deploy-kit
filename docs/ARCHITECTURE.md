@@ -7,14 +7,14 @@ Internet / LAN users
         |
         v
 TLS reverse proxy
-IIS on Windows or Nginx on Linux
+IIS on Windows or Nginx/Apache on Linux
         |
         v
 http://127.0.0.1:<app_port>
         |
         v
 Node.js app as managed service
-WinSW on Windows or systemd on Linux
+WinSW on Windows or systemd/System V/OpenRC on Linux
         |
         v
 rotated logs + health check + monitoring
@@ -39,9 +39,10 @@ Recommended Windows components:
 
 Recommended Linux components:
 
-- systemd service.
-- Nginx as TLS/reverse proxy frontend.
-- systemd timer health check.
+- systemd, System V, or OpenRC service.
+- Nginx or Apache as TLS/reverse proxy frontend.
+- systemd timer health check on systemd hosts.
+- Cron or external monitoring for health checks on System V/OpenRC hosts.
 - Logs under `/var/log/<app-name>`.
 - App under `/opt/<app-name>`.
 

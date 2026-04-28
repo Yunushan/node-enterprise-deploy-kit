@@ -36,4 +36,6 @@ Scheduled task runs `scripts/windows/Invoke-NodeHealthCheck.ps1`.
 
 ## Linux
 
-systemd timer runs `/usr/local/sbin/<app-name>-healthcheck.sh`.
+On systemd hosts, the systemd timer runs `/usr/local/sbin/<app-name>-healthcheck.sh`.
+
+On System V or OpenRC hosts, use `scripts/linux/node-healthcheck.sh` from cron or your external monitoring platform.

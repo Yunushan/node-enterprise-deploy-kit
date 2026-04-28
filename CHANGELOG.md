@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added Linux Apache reverse proxy installer and virtual host template.
+- Added Linux System V and OpenRC service templates.
+- Added Linux service manager selection for scripts and Ansible.
+
 ## v1.0.0
 
 Initial GitHub-ready release.

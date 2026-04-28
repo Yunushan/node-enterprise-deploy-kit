@@ -8,12 +8,25 @@
 - Fedora
 - AlmaLinux
 - Rocky Linux
+- Alpine/OpenRC-style hosts
 
 ## Recommended Production Pattern
 
 ```text
-Nginx HTTPS frontend -> 127.0.0.1:3000 -> systemd service -> Node.js app
+Nginx or Apache HTTPS frontend -> 127.0.0.1:3000 -> Linux service -> Node.js app
 ```
+
+Supported Linux service managers:
+
+- `systemd`
+- `systemv`
+- `openrc`
+
+Supported Linux reverse proxies:
+
+- `nginx`
+- `apache`
+- `none`
 
 ## Steps
 
@@ -29,28 +42,58 @@ cp config/linux/app.env.example config/linux/app.env
 nano config/linux/app.env
 ```
 
-3. Install the systemd service:
+3. Select service manager and reverse proxy:
+
+```bash
+SERVICE_MANAGER="systemd"   # systemd, systemv, or openrc
+REVERSE_PROXY="nginx"       # nginx, apache, or none
+```
+
+4. Optional dependency bootstrap:
+
+```bash
+sudo ./scripts/linux/install-dependencies.sh config/linux/app.env
+```
+
+5. Install the Linux service:
 
 ```bash
 sudo ./scripts/linux/install-node-service.sh config/linux/app.env
 ```
 
-4. Optional Nginx reverse proxy:
+6. Optional Nginx reverse proxy:
 
 ```bash
 sudo ./scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
 ```
 
-5. Optional health check timer:
+7. Optional Apache reverse proxy:
+
+```bash
+sudo ./scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
+```
+
+On Debian-family hosts, the Apache installer enables `proxy`, `proxy_http`, `proxy_wstunnel`, `headers`, and `rewrite`.
+
+8. Optional systemd health check timer:
 
 ```bash
 sudo ./scripts/linux/install-healthcheck-timer.sh config/linux/app.env
 ```
 
-6. Verify:
+For `systemv` and `openrc`, use `scripts/linux/node-healthcheck.sh` from cron or your external monitoring platform.
+
+9. Verify:
+
+```bash
+ss -ltnp | grep :3000
+curl -fsS http://127.0.0.1:3000/health
+```
+
+Service status examples:
 
 ```bash
 systemctl status example-node-app
-ss -ltnp | grep :3000
-curl -fsS http://127.0.0.1:3000/health
+service example-node-app status
+rc-service example-node-app status
 ```

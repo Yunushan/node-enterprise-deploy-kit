@@ -1,16 +1,43 @@
 <svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Node Enterprise Deploy Kit logo</title>
   <defs>
-    <linearGradient id="g" x1="36" y1="40" x2="220" y2="216" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#14F1D9"/><stop offset="0.55" stop-color="#20D47C"/><stop offset="1" stop-color="#2F80ED"/>
+    <linearGradient id="border" x1="36" y1="34" x2="220" y2="222" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6EE7B7"/>
+      <stop offset="0.5" stop-color="#22C55E"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="76" y1="76" x2="180" y2="178" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#13251F"/>
+      <stop offset="1" stop-color="#0F1F33"/>
+    </linearGradient>
+    <linearGradient id="deploy" x1="50" y1="190" x2="206" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22C55E"/>
+      <stop offset="1" stop-color="#38BDF8"/>
     </linearGradient>
   </defs>
-  <path d="M128 18L222 72V180L128 234L34 180V72L128 18Z" fill="#101820" stroke="url(#g)" stroke-width="10"/>
-  <path d="M76 167V96C76 88 82 82 90 82H103C111 82 117 88 117 96V167C117 174 111 180 104 180H90C82 180 76 174 76 167Z" fill="#30E0A1"/>
-  <path d="M123 180V71C123 64 129 58 136 58H149C157 58 163 64 163 71V180H123Z" fill="#45C3FF"/>
-  <path d="M169 180V104C169 96 175 90 183 90H196C204 90 210 96 210 104V180H169Z" fill="#0088FF"/>
-  <path d="M63 129L94 105L135 143L181 83" stroke="url(#g)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="63" cy="129" r="9" fill="#101820" stroke="#14F1D9" stroke-width="5"/>
-  <circle cx="94" cy="105" r="9" fill="#101820" stroke="#14F1D9" stroke-width="5"/>
-  <circle cx="135" cy="143" r="9" fill="#101820" stroke="#14F1D9" stroke-width="5"/>
-  <circle cx="181" cy="83" r="9" fill="#101820" stroke="#14F1D9" stroke-width="5"/>
+
+  <path d="M128 18L222 72V184L128 238L34 184V72L128 18Z" fill="#08111F" stroke="url(#border)" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M128 40L168 63V109L128 132L88 109V63L128 40Z" fill="#102A22" stroke="#6EE7B7" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M111 103V69H120L137 91V69H146V103H137L120 81V103H111Z" fill="#EAFDF4"/>
+
+  <rect x="72" y="116" width="112" height="62" rx="10" fill="url(#panel)" stroke="#38BDF8" stroke-width="5"/>
+  <rect x="88" y="130" width="80" height="10" rx="5" fill="#1F3B4D"/>
+  <rect x="88" y="154" width="80" height="10" rx="5" fill="#1F3B4D"/>
+  <circle cx="98" cy="135" r="4" fill="#22C55E"/>
+  <circle cx="98" cy="159" r="4" fill="#38BDF8"/>
+  <path d="M118 135H158" stroke="#CFFAFE" stroke-width="4" stroke-linecap="round"/>
+  <path d="M118 159H148" stroke="#CFFAFE" stroke-width="4" stroke-linecap="round"/>
+
+  <path d="M61 192C84 214 172 214 195 192" stroke="url(#deploy)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M185 180L202 190L185 200" stroke="#38BDF8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="47" y="174" width="30" height="30" rx="7" fill="#0F172A" stroke="#6EE7B7" stroke-width="5"/>
+  <path d="M56 189H68" stroke="#6EE7B7" stroke-width="5" stroke-linecap="round"/>
+  <path d="M62 183V195" stroke="#6EE7B7" stroke-width="5" stroke-linecap="round"/>
+
+  <rect x="179" y="174" width="30" height="30" rx="7" fill="#0F172A" stroke="#38BDF8" stroke-width="5"/>
+  <path d="M188 190L193 195L201 184" stroke="#38BDF8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M128 190L128 211" stroke="#22C55E" stroke-width="6" stroke-linecap="round"/>
+  <path d="M118 204L128 214L138 204" stroke="#22C55E" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
