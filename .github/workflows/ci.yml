@@ -8,7 +8,7 @@ jobs:
   basic-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Shell syntax
         run: bash scripts/dev/lint-shell-basic.sh
       - name: No obvious secrets
