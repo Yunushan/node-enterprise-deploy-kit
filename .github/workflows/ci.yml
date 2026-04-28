@@ -1,0 +1,15 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  basic-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash scripts/dev/lint-shell-basic.sh
+      - name: No obvious secrets
+        run: python3 scripts/dev/check-no-secrets.py

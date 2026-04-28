@@ -1,0 +1,31 @@
+{
+  "AppName": "ExampleNodeApp",
+  "DisplayName": "Example Node App",
+  "Description": "Example Node.js production service",
+  "DeploymentMode": "reverse_proxy",
+  "ServiceManager": "winsw",
+  "ReverseProxy": "iis",
+  "AppDirectory": "C:\\apps\\ExampleNodeApp",
+  "StartCommand": "server.js",
+  "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
+  "NodeArguments": "",
+  "InstallCommand": "npm ci --omit=dev",
+  "BuildCommand": "npm run build",
+  "Port": 3000,
+  "BindAddress": "127.0.0.1",
+  "HealthUrl": "http://127.0.0.1:3000/health",
+  "HealthCheckIntervalMinutes": 1,
+  "ServiceDirectory": "C:\\services\\ExampleNodeApp",
+  "LogDirectory": "C:\\logs\\ExampleNodeApp",
+  "IisSitePath": "C:\\inetpub\\wwwroot\\ExampleNodeApp",
+  "PublicHostName": "app.example.local",
+  "PublicPort": 443,
+  "TlsEnabled": true,
+  "ServiceAccount": "LocalSystem",
+  "FailureRestartDelaySeconds": 60,
+  "Environment": {
+    "NODE_ENV": "production",
+    "PORT": "3000",
+    "APP_NAME": "ExampleNodeApp"
+  }
+}

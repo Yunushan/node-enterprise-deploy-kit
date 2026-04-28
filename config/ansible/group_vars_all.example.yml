@@ -1,0 +1,32 @@
+---
+node_deploy_project_name: example-node-app
+node_deploy_display_name: Example Node App
+node_deploy_mode: reverse_proxy
+node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
+node_deploy_app_dir_linux: /opt/example-node-app
+node_deploy_start_script: server.js
+node_deploy_port: 3000
+node_deploy_bind_address: 127.0.0.1
+node_deploy_health_url: http://127.0.0.1:3000/health
+node_deploy_install_command: npm ci --omit=dev
+node_deploy_build_command: npm run build
+node_deploy_windows_service_manager: winsw
+node_deploy_windows_node_exe: C:\Program Files\nodejs\node.exe
+node_deploy_windows_service_dir: C:\services\ExampleNodeApp
+node_deploy_windows_log_dir: C:\logs\ExampleNodeApp
+node_deploy_windows_reverse_proxy: iis
+node_deploy_windows_iis_site_path: C:\inetpub\wwwroot\ExampleNodeApp
+node_deploy_linux_service_manager: systemd
+node_deploy_linux_node_bin: /usr/bin/node
+node_deploy_linux_service_user: nodeapp
+node_deploy_linux_service_group: nodeapp
+node_deploy_linux_log_dir: /var/log/example-node-app
+node_deploy_linux_reverse_proxy: nginx
+node_deploy_public_hostname: app.example.local
+node_deploy_tls_enabled: true
+node_deploy_healthcheck_enabled: true
+node_deploy_healthcheck_interval_minutes: 1
+node_deploy_environment:
+  NODE_ENV: production
+  APP_NAME: example-node-app
+  PORT: "3000"

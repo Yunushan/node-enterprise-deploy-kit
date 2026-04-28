@@ -1,0 +1,12 @@
+---
+- name: Deploy Node app on Windows
+  hosts: windows_node_apps
+  gather_facts: false
+  roles:
+    - role: windows_node_service
+
+- name: Deploy Node app on Linux
+  hosts: linux_node_apps
+  become: true
+  roles:
+    - role: linux_node_service

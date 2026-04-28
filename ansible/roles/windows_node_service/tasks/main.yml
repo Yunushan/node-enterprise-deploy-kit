@@ -1,0 +1,31 @@
+---
+- name: Ensure Windows service directory exists
+  ansible.windows.win_file:
+    path: "{{ node_deploy_windows_service_dir }}"
+    state: directory
+
+- name: Ensure Windows log directory exists
+  ansible.windows.win_file:
+    path: "{{ node_deploy_windows_log_dir }}"
+    state: directory
+
+- name: Render Windows app config
+  ansible.windows.win_template:
+    src: app.config.json.j2
+    dest: "{{ node_deploy_windows_service_dir }}\\app.config.json"
+
+- name: Copy deployment scripts
+  ansible.windows.win_copy:
+    src: "../../../../scripts/windows/"
+    dest: "{{ node_deploy_windows_service_dir }}\\scripts\\"
+
+- name: Reminder for WinSW
+  ansible.builtin.debug:
+    msg: "Place WinSW executable in tools/winsw or adapt role to download from your internal artifact repository."
+
+- name: Install service using local script
+  ansible.windows.win_shell: >
+    powershell.exe -ExecutionPolicy Bypass -File "{{ node_deploy_windows_service_dir }}\\scripts\\Install-NodeService.ps1"
+    -ConfigPath "{{ node_deploy_windows_service_dir }}\\app.config.json"
+  args:
+    executable: cmd

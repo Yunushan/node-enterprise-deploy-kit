@@ -1,0 +1,9 @@
+---
+all:
+  children:
+    windows_node_apps:
+      hosts:
+        win-app-01.example.local:
+    linux_node_apps:
+      hosts:
+        linux-app-01.example.local:

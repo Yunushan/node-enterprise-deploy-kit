@@ -1,0 +1,45 @@
+---
+- name: Ensure service group exists
+  ansible.builtin.group:
+    name: "{{ node_deploy_linux_service_group }}"
+    system: true
+
+- name: Ensure service user exists
+  ansible.builtin.user:
+    name: "{{ node_deploy_linux_service_user }}"
+    group: "{{ node_deploy_linux_service_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ node_deploy_app_dir_linux }}"
+
+- name: Ensure directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ node_deploy_app_dir_linux }}", owner: "{{ node_deploy_linux_service_user }}", group: "{{ node_deploy_linux_service_group }}", mode: "0750" }
+    - { path: "{{ node_deploy_linux_log_dir }}", owner: "{{ node_deploy_linux_service_user }}", group: "{{ node_deploy_linux_service_group }}", mode: "0750" }
+
+- name: Render environment file
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "/etc/{{ node_deploy_project_name }}.env"
+    owner: root
+    group: "{{ node_deploy_linux_service_group }}"
+    mode: "0640"
+
+- name: Render systemd unit
+  ansible.builtin.template:
+    src: node-app.service.j2
+    dest: "/etc/systemd/system/{{ node_deploy_project_name }}.service"
+    mode: "0644"
+
+- name: Enable and restart service
+  ansible.builtin.systemd:
+    name: "{{ node_deploy_project_name }}"
+    enabled: true
+    state: restarted
+    daemon_reload: true
