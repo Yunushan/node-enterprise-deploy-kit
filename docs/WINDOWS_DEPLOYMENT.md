@@ -18,6 +18,24 @@ Legacy systems may require compatibility testing for the chosen Node.js version.
 IIS HTTPS frontend -> 127.0.0.1:3000 -> WinSW Windows Service -> Node.js app
 ```
 
+## Recommended Script Pattern
+
+Use PowerShell for the real deployment logic and a small batch file only as
+the double-click entrypoint:
+
+```text
+install.bat     -> convenience wrapper for elevated/manual use
+install.ps1     -> install entrypoint; delegates to deploy.ps1
+deploy.ps1      -> service, reverse proxy, and health check installer
+status.ps1      -> safe service/process/port/HTTP status check
+restart.ps1     -> restart service and re-run status
+uninstall.ps1   -> remove service and optional health check task
+```
+
+An `.exe` installer is usually unnecessary for server operations. Consider one
+only when non-technical users need a signed wizard-style installer across many
+machines.
+
 ## Steps
 
 1. Copy config:
@@ -40,31 +58,40 @@ tools\winsw\winsw-x64.exe
 
 No service wrapper binaries are bundled in this repository.
 
-4. Install service:
+4. Install using the one-command Windows wrapper:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+.\install.ps1 -ConfigPath .\config\windows\app.config.json
+```
+
+For double-click use, right-click `install.bat` and choose **Run as
+administrator**. The batch file only starts PowerShell and pauses so the
+operator can read the result.
+
+5. Optional lower-level commands:
 
 ```powershell
 .\scripts\windows\Install-NodeService.ps1 -ConfigPath .\config\windows\app.config.json
-```
-
-5. Install IIS reverse proxy config:
-
-```powershell
 .\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
-```
-
-6. Register health check:
-
-```powershell
 .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-7. Verify:
+6. Verify:
 
 ```powershell
-Get-Service ExampleNodeApp
-Get-Process node
-Get-NetTCPConnection -LocalPort 3000 -State Listen
-Invoke-WebRequest http://127.0.0.1:3000/health -UseBasicParsing
+.\status.ps1 -ConfigPath .\config\windows\app.config.json
+```
+
+The status command reports service state, node processes, configured port
+listeners, HTTP health, and recent log file metadata without printing
+environment variables or log contents.
+
+7. Restart or uninstall:
+
+```powershell
+.\restart.ps1 -ConfigPath .\config\windows\app.config.json
+.\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
 ## Service Recovery

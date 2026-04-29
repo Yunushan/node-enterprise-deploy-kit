@@ -11,24 +11,31 @@ param(
     [switch] $SkipHealthCheck
 )
 
+$ErrorActionPreference = "Stop"
+$repoRoot = $PSScriptRoot
+
+if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path $repoRoot $ConfigPath
+}
+
 if (-not (Test-Path $ConfigPath)) {
     throw "Config not found: $ConfigPath. Copy config/windows/app.config.example.json first."
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
 switch ($config.ServiceManager) {
-    "winsw" { .\scripts\windows\Install-NodeService.ps1 -ConfigPath $ConfigPath }
-    "nssm"  { .\scripts\windows\Install-NSSMService.ps1 -ConfigPath $ConfigPath }
-    "pm2"   { .\scripts\windows\Install-PM2Fallback.ps1 -ConfigPath $ConfigPath }
+    "winsw" { & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") -ConfigPath $ConfigPath }
+    "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }
+    "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }
     default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }
 }
 
 if (-not $SkipReverseProxy -and $config.ReverseProxy -eq "iis") {
-    .\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath $ConfigPath
+    & (Join-Path $repoRoot "scripts\windows\Install-IISReverseProxy.ps1") -ConfigPath $ConfigPath
 }
 
 if (-not $SkipHealthCheck) {
-    .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath $ConfigPath
+    & (Join-Path $repoRoot "scripts\windows\Register-HealthCheckTask.ps1") -ConfigPath $ConfigPath
 }
 
 Write-Host "Deployment finished for $($config.AppName)." -ForegroundColor Green

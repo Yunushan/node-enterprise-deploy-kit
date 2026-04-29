@@ -87,23 +87,36 @@ notepad .\config\windows\app.config.json
 }
 ```
 
-3. Install as a Windows Service using WinSW:
+3. Place the WinSW executable:
+
+```text
+tools\winsw\winsw-x64.exe
+```
+
+No service wrapper binaries are bundled in this repository.
+
+4. Install with the recommended Windows entrypoint:
+
+Right-click `install.bat` and choose **Run as administrator**, or run:
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-.\scripts\windows\Install-NodeService.ps1 -ConfigPath .\config\windows\app.config.json
+.\install.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-4. Optional IIS reverse proxy template install:
+This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper.
+
+5. Check status without printing private environment values:
 
 ```powershell
-.\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-5. Install health check scheduled task:
+6. Restart or uninstall through the top-level wrappers when needed:
 
 ```powershell
-.\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json
+.\restart.ps1 -ConfigPath .\config\windows\app.config.json
+.\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
 ### Linux quick start
@@ -213,6 +226,12 @@ node-enterprise-deploy-kit/
 │   └── windows/                     # WinSW, IIS, scheduled tasks, diagnostics
 ├── templates/                       # WinSW, Linux init, IIS, Nginx, Apache templates
 ├── tools/                           # Place external wrappers here; no binaries included
+├── install.bat                      # Windows double-click wrapper
+├── install.ps1                      # Windows install entrypoint
+├── deploy.ps1                       # Windows deployment orchestrator
+├── status.ps1                       # Windows service/port/health status
+├── restart.ps1                      # Windows service restart helper
+├── uninstall.ps1                    # Windows service uninstall wrapper
 ├── .github/workflows/               # Basic CI checks
 ├── LICENSE
 └── README.md
@@ -259,7 +278,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
 | Restart | Service-level restart policy |
 | Hung app recovery | HTTP health check restarts service |
 | Monitoring | Export diagnostics to Wazuh/Graylog/Prometheus-compatible tooling |
-| Deployment | Git checkout or artifact release + scripted service install |
+| Deployment | PowerShell install/deploy scripts with optional `.bat` wrapper |
 | Rollback | Keep previous release directory or backup archive |
 
 ---
