@@ -75,6 +75,7 @@ $xml | Set-Content -Path $serviceXml -Encoding UTF8
 
 if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
     & $serviceExe install
+    sc.exe config $config.AppName start= auto | Out-Null
     sc.exe failure $config.AppName reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
     sc.exe failureflag $config.AppName 1 | Out-Null
     & $serviceExe start

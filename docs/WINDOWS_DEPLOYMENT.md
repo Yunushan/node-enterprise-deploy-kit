@@ -94,6 +94,10 @@ environment variables or log contents.
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
+The WinSW template and installer set the service startup mode to `Automatic`,
+so the app is expected to start again after a Windows reboot as long as the
+service installation succeeds and the configured app path is still valid.
+
 ## Service Recovery
 
 The installer configures Windows Service Control Manager recovery:

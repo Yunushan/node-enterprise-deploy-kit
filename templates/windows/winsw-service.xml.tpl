@@ -2,6 +2,7 @@
   <id>{{APP_NAME}}</id>
   <name>{{DISPLAY_NAME}}</name>
   <description>{{DESCRIPTION}}</description>
+  <startmode>Automatic</startmode>
   <executable>{{NODE_EXE}}</executable>
   <arguments>{{START_COMMAND}} {{NODE_ARGUMENTS}}</arguments>
   <workingdirectory>{{APP_DIRECTORY}}</workingdirectory>
