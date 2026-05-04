@@ -52,25 +52,25 @@ REVERSE_PROXY="nginx"       # nginx, apache, or none
 4. Optional dependency bootstrap:
 
 ```bash
-sudo ./scripts/linux/install-dependencies.sh config/linux/app.env
+sudo bash scripts/linux/install-dependencies.sh config/linux/app.env
 ```
 
 5. Install the Linux service:
 
 ```bash
-sudo ./scripts/linux/install-node-service.sh config/linux/app.env
+sudo bash scripts/linux/install-node-service.sh config/linux/app.env
 ```
 
 6. Optional Nginx reverse proxy:
 
 ```bash
-sudo ./scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
 ```
 
 7. Optional Apache reverse proxy:
 
 ```bash
-sudo ./scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
 ```
 
 On Debian-family hosts, the Apache installer enables `proxy`, `proxy_http`, `proxy_wstunnel`, `headers`, and `rewrite`.
@@ -78,7 +78,7 @@ On Debian-family hosts, the Apache installer enables `proxy`, `proxy_http`, `pro
 8. Optional systemd health check timer:
 
 ```bash
-sudo ./scripts/linux/install-healthcheck-timer.sh config/linux/app.env
+sudo bash scripts/linux/install-healthcheck-timer.sh config/linux/app.env
 ```
 
 For `systemv` and `openrc`, use `scripts/linux/node-healthcheck.sh` from cron or your external monitoring platform.

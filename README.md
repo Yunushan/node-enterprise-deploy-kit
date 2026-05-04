@@ -104,7 +104,19 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .\install.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper.
+This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer runs a safe preflight check, then runs configured `InstallCommand` and `BuildCommand`, then installs/updates the service, reverse proxy, and health check.
+
+For artifact-only deployments where dependencies are already installed and the app is already built:
+
+```powershell
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipInstall -SkipBuild
+```
+
+If preflight reports a known, intentional listener on the configured port that is not the current service, use:
+
+```powershell
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
+```
 
 5. Check status without printing private environment values:
 
@@ -138,25 +150,25 @@ REVERSE_PROXY="nginx"       # nginx, apache, or none
 3. Install service:
 
 ```bash
-sudo ./scripts/linux/install-node-service.sh config/linux/app.env
+sudo bash scripts/linux/install-node-service.sh config/linux/app.env
 ```
 
 4. Optional Nginx reverse proxy:
 
 ```bash
-sudo ./scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
 ```
 
 5. Optional Apache reverse proxy:
 
 ```bash
-sudo ./scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
 ```
 
 6. Optional systemd health check timer:
 
 ```bash
-sudo ./scripts/linux/install-healthcheck-timer.sh config/linux/app.env
+sudo bash scripts/linux/install-healthcheck-timer.sh config/linux/app.env
 ```
 
 ---
@@ -224,6 +236,7 @@ node-enterprise-deploy-kit/
 ├── scripts/
 │   ├── linux/                       # systemd/System V/OpenRC, Nginx/Apache, health checks
 │   └── windows/                     # WinSW, IIS, scheduled tasks, diagnostics
+├── scripts/dev/                     # CI and repository safety checks
 ├── templates/                       # WinSW, Linux init, IIS, Nginx, Apache templates
 ├── tools/                           # Place external wrappers here; no binaries included
 ├── install.bat                      # Windows double-click wrapper

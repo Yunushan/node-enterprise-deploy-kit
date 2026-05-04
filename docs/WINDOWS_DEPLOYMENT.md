@@ -26,7 +26,7 @@ the double-click entrypoint:
 ```text
 install.bat     -> convenience wrapper for elevated/manual use
 install.ps1     -> install entrypoint; delegates to deploy.ps1
-deploy.ps1      -> service, reverse proxy, and health check installer
+deploy.ps1      -> preflight, app preparation, service, proxy, health check
 status.ps1      -> safe service/process/port/HTTP status check
 restart.ps1     -> restart service and re-run status
 uninstall.ps1   -> remove service and optional health check task
@@ -69,9 +69,28 @@ For double-click use, right-click `install.bat` and choose **Run as
 administrator**. The batch file only starts PowerShell and pauses so the
 operator can read the result.
 
+The default install flow is:
+
+```text
+preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
+```
+
+Use these switches when needed:
+
+```powershell
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipInstall -SkipBuild
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipReverseProxy -SkipHealthCheck
+```
+
+Preflight treats the configured service's own existing listener as a warning,
+so normal service updates should not need `-AllowPortInUse`.
+
 5. Optional lower-level commands:
 
 ```powershell
+.\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json
+.\scripts\windows\Invoke-AppPreparation.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Install-NodeService.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json

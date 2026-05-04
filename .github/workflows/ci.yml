@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Line endings
+        run: python3 scripts/dev/check-line-endings.py
       - name: Shell syntax
         run: bash scripts/dev/lint-shell-basic.sh
       - name: No obvious secrets

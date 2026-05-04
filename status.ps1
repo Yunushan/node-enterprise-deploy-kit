@@ -29,6 +29,46 @@ $escapedServiceName = $serviceName.Replace("'", "''")
 $configuredPort = [int]$config.Port
 $healthUrl = [string]$config.HealthUrl
 
+function Get-ChildProcessTree {
+    param([int] $ParentProcessId)
+
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $byParent = @{}
+    foreach ($process in $all) {
+        $parentId = [int]$process.ParentProcessId
+        if (-not $byParent.ContainsKey($parentId)) {
+            $byParent[$parentId] = New-Object System.Collections.Generic.List[object]
+        }
+        $byParent[$parentId].Add($process) | Out-Null
+    }
+
+    $result = New-Object System.Collections.Generic.List[object]
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    $queue.Enqueue($ParentProcessId)
+
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        if (-not $byParent.ContainsKey($current)) { continue }
+        foreach ($child in $byParent[$current]) {
+            $result.Add($child) | Out-Null
+            if ($child.ProcessId) { $queue.Enqueue([int]$child.ProcessId) }
+        }
+    }
+
+    return @($result)
+}
+
+function Format-Uptime {
+    param($StartTime)
+    if (-not $StartTime) { return "" }
+    try {
+        $span = (Get-Date) - $StartTime
+        return "{0}d {1}h {2}m" -f $span.Days, $span.Hours, $span.Minutes
+    } catch {
+        return ""
+    }
+}
+
 Write-Host "Status for: $serviceName" -ForegroundColor Cyan
 Write-Host "Config: $ConfigPath"
 Write-Host ""
@@ -46,15 +86,26 @@ if ($serviceProcess) {
     $serviceProcess | Select-Object Name, State, StartMode, ProcessId | Format-Table -AutoSize
 }
 
-$processIds = @()
+$serviceProcessIds = @()
 if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessId -gt 0) {
-    $processIds += [int]$serviceProcess.ProcessId
-    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($serviceProcess.ProcessId)" -ErrorAction SilentlyContinue
-    if ($children) {
-        $processIds += @($children | Select-Object -ExpandProperty ProcessId)
+    $serviceProcessIds += [int]$serviceProcess.ProcessId
+    $wrapper = Get-Process -Id $serviceProcess.ProcessId -ErrorAction SilentlyContinue
+    if ($wrapper) {
         Write-Host ""
-        Write-Host "Service child processes" -ForegroundColor Yellow
-        $children | Select-Object ProcessId, ParentProcessId, Name, ExecutablePath | Format-Table -AutoSize
+        Write-Host "Service wrapper uptime" -ForegroundColor Yellow
+        $wrapper |
+            Select-Object Id, StartTime, @{Name="Uptime";Expression={ Format-Uptime $_.StartTime }}, Path |
+            Format-Table -AutoSize
+    }
+
+    $children = Get-ChildProcessTree -ParentProcessId ([int]$serviceProcess.ProcessId)
+    if ($children.Count -gt 0) {
+        $serviceProcessIds += @($children | Select-Object -ExpandProperty ProcessId)
+        Write-Host ""
+        Write-Host "Service process tree" -ForegroundColor Yellow
+        $children |
+            Select-Object ProcessId, ParentProcessId, Name, ExecutablePath |
+            Format-Table -AutoSize
     }
 }
 
@@ -62,13 +113,14 @@ Write-Host ""
 Write-Host "Node processes" -ForegroundColor Yellow
 $nodeProcesses = Get-Process node -ErrorAction SilentlyContinue
 if ($nodeProcesses) {
-    $nodeProcesses | Select-Object Id, StartTime, Path | Format-Table -AutoSize
-    $processIds += @($nodeProcesses | Select-Object -ExpandProperty Id)
+    $nodeProcesses |
+        Select-Object Id, StartTime, @{Name="Uptime";Expression={ Format-Uptime $_.StartTime }}, Path |
+        Format-Table -AutoSize
 } else {
     Write-Warning "No node.exe process found."
 }
 
-$processIds = @($processIds | Where-Object { $_ } | Sort-Object -Unique)
+$serviceProcessIds = @($serviceProcessIds | Where-Object { $_ } | Sort-Object -Unique)
 
 Write-Host ""
 Write-Host "Configured port listener" -ForegroundColor Yellow
@@ -80,17 +132,17 @@ if ($portConnections) {
 }
 
 Write-Host ""
-Write-Host "Listeners owned by service/node processes" -ForegroundColor Yellow
-if ($processIds.Count -gt 0) {
+Write-Host "Listeners owned by configured service" -ForegroundColor Yellow
+if ($serviceProcessIds.Count -gt 0) {
     $ownedConnections = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $processIds -contains $_.OwningProcess }
+        Where-Object { $serviceProcessIds -contains $_.OwningProcess }
     if ($ownedConnections) {
         $ownedConnections | Select-Object LocalAddress, LocalPort, State, OwningProcess | Format-Table -AutoSize
     } else {
-        Write-Warning "No listening sockets found for service/node process IDs: $($processIds -join ', ')."
+        Write-Warning "No listening sockets found for configured service process IDs: $($serviceProcessIds -join ', ')."
     }
 } else {
-    Write-Warning "No service/node process IDs available for listener check."
+    Write-Warning "No configured service process IDs available for listener check."
 }
 
 Write-Host ""

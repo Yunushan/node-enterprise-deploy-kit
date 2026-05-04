@@ -12,6 +12,12 @@ Invoke-WebRequest http://127.0.0.1:3000/health -UseBasicParsing
 .\scripts\windows\Diagnose-NodeApp.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
+Before reinstalling, run:
+
+```powershell
+.\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
+```
+
 Check logs:
 
 ```text
@@ -29,7 +35,7 @@ service <app-name> status
 rc-service <app-name> status
 ss -ltnp | grep :3000
 curl -i http://127.0.0.1:3000/health
-./scripts/linux/diagnose-node-app.sh config/linux/app.env
+bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 ```
 
 ## Common Issues

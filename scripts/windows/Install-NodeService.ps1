@@ -28,6 +28,64 @@ function Replace-Token([string]$Text, [hashtable]$Values) {
     foreach ($k in $Values.Keys) { $Text = $Text.Replace("{{$k}}", [string]$Values[$k]) }
     return $Text
 }
+function Escape-XmlValue($Value) {
+    if ($null -eq $Value) { return "" }
+    return [System.Security.SecurityElement]::Escape([string]$Value)
+}
+function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$Action) {
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Action failed with exit code $LASTEXITCODE."
+    }
+}
+function Stop-ExistingService([string]$Name, [string]$WrapperPath) {
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $service) { return $false }
+
+    if ($service.Status -ne "Stopped") {
+        Write-Host "Stopping existing service: $Name"
+        if (Test-Path $WrapperPath) {
+            & $WrapperPath stop
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "WinSW stop returned exit code $LASTEXITCODE. Falling back to Stop-Service."
+                Stop-Service -Name $Name -Force -ErrorAction Stop
+            }
+        } else {
+            Stop-Service -Name $Name -Force -ErrorAction Stop
+        }
+        $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+    }
+
+    return $true
+}
+function Assert-ServicePathCompatible([string]$Name, [string]$ExpectedWrapperPath) {
+    $escaped = $Name.Replace("'", "''")
+    $existing = Get-CimInstance Win32_Service -Filter "Name='$escaped'" -ErrorAction SilentlyContinue
+    if (-not $existing) { return }
+
+    $expected = [System.IO.Path]::GetFullPath($ExpectedWrapperPath)
+    $pathName = [string]$existing.PathName
+    if ($pathName -and $pathName.IndexOf($expected, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "A service named '$Name' already exists but points to a different executable: $pathName. Uninstall it or change AppName before deploying."
+    }
+}
+function Test-PostStartHealth($Config) {
+    Start-Sleep -Seconds 3
+    if ($Config.Port -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+        $listener = Get-NetTCPConnection -LocalPort ([int]$Config.Port) -State Listen -ErrorAction SilentlyContinue
+        if (-not $listener) {
+            Write-Warning "Service is running, but no listener was found on configured port $($Config.Port). Check app logs and StartCommand."
+        }
+    }
+    if ($Config.HealthUrl) {
+        try {
+            $response = Invoke-WebRequest -Uri $Config.HealthUrl -UseBasicParsing -TimeoutSec 10
+            Write-Host "Health check returned HTTP $($response.StatusCode)." -ForegroundColor Green
+        } catch {
+            Write-Warning "Service started, but HTTP health check failed. $($_.Exception.Message)"
+        }
+    }
+}
 
 Assert-Admin
 $config = Read-Config $ConfigPath
@@ -46,13 +104,14 @@ New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
 
 $serviceExe = Join-Path $config.ServiceDirectory "$($config.AppName).exe"
 $serviceXml = Join-Path $config.ServiceDirectory "$($config.AppName).xml"
-Copy-Item $winswCandidate $serviceExe -Force
+Assert-ServicePathCompatible -Name $config.AppName -ExpectedWrapperPath $serviceExe
+$serviceExists = Stop-ExistingService -Name $config.AppName -WrapperPath $serviceExe
 
 $envBlock = ""
 if ($config.Environment) {
     $config.Environment.PSObject.Properties | ForEach-Object {
-        $name = $_.Name
-        $value = [string]$_.Value
+        $name = Escape-XmlValue $_.Name
+        $value = Escape-XmlValue $_.Value
         $envBlock += "  <env name=`"$name`" value=`"$value`"/>`r`n"
     }
 }
@@ -60,25 +119,43 @@ if ($config.Environment) {
 $templatePath = Join-Path $repoRoot "templates\windows\winsw-service.xml.tpl"
 $template = Get-Content $templatePath -Raw
 $values = @{
-    "APP_NAME" = $config.AppName
-    "DISPLAY_NAME" = $config.DisplayName
-    "DESCRIPTION" = $config.Description
-    "NODE_EXE" = $config.NodeExe
-    "START_COMMAND" = $config.StartCommand
-    "NODE_ARGUMENTS" = $config.NodeArguments
-    "APP_DIRECTORY" = $config.AppDirectory
-    "LOG_DIRECTORY" = $config.LogDirectory
+    "APP_NAME" = Escape-XmlValue $config.AppName
+    "DISPLAY_NAME" = Escape-XmlValue $config.DisplayName
+    "DESCRIPTION" = Escape-XmlValue $config.Description
+    "NODE_EXE" = Escape-XmlValue $config.NodeExe
+    "START_COMMAND" = Escape-XmlValue $config.StartCommand
+    "NODE_ARGUMENTS" = Escape-XmlValue $config.NodeArguments
+    "APP_DIRECTORY" = Escape-XmlValue $config.AppDirectory
+    "LOG_DIRECTORY" = Escape-XmlValue $config.LogDirectory
     "ENVIRONMENT_BLOCK" = $envBlock.TrimEnd()
 }
 $xml = Replace-Token $template $values
+[void]([xml]$xml)
+Copy-Item $winswCandidate $serviceExe -Force
 $xml | Set-Content -Path $serviceXml -Encoding UTF8
 
 if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
-    & $serviceExe install
-    sc.exe config $config.AppName start= auto | Out-Null
-    sc.exe failure $config.AppName reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
-    sc.exe failureflag $config.AppName 1 | Out-Null
-    & $serviceExe start
+    if ($serviceExists) {
+        Write-Host "Updating existing service: $($config.AppName)"
+    } else {
+        Invoke-NativeCommand $serviceExe @("install") "WinSW install"
+    }
+
+    $restartDelaySeconds = 60
+    if ($config.PSObject.Properties["FailureRestartDelaySeconds"]) {
+        $restartDelaySeconds = [Math]::Max(1, [int]$config.FailureRestartDelaySeconds)
+    }
+    $restartDelayMs = $restartDelaySeconds * 1000
+    $thirdRestartDelayMs = $restartDelayMs * 5
+
+    Invoke-NativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set service startup mode"
+    Invoke-NativeCommand "sc.exe" @("failure", $config.AppName, "reset=", "86400", "actions=", "restart/$restartDelayMs/restart/$restartDelayMs/restart/$thirdRestartDelayMs") "Set service recovery actions"
+    Invoke-NativeCommand "sc.exe" @("failureflag", $config.AppName, "1") "Enable service recovery actions"
+    Invoke-NativeCommand $serviceExe @("start") "WinSW start"
+
+    $service = Get-Service -Name $config.AppName -ErrorAction Stop
+    $service.WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
+    Test-PostStartHealth $config
 }
 
 Write-Host "Installed service: $($config.AppName)" -ForegroundColor Green

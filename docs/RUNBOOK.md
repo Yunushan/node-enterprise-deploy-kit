@@ -3,17 +3,21 @@
 ## Normal Deployment
 
 1. Pull or copy release artifact.
-2. Install dependencies or unpack built artifact.
-3. Run build command if needed.
-4. Install/update service.
-5. Restart service.
-6. Verify health endpoint.
-7. Verify reverse proxy response.
-8. Confirm logs and monitoring.
+2. Run preflight checks.
+3. Install dependencies or unpack built artifact.
+4. Run build command if needed.
+5. Install/update service.
+6. Restart service.
+7. Verify health endpoint.
+8. Verify reverse proxy response.
+9. Confirm logs and monitoring.
 
 ## Windows Commands
 
 ```powershell
+.\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json
+.\install.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json
 Get-Service <AppName>
 Restart-Service <AppName>
 Get-EventLog Application -Newest 50

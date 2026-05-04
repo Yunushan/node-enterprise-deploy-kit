@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-for f in scripts/linux/*.sh scripts/dev/*.sh; do
+for f in deploy.sh scripts/linux/*.sh scripts/dev/*.sh; do
   [[ -f "$f" ]] || continue
   bash -n "$f"
 done

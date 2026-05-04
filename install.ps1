@@ -12,7 +12,12 @@
 param(
     [string] $ConfigPath = ".\config\windows\app.config.json",
     [switch] $SkipReverseProxy,
-    [switch] $SkipHealthCheck
+    [switch] $SkipHealthCheck,
+    [switch] $SkipPreflight,
+    [switch] $AllowPortInUse,
+    [switch] $SkipAppPreparation,
+    [switch] $SkipInstall,
+    [switch] $SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +46,11 @@ $deployArgs = @{
 }
 if ($SkipReverseProxy) { $deployArgs.SkipReverseProxy = $true }
 if ($SkipHealthCheck) { $deployArgs.SkipHealthCheck = $true }
+if ($SkipPreflight) { $deployArgs.SkipPreflight = $true }
+if ($AllowPortInUse) { $deployArgs.AllowPortInUse = $true }
+if ($SkipAppPreparation) { $deployArgs.SkipAppPreparation = $true }
+if ($SkipInstall) { $deployArgs.SkipInstall = $true }
+if ($SkipBuild) { $deployArgs.SkipBuild = $true }
 
 if ($WhatIfPreference) {
     & $deployScript @deployArgs -WhatIf
