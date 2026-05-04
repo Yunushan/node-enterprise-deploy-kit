@@ -75,6 +75,7 @@ $requiredFiles = @(
   "scripts/dev/New-ReleasePackage.ps1",
   "scripts/windows/Restore-ManagedBackup.ps1",
   "ansible.cfg",
+  "ansible/requirements.yml",
   "ansible/inventory.example.yml",
   "ansible/playbooks/site.yml"
 )

@@ -13,8 +13,11 @@ jobs:
         shell: bash
         run: |
           python3 -m pip install --user ansible-core
+          export PATH="$HOME/.local/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           ansible-playbook --version
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-galaxy collection list ansible.windows
       - name: Repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1

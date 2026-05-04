@@ -34,9 +34,10 @@ step. If you are only checking Windows scripts on a restricted machine, use:
 ```
 
 Ansible playbook syntax is checked automatically when `ansible-playbook` is
-available. If Ansible is not installed on the validation machine, that optional
-check is skipped. CI installs `ansible-core` before repository verification so
-the playbook syntax check runs deterministically in GitHub Actions.
+available. If Ansible or the required collections are not installed on the
+validation machine, that optional check is skipped. CI installs `ansible-core`
+and `ansible/requirements.yml` before repository verification so the playbook
+syntax check runs deterministically in GitHub Actions.
 
 ## Release Package
 
@@ -109,6 +110,7 @@ bash deploy.sh config/linux/app.env
 Ansible:
 
 ```bash
+ansible-galaxy collection install -r ansible/requirements.yml
 ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml
 ```
 

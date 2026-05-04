@@ -500,6 +500,30 @@ function Test-RenderedTemplates {
   Write-Host "Rendered token templates OK"
 }
 
+function Test-AnsibleCollectionAvailable {
+  param([string]$Name)
+
+  $galaxy = Get-Command ansible-galaxy -ErrorAction SilentlyContinue
+  if (-not $galaxy) {
+    return $false
+  }
+
+  $previousAnsibleConfig = $env:ANSIBLE_CONFIG
+  $previousAnsibleRolesPath = $env:ANSIBLE_ROLES_PATH
+  Push-Location $RepoRoot
+  try {
+    $env:ANSIBLE_CONFIG = Join-Path $RepoRoot "ansible.cfg"
+    $env:ANSIBLE_ROLES_PATH = Join-Path $RepoRoot "ansible/roles"
+    $output = @(& $galaxy.Source collection list $Name 2>$null)
+    return ($LASTEXITCODE -eq 0 -and ($output -match [regex]::Escape($Name)))
+  }
+  finally {
+    $env:ANSIBLE_CONFIG = $previousAnsibleConfig
+    $env:ANSIBLE_ROLES_PATH = $previousAnsibleRolesPath
+    Pop-Location
+  }
+}
+
 function Test-AnsibleSyntaxIfAvailable {
   if ($SkipAnsibleSyntax) {
     Write-Host "Skipping Ansible syntax check."
@@ -513,10 +537,15 @@ function Test-AnsibleSyntaxIfAvailable {
     return
   }
 
+  if (-not (Test-AnsibleCollectionAvailable "ansible.windows")) {
+    Write-Host "ansible.windows collection was not found; skipping optional Ansible syntax check. Install it with: ansible-galaxy collection install -r ansible/requirements.yml"
+    return
+  }
+
+  $previousAnsibleConfig = $env:ANSIBLE_CONFIG
+  $previousAnsibleRolesPath = $env:ANSIBLE_ROLES_PATH
   Push-Location $RepoRoot
   try {
-    $previousAnsibleConfig = $env:ANSIBLE_CONFIG
-    $previousAnsibleRolesPath = $env:ANSIBLE_ROLES_PATH
     $env:ANSIBLE_CONFIG = Join-Path $RepoRoot "ansible.cfg"
     $env:ANSIBLE_ROLES_PATH = Join-Path $RepoRoot "ansible/roles"
     & $ansible.Source --syntax-check -i "ansible/inventory.example.yml" "ansible/playbooks/site.yml"

@@ -56,6 +56,12 @@ Validate repository examples and templates before running the playbook:
 .\scripts\dev\Test-Repository.ps1
 ```
 
+Install the Ansible collections used by the roles:
+
+```bash
+ansible-galaxy collection install -r ansible/requirements.yml
+```
+
 ```bash
 ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml
 ```
@@ -72,6 +78,9 @@ service manager and package tooling are available on the remote system.
 
 Set `node_deploy_windows_winsw_source` to a trusted local artifact path; this
 repository does not bundle service-wrapper executables.
+
+Install `ansible/requirements.yml` on control nodes that run the playbook or
+local syntax checks. The Windows role uses the `ansible.windows` collection.
 
 Set `node_deploy_linux_install_dependencies: true` only when the playbook is
 allowed to modify OS packages. Node.js itself should still come from your
