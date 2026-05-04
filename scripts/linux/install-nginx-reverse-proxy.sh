@@ -1,36 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=scripts/linux/common.sh
+source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-config/linux/app.env}"
+CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
 if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config not found: $CONFIG_FILE" >&2; exit 1; fi
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi
 if ! command -v nginx >/dev/null 2>&1; then echo "nginx is not installed. Install nginx first, then rerun this script." >&2; exit 1; fi
-reload_service() {
-  local service_name="$1"
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${service_name}.service" >/dev/null 2>&1; then
-    systemctl reload "$service_name" || systemctl restart "$service_name"
-  elif command -v rc-service >/dev/null 2>&1; then
-    rc-service "$service_name" reload || rc-service "$service_name" restart
-  elif command -v service >/dev/null 2>&1; then
-    service "$service_name" reload || service "$service_name" restart
-  elif [[ -x "/etc/init.d/$service_name" ]]; then
-    "/etc/init.d/$service_name" reload || "/etc/init.d/$service_name" restart
-  else
-    echo "Nginx config installed, but no service control command was found. Reload Nginx manually." >&2
-  fi
-}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
 TEMPLATE="$REPO_ROOT/templates/linux/nginx-site.conf.tpl"
-OUT="/etc/nginx/conf.d/${NGINX_SITE_NAME}.conf"
-mkdir -p "$LOG_DIR"
-sed \
-  -e "s|{{PUBLIC_HOSTNAME}}|${PUBLIC_HOSTNAME}|g" \
-  -e "s|{{APP_PORT}}|${APP_PORT}|g" \
-  -e "s|{{HEALTH_URL}}|${HEALTH_URL}|g" \
-  -e "s|{{LOG_DIR}}|${LOG_DIR}|g" \
-  "$TEMPLATE" > "$OUT"
-nginx -t
-reload_service nginx
+if [[ -z "${NGINX_CONFIG_DIR:-}" ]]; then
+  case "$(detect_platform_family)" in
+    freebsd|openbsd|netbsd) NGINX_CONFIG_DIR="/usr/local/etc/nginx/conf.d" ;;
+    macos)
+      if [[ -d /opt/homebrew/etc/nginx/servers ]]; then
+        NGINX_CONFIG_DIR="/opt/homebrew/etc/nginx/servers"
+      else
+        NGINX_CONFIG_DIR="/usr/local/etc/nginx/servers"
+      fi
+      ;;
+    *) NGINX_CONFIG_DIR="/etc/nginx/conf.d" ;;
+  esac
+fi
+OUT="${NGINX_CONFIG_DIR}/${NGINX_SITE_NAME}.conf"
+mkdir -p "$LOG_DIR" "$NGINX_CONFIG_DIR"
+render_template_file "$TEMPLATE" "$OUT" \
+  PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
+  APP_PORT "$APP_PORT" \
+  HEALTH_URL "$HEALTH_URL" \
+  LOG_DIR "$LOG_DIR"
+backup_path="$LAST_BACKUP_PATH"
+if ! nginx -t; then
+  restore_file_from_backup "$backup_path" "$OUT"
+  exit 1
+fi
+reload_or_restart_service "${NGINX_SERVICE:-nginx}" "Nginx"
 echo "Installed Nginx reverse proxy: $OUT"

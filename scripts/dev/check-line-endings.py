@@ -8,6 +8,7 @@ CHECKED_GLOBS = [
     "deploy.sh",
     "scripts/dev/*.sh",
     "scripts/linux/*.sh",
+    "scripts/linux/lib/*.sh",
     "config/linux/*.env.example",
     "templates/linux/*",
     "ansible/roles/linux_node_service/templates/*",

@@ -8,7 +8,7 @@ patterns = [
     re.compile(r"(?i)(password|secret|token|apikey|api_key)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}"),
     re.compile(r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 ]
-ignore_dirs = {".git", "node_modules", ".next", "dist", "build"}
+ignore_dirs = {".git", ".tmp", "node_modules", ".next", "dist", "build"}
 failed = False
 for path in root.rglob("*"):
     if path.is_dir() or any(part in ignore_dirs for part in path.parts):

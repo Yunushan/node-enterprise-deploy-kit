@@ -19,6 +19,7 @@ config/linux/app.env
 *.crt
 *.csr
 logs/
+.tmp/
 *.log
 *.out
 *.err

@@ -68,6 +68,44 @@ function Format-Uptime {
         return ""
     }
 }
+function Format-OptionalUtc {
+    param($Value)
+    if (-not $Value) { return "" }
+    try {
+        return ([DateTime]::Parse([string]$Value).ToLocalTime()).ToString("yyyy-MM-dd HH:mm:ss")
+    } catch {
+        return [string]$Value
+    }
+}
+function Get-ConfigInt($Config, [string]$Name, [int]$Default) {
+    if ($Config.PSObject.Properties[$Name] -and $Config.$Name) {
+        try { return [int]$Config.$Name } catch {}
+    }
+    return $Default
+}
+function Get-BackupDirectory($Config) {
+    if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
+        return [string]$Config.BackupDirectory
+    }
+    if ($Config.PSObject.Properties["ServiceDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.ServiceDirectory)) {
+        return (Join-Path $Config.ServiceDirectory "backups")
+    }
+    return ""
+}
+function Get-HealthLogSummary([string]$Path) {
+    if (-not (Test-Path $Path)) { return $null }
+    $lines = @(Get-Content -Path $Path -Tail 2000 -ErrorAction SilentlyContinue)
+    [pscustomobject]@{
+        Path = $Path
+        LastWriteTime = (Get-Item $Path).LastWriteTime
+        LinesSampled = $lines.Count
+        Ok = @($lines | Where-Object { $_ -match '\sOK\s' }).Count
+        Failed = @($lines | Where-Object { $_ -match '\sFAILED|FAILED_THRESHOLD|EXCEPTION|BAD_STATUS|SERVICE_NOT_RUNNING' }).Count
+        Restarted = @($lines | Where-Object { $_ -match 'RESTARTING_SERVICE|SERVICE_NOT_RUNNING' }).Count
+        RestartSuppressed = @($lines | Where-Object { $_ -match 'RESTART_SUPPRESSED_COOLDOWN' }).Count
+        RetentionRemoved = @($lines | Where-Object { $_ -match 'RETENTION_REMOVED' }).Count
+    }
+}
 
 Write-Host "Status for: $serviceName" -ForegroundColor Cyan
 Write-Host "Config: $ConfigPath"
@@ -159,6 +197,51 @@ if ($healthUrl) {
 }
 
 Write-Host ""
+Write-Host "Health check task" -ForegroundColor Yellow
+$taskName = "$serviceName-HealthCheck"
+$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($task) {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($taskInfo) {
+        $taskInfo |
+            Select-Object TaskName, LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns |
+            Format-Table -AutoSize
+    } else {
+        $task | Select-Object TaskName, State | Format-Table -AutoSize
+    }
+} else {
+    Write-Warning "Health check scheduled task not found: $taskName"
+}
+
+Write-Host ""
+Write-Host "Health history" -ForegroundColor Yellow
+$statePath = if ($config.LogDirectory) { Join-Path $config.LogDirectory "healthcheck.state.json" } else { "" }
+if ($statePath -and (Test-Path $statePath)) {
+    try {
+        $state = Get-Content $statePath -Raw | ConvertFrom-Json
+        [pscustomobject]@{
+            ConsecutiveFailures = $state.ConsecutiveFailures
+            LastCheck = Format-OptionalUtc $state.LastCheckUtc
+            LastSuccess = Format-OptionalUtc $state.LastSuccessUtc
+            LastFailure = Format-OptionalUtc $state.LastFailureUtc
+            LastRestart = Format-OptionalUtc $state.LastRestartUtc
+        } | Format-Table -AutoSize
+    } catch {
+        Write-Warning "Could not read health state file: $statePath"
+    }
+} else {
+    Write-Warning "Health state file not found yet."
+}
+
+$healthLogPath = if ($config.LogDirectory) { Join-Path $config.LogDirectory "healthcheck.log" } else { "" }
+$healthLogSummary = if ($healthLogPath) { Get-HealthLogSummary $healthLogPath } else { $null }
+if ($healthLogSummary) {
+    $healthLogSummary | Format-Table -AutoSize
+} else {
+    Write-Warning "Health check log not found yet."
+}
+
+Write-Host ""
 Write-Host "Recent log files" -ForegroundColor Yellow
 if ($config.LogDirectory -and (Test-Path $config.LogDirectory)) {
     Get-ChildItem $config.LogDirectory -File -ErrorAction SilentlyContinue |
@@ -167,4 +250,22 @@ if ($config.LogDirectory -and (Test-Path $config.LogDirectory)) {
         Format-Table -AutoSize
 } else {
     Write-Warning "Log directory not found or not configured."
+}
+
+Write-Host ""
+Write-Host "Retention and backups" -ForegroundColor Yellow
+$backupDirectory = Get-BackupDirectory $config
+[pscustomobject]@{
+    LogRetentionDays = Get-ConfigInt $config "LogRetentionDays" 30
+    BackupRetentionDays = Get-ConfigInt $config "BackupRetentionDays" 90
+    DiagnosticRetentionDays = Get-ConfigInt $config "DiagnosticRetentionDays" 14
+    BackupDirectory = $backupDirectory
+} | Format-List
+if ($backupDirectory -and (Test-Path $backupDirectory)) {
+    Get-ChildItem $backupDirectory -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 10 FullName, LastWriteTime, Length |
+        Format-Table -AutoSize
+} else {
+    Write-Warning "Backup directory not found yet."
 }

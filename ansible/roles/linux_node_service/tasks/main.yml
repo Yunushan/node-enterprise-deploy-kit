@@ -2,76 +2,76 @@
 - name: Normalize Linux service manager
   ansible.builtin.set_fact:
     node_deploy_linux_service_manager_normalized: "{{ node_deploy_linux_service_manager | default('systemd') | lower | regex_replace('_', '-') }}"
+    node_deploy_linux_reverse_proxy_normalized: "{{ node_deploy_linux_reverse_proxy | default('none') | lower | regex_replace('_', '-') }}"
+    node_deploy_app_runtime_normalized: "{{ node_deploy_app_runtime | default('node') | lower | regex_replace('_', '-') }}"
 
 - name: Validate Linux service manager
   ansible.builtin.fail:
-    msg: "Unsupported node_deploy_linux_service_manager={{ node_deploy_linux_service_manager }}. Use systemd, systemv, or openrc."
-  when: node_deploy_linux_service_manager_normalized not in ['systemd', 'systemv', 'sysv', 'sysvinit', 'initd', 'init-d', 'openrc']
+    msg: "Unsupported node_deploy_linux_service_manager={{ node_deploy_linux_service_manager }}. Use systemd, systemv, openrc, launchd, or bsdrc."
+  when: node_deploy_linux_service_manager_normalized not in ['systemd', 'systemv', 'sysv', 'sysvinit', 'initd', 'init-d', 'openrc', 'launchd', 'bsdrc', 'bsd-rc', 'rcd', 'rc.d']
 
-- name: Ensure service group exists
-  ansible.builtin.group:
-    name: "{{ node_deploy_linux_service_group }}"
-    system: true
+- name: Validate Linux reverse proxy
+  ansible.builtin.fail:
+    msg: "Unsupported node_deploy_linux_reverse_proxy={{ node_deploy_linux_reverse_proxy }}. Use nginx, apache, haproxy, traefik, or none."
+  when: node_deploy_linux_reverse_proxy_normalized not in ['nginx', 'apache', 'httpd', 'haproxy', 'traefik', 'none', '']
 
-- name: Ensure service user exists
-  ansible.builtin.user:
-    name: "{{ node_deploy_linux_service_user }}"
-    group: "{{ node_deploy_linux_service_group }}"
-    system: true
-    shell: "{{ '/sbin/nologin' if ansible_os_family == 'Alpine' else '/usr/sbin/nologin' }}"
-    home: "{{ node_deploy_app_dir_linux }}"
+- name: Validate application runtime
+  ansible.builtin.fail:
+    msg: "Unsupported node_deploy_app_runtime={{ node_deploy_app_runtime | default('node') }}. Use node or tomcat."
+  when: node_deploy_app_runtime_normalized not in ['node', 'tomcat', 'apache-tomcat']
 
-- name: Ensure directories exist
+- name: Ensure Linux deployment support directories exist
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ item.owner }}"
-    group: "{{ item.group }}"
-    mode: "{{ item.mode }}"
+    mode: "0755"
   loop:
-    - { path: "{{ node_deploy_app_dir_linux }}", owner: "{{ node_deploy_linux_service_user }}", group: "{{ node_deploy_linux_service_group }}", mode: "0750" }
-    - { path: "{{ node_deploy_linux_log_dir }}", owner: "{{ node_deploy_linux_service_user }}", group: "{{ node_deploy_linux_service_group }}", mode: "0750" }
+    - "{{ node_deploy_linux_deploy_dir }}"
+    - "{{ node_deploy_linux_deploy_dir }}/scripts/linux"
+    - "{{ node_deploy_linux_deploy_dir }}/templates/linux"
+    - "{{ node_deploy_linux_config_path | dirname }}"
 
-- name: Render environment file
+- name: Copy Linux deployment entrypoint
+  ansible.builtin.copy:
+    src: "../../../../deploy.sh"
+    dest: "{{ node_deploy_linux_deploy_dir }}/deploy.sh"
+    mode: "0755"
+
+- name: Copy Linux deployment scripts
+  ansible.builtin.copy:
+    src: "../../../../scripts/linux/"
+    dest: "{{ node_deploy_linux_deploy_dir }}/scripts/linux/"
+    mode: "0755"
+    directory_mode: "0755"
+
+- name: Copy Linux templates
+  ansible.builtin.copy:
+    src: "../../../../templates/linux/"
+    dest: "{{ node_deploy_linux_deploy_dir }}/templates/linux/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Render Linux deployment config
   ansible.builtin.template:
-    src: app.env.j2
-    dest: "/etc/{{ node_deploy_project_name }}.env"
+    src: deploy.env.j2
+    dest: "{{ node_deploy_linux_config_path }}"
     owner: root
-    group: "{{ node_deploy_linux_service_group }}"
+    group: root
     mode: "0640"
 
-- name: Render systemd unit
-  ansible.builtin.template:
-    src: node-app.service.j2
-    dest: "/etc/systemd/system/{{ node_deploy_project_name }}.service"
-    mode: "0644"
-  when: node_deploy_linux_service_manager_normalized == 'systemd'
+- name: Optionally install Linux dependencies
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ node_deploy_linux_deploy_dir }}/scripts/linux/install-dependencies.sh"
+      - "{{ node_deploy_linux_config_path }}"
+  when: node_deploy_linux_install_dependencies | default(false) | bool
+  changed_when: true
 
-- name: Enable and restart systemd service
-  ansible.builtin.systemd:
-    name: "{{ node_deploy_project_name }}"
-    enabled: true
-    state: restarted
-    daemon_reload: true
-  when: node_deploy_linux_service_manager_normalized == 'systemd'
-
-- name: Render System V init script
-  ansible.builtin.template:
-    src: node-app.sysv.j2
-    dest: "/etc/init.d/{{ node_deploy_project_name }}"
-    mode: "0755"
-  when: node_deploy_linux_service_manager_normalized in ['systemv', 'sysv', 'sysvinit', 'initd', 'init-d']
-
-- name: Render OpenRC init script
-  ansible.builtin.template:
-    src: node-app.openrc.j2
-    dest: "/etc/init.d/{{ node_deploy_project_name }}"
-    mode: "0755"
-  when: node_deploy_linux_service_manager_normalized == 'openrc'
-
-- name: Enable and restart init service
-  ansible.builtin.service:
-    name: "{{ node_deploy_project_name }}"
-    enabled: true
-    state: restarted
-  when: node_deploy_linux_service_manager_normalized != 'systemd'
+- name: Deploy Linux Node app using local orchestrator
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ node_deploy_linux_deploy_dir }}/deploy.sh"
+      - "{{ node_deploy_linux_config_path }}"
+  changed_when: true

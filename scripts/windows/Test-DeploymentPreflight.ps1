@@ -145,8 +145,19 @@ if (-not $SkipReverseProxy) {
     switch ($reverseProxy) {
         "iis" {
             Test-RequiredString $config "IisSitePath"
+            if ($config.PSObject.Properties["PublicPort"] -and $config.PublicPort) {
+                $publicPort = 0
+                if (-not [int]::TryParse([string]$config.PublicPort, [ref]$publicPort) -or $publicPort -lt 1 -or $publicPort -gt 65535) {
+                    Add-Error "PublicPort must be an integer between 1 and 65535."
+                }
+            }
             if (-not (Get-Module -ListAvailable -Name WebAdministration)) {
                 Add-Warning "IIS WebAdministration module was not found. IIS site/app-pool automation may not be available."
+            }
+            if ($config.PSObject.Properties["TlsEnabled"] -and [bool]$config.TlsEnabled) {
+                if (-not $config.PSObject.Properties["IisCertificateThumbprint"] -or [string]::IsNullOrWhiteSpace([string]$config.IisCertificateThumbprint)) {
+                    Add-Warning "TlsEnabled is true but IisCertificateThumbprint is empty. The IIS script will warn and leave certificate binding for manual setup."
+                }
             }
         }
         "none" {}
@@ -161,6 +172,19 @@ if (-not $SkipHealthCheck) {
     $interval = 0
     if (-not [int]::TryParse([string]$config.HealthCheckIntervalMinutes, [ref]$interval) -or $interval -lt 1) {
         Add-Warning "HealthCheckIntervalMinutes is missing or below 1. The installer will use 1 minute."
+    }
+    foreach ($check in @(
+        @{ Name = "HealthCheckFailureThreshold"; Default = 2 },
+        @{ Name = "HealthCheckRestartCooldownMinutes"; Default = 5 },
+        @{ Name = "HealthCheckTimeoutSeconds"; Default = 10 }
+    )) {
+        $property = $config.PSObject.Properties[$check.Name]
+        if ($property -and $property.Value) {
+            $value = 0
+            if (-not [int]::TryParse([string]$property.Value, [ref]$value) -or $value -lt 1) {
+                Add-Warning "$($check.Name) should be an integer >= 1. Default will be used by health checks if invalid."
+            }
+        }
     }
 }
 

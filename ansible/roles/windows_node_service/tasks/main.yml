@@ -9,6 +9,15 @@
     path: "{{ node_deploy_windows_log_dir }}"
     state: directory
 
+- name: Ensure Windows deployment support directories exist
+  ansible.windows.win_file:
+    path: "{{ node_deploy_windows_service_dir }}\\{{ item }}"
+    state: directory
+  loop:
+    - scripts\\windows
+    - templates\\windows
+    - tools\\winsw
+
 - name: Render Windows app config
   ansible.windows.win_template:
     src: app.config.json.j2
@@ -17,15 +26,42 @@
 - name: Copy deployment scripts
   ansible.windows.win_copy:
     src: "../../../../scripts/windows/"
-    dest: "{{ node_deploy_windows_service_dir }}\\scripts\\"
+    dest: "{{ node_deploy_windows_service_dir }}\\scripts\\windows\\"
 
-- name: Reminder for WinSW
-  ansible.builtin.debug:
-    msg: "Place WinSW executable in tools/winsw or adapt role to download from your internal artifact repository."
+- name: Copy Windows templates
+  ansible.windows.win_copy:
+    src: "../../../../templates/windows/"
+    dest: "{{ node_deploy_windows_service_dir }}\\templates\\windows\\"
 
-- name: Install service using local script
+- name: Copy Windows deployment orchestrator
+  ansible.windows.win_copy:
+    src: "../../../../deploy.ps1"
+    dest: "{{ node_deploy_windows_service_dir }}\\deploy.ps1"
+
+- name: Require WinSW source for WinSW deployments
+  ansible.builtin.fail:
+    msg: "Set node_deploy_windows_winsw_source to a controller-side WinSW executable from your trusted artifact source."
+  when:
+    - node_deploy_windows_service_manager == 'winsw'
+    - node_deploy_windows_winsw_source | default('') | length == 0
+
+- name: Copy WinSW executable
+  ansible.windows.win_copy:
+    src: "{{ node_deploy_windows_winsw_source }}"
+    dest: "{{ node_deploy_windows_service_dir }}\\tools\\winsw\\winsw-x64.exe"
+  when:
+    - node_deploy_windows_service_manager == 'winsw'
+    - node_deploy_windows_winsw_source | default('') | length > 0
+
+- name: Deploy Windows Node app using local orchestrator
   ansible.windows.win_shell: >
-    powershell.exe -ExecutionPolicy Bypass -File "{{ node_deploy_windows_service_dir }}\\scripts\\Install-NodeService.ps1"
+    powershell.exe -ExecutionPolicy Bypass -File "{{ node_deploy_windows_service_dir }}\\deploy.ps1"
     -ConfigPath "{{ node_deploy_windows_service_dir }}\\app.config.json"
+    {% if node_deploy_skip_preflight | default(false) | bool %}-SkipPreflight{% endif %}
+    {% if node_deploy_allow_port_in_use | default(false) | bool %}-AllowPortInUse{% endif %}
+    {% if node_deploy_skip_reverse_proxy | default(false) | bool %}-SkipReverseProxy{% endif %}
+    {% if (node_deploy_skip_health_check | default(false) | bool) or not (node_deploy_healthcheck_enabled | default(true) | bool) %}-SkipHealthCheck{% endif %}
+    {% if node_deploy_skip_install | default(false) | bool %}-SkipInstall{% endif %}
+    {% if node_deploy_skip_build | default(false) | bool %}-SkipBuild{% endif %}
   args:
     executable: cmd

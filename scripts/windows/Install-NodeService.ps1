@@ -38,6 +38,44 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
         throw "$Action failed with exit code $LASTEXITCODE."
     }
 }
+function Get-BackupDirectory($Config) {
+    if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
+        return [string]$Config.BackupDirectory
+    }
+    return (Join-Path $Config.ServiceDirectory "backups")
+}
+function Backup-FileIfExists([string]$Path, [string]$BackupDirectory) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    New-Item -ItemType Directory -Force -Path $BackupDirectory | Out-Null
+    $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss")
+    $backupPath = Join-Path $BackupDirectory ("{0}.{1}.{2}.bak" -f ([System.IO.Path]::GetFileName($Path)), $timestamp, $PID)
+    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    Write-Host "Backed up $Path to $backupPath"
+    return $backupPath
+}
+function Test-FileContentEqual([string]$Path, [string]$Content) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    return ([System.IO.File]::ReadAllText($Path) -eq $Content)
+}
+function Set-TextFileWithBackup([string]$Path, [string]$Content, [string]$BackupDirectory) {
+    if (Test-FileContentEqual -Path $Path -Content $Content) {
+        Write-Host "Unchanged: $Path"
+        return
+    }
+    [void](Backup-FileIfExists -Path $Path -BackupDirectory $BackupDirectory)
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Updated: $Path"
+}
+function Copy-FileWithBackup([string]$Source, [string]$Destination, [string]$BackupDirectory) {
+    if ((Test-Path -LiteralPath $Destination -PathType Leaf) -and
+        ((Get-FileHash -LiteralPath $Source).Hash -eq (Get-FileHash -LiteralPath $Destination).Hash)) {
+        Write-Host "Unchanged: $Destination"
+        return
+    }
+    [void](Backup-FileIfExists -Path $Destination -BackupDirectory $BackupDirectory)
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    Write-Host "Updated: $Destination"
+}
 function Stop-ExistingService([string]$Name, [string]$WrapperPath) {
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if (-not $service) { return $false }
@@ -101,11 +139,16 @@ if (-not (Test-Path $winswCandidate)) {
 
 New-Item -ItemType Directory -Force -Path $config.ServiceDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
+$backupDirectory = Get-BackupDirectory $config
+New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
 
 $serviceExe = Join-Path $config.ServiceDirectory "$($config.AppName).exe"
 $serviceXml = Join-Path $config.ServiceDirectory "$($config.AppName).xml"
 Assert-ServicePathCompatible -Name $config.AppName -ExpectedWrapperPath $serviceExe
-$serviceExists = Stop-ExistingService -Name $config.AppName -WrapperPath $serviceExe
+$serviceExists = $null -ne (Get-Service -Name $config.AppName -ErrorAction SilentlyContinue)
+if ($serviceExists -and $PSCmdlet.ShouldProcess($config.AppName, "Stop existing Windows Service for update")) {
+    [void](Stop-ExistingService -Name $config.AppName -WrapperPath $serviceExe)
+}
 
 $envBlock = ""
 if ($config.Environment) {
@@ -131,8 +174,12 @@ $values = @{
 }
 $xml = Replace-Token $template $values
 [void]([xml]$xml)
-Copy-Item $winswCandidate $serviceExe -Force
-$xml | Set-Content -Path $serviceXml -Encoding UTF8
+if ($PSCmdlet.ShouldProcess($serviceExe, "Update WinSW executable")) {
+    Copy-FileWithBackup -Source $winswCandidate -Destination $serviceExe -BackupDirectory $backupDirectory
+}
+if ($PSCmdlet.ShouldProcess($serviceXml, "Write WinSW XML")) {
+    Set-TextFileWithBackup -Path $serviceXml -Content $xml -BackupDirectory $backupDirectory
+}
 
 if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
     if ($serviceExists) {

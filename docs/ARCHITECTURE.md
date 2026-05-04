@@ -7,14 +7,14 @@ Internet / LAN users
         |
         v
 TLS reverse proxy
-IIS on Windows or Nginx/Apache on Linux
+IIS on Windows or Nginx/Apache/HAProxy/Traefik on Unix-like hosts
         |
         v
 http://127.0.0.1:<app_port>
         |
         v
-Node.js app as managed service
-WinSW on Windows or systemd/System V/OpenRC on Linux
+Node.js app as managed service, or Tomcat WAR deployment
+WinSW on Windows or systemd/System V/OpenRC/launchd/bsdrc on Unix-like hosts
         |
         v
 rotated logs + health check + monitoring
@@ -37,12 +37,13 @@ Recommended Windows components:
 
 ## Linux Service Design
 
-Recommended Linux components:
+Recommended Unix-like components:
 
-- systemd, System V, or OpenRC service.
-- Nginx or Apache as TLS/reverse proxy frontend.
+- systemd, System V, OpenRC, launchd, or BSD rc service.
+- Nginx, Apache, HAProxy, or Traefik as TLS/reverse proxy frontend.
+- Optional Tomcat WAR deployment when `APP_RUNTIME=tomcat`.
 - systemd timer health check on systemd hosts.
-- Cron or external monitoring for health checks on System V/OpenRC hosts.
+- Cron or external monitoring for health checks on non-systemd hosts.
 - Logs under `/var/log/<app-name>`.
 - App under `/opt/<app-name>`.
 

@@ -38,19 +38,25 @@ machines.
 
 ## Steps
 
-1. Copy config:
+1. Verify the repository before deploying:
+
+```powershell
+.\scripts\dev\Test-Repository.ps1
+```
+
+2. Copy config:
 
 ```powershell
 Copy-Item config\windows\app.config.example.json config\windows\app.config.json
 ```
 
-2. Edit config:
+3. Edit config:
 
 ```powershell
 notepad config\windows\app.config.json
 ```
 
-3. Place WinSW executable:
+4. Place WinSW executable:
 
 ```text
 tools\winsw\winsw-x64.exe
@@ -58,7 +64,7 @@ tools\winsw\winsw-x64.exe
 
 No service wrapper binaries are bundled in this repository.
 
-4. Install using the one-command Windows wrapper:
+5. Install using the one-command Windows wrapper:
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
@@ -75,6 +81,12 @@ The default install flow is:
 preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
 ```
 
+When `ReverseProxy` is `iis`, the IIS installer writes `web.config`, configures
+an always-running app pool, creates or updates the IIS site, and adds the
+configured HTTP/HTTPS binding. If `TlsEnabled` is true and
+`IisCertificateThumbprint` is empty or unavailable, certificate binding remains
+an explicit manual step and the script prints a warning.
+
 Use these switches when needed:
 
 ```powershell
@@ -86,7 +98,7 @@ Use these switches when needed:
 Preflight treats the configured service's own existing listener as a warning,
 so normal service updates should not need `-AllowPortInUse`.
 
-5. Optional lower-level commands:
+6. Optional lower-level commands:
 
 ```powershell
 .\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json
@@ -96,7 +108,7 @@ so normal service updates should not need `-AllowPortInUse`.
 .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-6. Verify:
+7. Verify:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
@@ -106,7 +118,12 @@ The status command reports service state, node processes, configured port
 listeners, HTTP health, and recent log file metadata without printing
 environment variables or log contents.
 
-7. Restart or uninstall:
+Managed file updates create timestamped backups in `BackupDirectory` before
+replacing existing WinSW XML/exe files, IIS `web.config`, or the scheduled
+health-check task definition. If `BackupDirectory` is not set, the scripts use
+`<ServiceDirectory>\backups`.
+
+8. Restart or uninstall:
 
 ```powershell
 .\restart.ps1 -ConfigPath .\config\windows\app.config.json
@@ -116,6 +133,12 @@ environment variables or log contents.
 The WinSW template and installer set the service startup mode to `Automatic`,
 so the app is expected to start again after a Windows reboot as long as the
 service installation succeeds and the configured app path is still valid.
+
+The scheduled health check uses `HealthCheckFailureThreshold` and
+`HealthCheckRestartCooldownMinutes` to avoid restart loops during short outages.
+It also records state under `LogDirectory` and prunes old managed logs,
+diagnostics, and backups using `LogRetentionDays`, `DiagnosticRetentionDays`,
+and `BackupRetentionDays`.
 
 ## Service Recovery
 

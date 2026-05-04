@@ -1,7 +1,9 @@
 ---
 node_deploy_project_name: example-node-app
 node_deploy_display_name: Example Node App
+node_deploy_description: Example Node.js production service
 node_deploy_mode: reverse_proxy
+node_deploy_app_runtime: node
 node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
 node_deploy_app_dir_linux: /opt/example-node-app
 node_deploy_start_script: server.js
@@ -11,22 +13,78 @@ node_deploy_health_url: http://127.0.0.1:3000/health
 node_deploy_install_command: npm ci --omit=dev
 node_deploy_build_command: npm run build
 node_deploy_node_arguments: ""
+node_deploy_skip_preflight: false
+node_deploy_allow_port_in_use: false
+node_deploy_skip_install: false
+node_deploy_skip_build: false
+node_deploy_skip_reverse_proxy: false
+node_deploy_skip_health_check: false
 node_deploy_windows_service_manager: winsw
 node_deploy_windows_node_exe: C:\Program Files\nodejs\node.exe
 node_deploy_windows_service_dir: C:\services\ExampleNodeApp
 node_deploy_windows_log_dir: C:\logs\ExampleNodeApp
+node_deploy_windows_backup_dir: C:\services\ExampleNodeApp\backups
 node_deploy_windows_reverse_proxy: iis
 node_deploy_windows_iis_site_path: C:\inetpub\wwwroot\ExampleNodeApp
+node_deploy_windows_iis_site_name: ExampleNodeApp
+node_deploy_windows_iis_app_pool_name: ExampleNodeApp-AppPool
+node_deploy_windows_iis_certificate_thumbprint: ""
+node_deploy_windows_service_account: LocalSystem
+node_deploy_windows_winsw_source: ""
+node_deploy_failure_restart_delay_seconds: 60
 node_deploy_linux_service_manager: systemd
+node_deploy_linux_deploy_dir: /opt/node-enterprise-deploy-kit
+node_deploy_linux_config_path: /etc/node-enterprise-deploy-kit/example-node-app.env
+node_deploy_linux_env_file: /etc/example-node-app/example-node-app.env
+node_deploy_linux_install_dependencies: false
 node_deploy_linux_node_bin: /usr/bin/node
 node_deploy_linux_service_user: nodeapp
 node_deploy_linux_service_group: nodeapp
 node_deploy_linux_log_dir: /var/log/example-node-app
+node_deploy_linux_backup_dir: /var/backups/example-node-app
 node_deploy_linux_reverse_proxy: nginx
+node_deploy_linux_nginx_site_name: example-node-app
+node_deploy_linux_nginx_config_dir: ""
+node_deploy_linux_nginx_service: nginx
+node_deploy_linux_apache_site_name: example-node-app
+node_deploy_linux_apache_config_dir: ""
+node_deploy_linux_apache_service: ""
+node_deploy_linux_haproxy_config_file: /etc/haproxy/haproxy.cfg
+node_deploy_linux_haproxy_bind: "*:80"
+node_deploy_linux_haproxy_frontend_name: example-node-app_frontend
+node_deploy_linux_haproxy_backend_name: example-node-app_backend
+node_deploy_linux_haproxy_service: haproxy
+node_deploy_linux_traefik_dynamic_dir: /etc/traefik/dynamic
+node_deploy_linux_traefik_dynamic_file: /etc/traefik/dynamic/example-node-app.yml
+node_deploy_linux_traefik_entrypoint: web
+node_deploy_linux_traefik_router_name: example-node-app-router
+node_deploy_linux_traefik_service_name: example-node-app-service
+node_deploy_linux_traefik_service: traefik
+node_deploy_linux_healthcheck_path: /health
+node_deploy_tomcat_package: ""
+node_deploy_tomcat_service: tomcat
+node_deploy_tomcat_webapps_dir: /var/lib/tomcat/webapps
+node_deploy_tomcat_war_file: ""
+node_deploy_tomcat_context_path: /example-node-app
+node_deploy_tomcat_restart: true
+node_deploy_linux_nginx_package: nginx
+node_deploy_linux_apache_package: ""
+node_deploy_linux_haproxy_package: haproxy
+node_deploy_linux_traefik_package: traefik
+node_deploy_linux_runtime_env_keys: []
 node_deploy_public_hostname: app.example.local
+node_deploy_public_port: 443
 node_deploy_tls_enabled: true
 node_deploy_healthcheck_enabled: true
+node_deploy_healthcheck_interval: 60
 node_deploy_healthcheck_interval_minutes: 1
+node_deploy_healthcheck_failure_threshold: 2
+node_deploy_healthcheck_restart_cooldown_minutes: 5
+node_deploy_healthcheck_restart_cooldown_seconds: 300
+node_deploy_healthcheck_timeout_seconds: 10
+node_deploy_log_retention_days: 30
+node_deploy_backup_retention_days: 90
+node_deploy_diagnostic_retention_days: 14
 node_deploy_environment:
   NODE_ENV: production
   APP_NAME: example-node-app
