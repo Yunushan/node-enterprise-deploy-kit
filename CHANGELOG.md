@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Hardened WinSW service environment defaults and Windows service account handling.
+- Hardened IIS reverse proxy rendering with ARR proxy setup, forwarded headers, health proxy path, WebSocket checks, and timeout validation.
+- Improved Windows status and diagnostics with host uptime, service uptime thresholds, port ownership proof, health latency, health-check freshness, and operational verdicts.
+- Added Windows managed-backup listing and rollback helpers for WinSW files, IIS web.config, and scheduled health-check task exports.
+- Added release package hygiene checks, sanitized release zip builder, deterministic Ansible syntax settings, and CI Ansible tooling setup.
+- Added Windows and Linux preflight hardening warnings for public bind addresses, plaintext proxy paths, broad service accounts, user-profile runtime paths, and secret-like runtime key names.
+- Added documentation consistency checks for local Markdown links, README anchors, and documented release entrypoints.
 - Added Linux Apache reverse proxy installer and virtual host template.
 - Added HAProxy and Traefik reverse proxy installers and templates.
 - Added Apache Tomcat WAR deployment mode.

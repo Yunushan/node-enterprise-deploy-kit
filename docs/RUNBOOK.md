@@ -25,6 +25,9 @@ Repository verification:
 .\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json
 .\install.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\scripts\windows\Diagnose-NodeApp.ps1 -ConfigPath .\config\windows\app.config.json
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
 Get-ScheduledTaskInfo -TaskName <AppName>-HealthCheck
 Get-Service <AppName>
 Restart-Service <AppName>
@@ -71,6 +74,10 @@ Rollback helpers:
 
 ```powershell
 Get-ChildItem C:\services\<AppName>\backups | Sort-Object LastWriteTime -Descending | Select-Object -First 10
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target ServiceXml -Latest -RestartService
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target IisWebConfig -Latest -RecycleIisAppPool
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -FailOnCritical
 ```
 
 ```bash
@@ -81,7 +88,13 @@ Long-running health checks:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
 ```
+
+For Windows, treat the deployment as healthy only when the operational verdict
+has no critical findings, the service is running with automatic startup, the
+configured port is owned by the configured service process tree, the HTTP health
+probe succeeds, and the scheduled health check has a recent successful run.
 
 ```bash
 sudo cat /var/log/<app-name>/healthcheck.state

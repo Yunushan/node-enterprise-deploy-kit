@@ -25,7 +25,13 @@
   "PublicPort": 443,
   "TlsEnabled": true,
   "IisCertificateThumbprint": "",
-  "ServiceAccount": "LocalSystem",
+  "IisEnableArrProxy": true,
+  "IisSetForwardedHeaders": true,
+  "IisHealthProxyPath": "health",
+  "IisWebSocketSupport": true,
+  "IisProxyTimeoutSeconds": 300,
+  "ServiceAccount": "NetworkService",
+  "ServiceAccountPassword": "",
   "FailureRestartDelaySeconds": 60,
   "HealthCheckFailureThreshold": 2,
   "HealthCheckRestartCooldownMinutes": 5,
@@ -36,6 +42,10 @@
   "Environment": {
     "NODE_ENV": "production",
     "PORT": "3000",
-    "APP_NAME": "ExampleNodeApp"
+    "APP_PORT": "3000",
+    "APP_NAME": "ExampleNodeApp",
+    "BIND_ADDRESS": "127.0.0.1",
+    "HOST": "127.0.0.1",
+    "HOSTNAME": "127.0.0.1"
   }
 }

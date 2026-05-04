@@ -168,10 +168,20 @@ function Test-SampleConfigsAndTemplates {
   & (Join-Path $ScriptDir "Test-SampleConfigs.ps1")
 }
 
+function Test-ReleasePackageHygiene {
+  & (Join-Path $ScriptDir "Test-ReleasePackage.ps1")
+}
+
+function Test-DocsConsistency {
+  & (Join-Path $ScriptDir "Test-DocsConsistency.ps1")
+}
+
 Test-PowerShellSyntax
 Test-LineEndings
 Test-ShellSyntax
 Test-SampleConfigsAndTemplates
+Test-ReleasePackageHygiene
+Test-DocsConsistency
 Test-NoObviousSecrets
 Test-GitDiffCheck
 

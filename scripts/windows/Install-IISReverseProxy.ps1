@@ -21,6 +21,75 @@ function Get-ConfigValue($Config, [string]$Name, $Default) {
     }
     return $Default
 }
+function Get-ConfigBool($Config, [string]$Name, [bool]$Default) {
+    if (-not $Config.PSObject.Properties[$Name] -or $null -eq $Config.$Name) {
+        return $Default
+    }
+    if ($Config.$Name -is [bool]) {
+        return [bool]$Config.$Name
+    }
+
+    $text = ([string]$Config.$Name).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $Default
+    }
+    switch ($text) {
+        "true" { return $true }
+        "1" { return $true }
+        "yes" { return $true }
+        "false" { return $false }
+        "0" { return $false }
+        "no" { return $false }
+        default { throw "$Name must be true or false." }
+    }
+}
+function Get-ConfigInt($Config, [string]$Name, [int]$Default, [int]$Minimum) {
+    $value = $Default
+    if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
+        if (-not [int]::TryParse([string]$Config.$Name, [ref]$value)) {
+            throw "$Name must be an integer."
+        }
+    }
+    if ($value -lt $Minimum) {
+        throw "$Name must be an integer >= $Minimum."
+    }
+    return $value
+}
+function Get-NormalizedRelativePath([string]$Path, [string]$Default) {
+    $value = $Path
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+
+    $value = $value.Trim() -replace "\\", "/"
+    $value = $value.Trim("/")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+    if ($value -match '(^|/)\.\.($|/)' -or $value -notmatch '^[A-Za-z0-9._~/-]+$') {
+        throw "IisHealthProxyPath must be a relative URL path using letters, numbers, dot, underscore, dash, tilde, or slash."
+    }
+    return $value
+}
+function ConvertTo-XmlAttributeValue([string]$Value) {
+    $escaped = [System.Security.SecurityElement]::Escape($Value)
+    if ($null -eq $escaped) { return "" }
+    return $escaped
+}
+function New-ForwardedServerVariablesBlock([bool]$Enabled, [string]$PublicScheme, [int]$PublicPort) {
+    if (-not $Enabled) { return "" }
+
+    $scheme = ConvertTo-XmlAttributeValue $PublicScheme
+    $port = ConvertTo-XmlAttributeValue ([string]$PublicPort)
+    return @"
+          <serverVariables>
+            <set name="HTTP_X_FORWARDED_HOST" value="{HTTP_HOST}" />
+            <set name="HTTP_X_FORWARDED_PROTO" value="$scheme" />
+            <set name="HTTP_X_FORWARDED_PORT" value="$port" />
+            <set name="HTTP_X_FORWARDED_FOR" value="{REMOTE_ADDR}" />
+          </serverVariables>
+"@
+}
 function Get-BackupDirectory($Config) {
     if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
         return [string]$Config.BackupDirectory
@@ -58,6 +127,45 @@ function Test-WebGlobalModule([string]$Name) {
     } catch {
         return $false
     }
+}
+function Ensure-UrlRewriteServerVariable([string]$Name) {
+    try {
+        $filter = "system.webServer/rewrite/allowedServerVariables/add[@name='$Name']"
+        $existing = Get-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter $filter -Name "name" -ErrorAction SilentlyContinue
+        if (-not $existing) {
+            Add-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/rewrite/allowedServerVariables" -Name "." -Value @{ name = $Name } -ErrorAction Stop | Out-Null
+            Write-Host "Allowed URL Rewrite server variable: $Name"
+        }
+    } catch {
+        Write-Warning "Could not allow URL Rewrite server variable '$Name'. Forwarded headers in web.config may fail until this is configured. $($_.Exception.Message)"
+    }
+}
+function Ensure-UrlRewriteServerVariables([string[]]$Names) {
+    foreach ($name in $Names) {
+        Ensure-UrlRewriteServerVariable $name
+    }
+}
+function Set-IisProxyProperty([string]$Name, $Value) {
+    try {
+        Set-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -Name $Name -Value $Value -ErrorAction Stop
+        Write-Host "Set IIS ARR proxy $Name=$Value"
+    } catch {
+        Write-Warning "Could not set IIS ARR proxy property '$Name'. $($_.Exception.Message)"
+    }
+}
+function Ensure-ArrProxySettings([int]$TimeoutSeconds) {
+    if (-not (Test-WebGlobalModule "ApplicationRequestRouting")) {
+        Write-Warning "IIS ARR module was not detected. Install Application Request Routing before relying on IIS reverse proxy."
+        return
+    }
+
+    Set-IisProxyProperty "enabled" "True"
+    Set-IisProxyProperty "preserveHostHeader" "True"
+    Set-IisProxyProperty "reverseRewriteHostInResponseHeaders" "False"
+    Set-IisProxyProperty "timeout" ([TimeSpan]::FromSeconds($TimeoutSeconds))
+}
+function Test-WebSocketSupport {
+    return (Test-WebGlobalModule "WebSocketModule")
 }
 function Ensure-AppPool([string]$Name) {
     if (-not (Test-Path "IIS:\AppPools\$Name")) {
@@ -115,6 +223,12 @@ $publicPort = if ($config.PSObject.Properties["PublicPort"] -and $config.PublicP
 $protocol = if ($tlsEnabled) { "https" } else { "http" }
 $thumbprint = [string](Get-ConfigValue $config "IisCertificateThumbprint" "")
 $backupDirectory = Get-BackupDirectory $config
+$enableArrProxy = Get-ConfigBool $config "IisEnableArrProxy" $true
+$setForwardedHeaders = Get-ConfigBool $config "IisSetForwardedHeaders" $true
+$webSocketSupport = Get-ConfigBool $config "IisWebSocketSupport" $true
+$proxyTimeoutSeconds = Get-ConfigInt $config "IisProxyTimeoutSeconds" 300 1
+$healthProxyPath = Get-NormalizedRelativePath ([string](Get-ConfigValue $config "IisHealthProxyPath" "health")) "health"
+$healthUrl = [string](Get-ConfigValue $config "HealthUrl" ("http://127.0.0.1:$($config.Port)/health"))
 
 if (-not (Test-WebGlobalModule "RewriteModule")) {
     Write-Warning "IIS URL Rewrite module was not detected. Reverse proxy rules in web.config will not work until it is installed."
@@ -122,10 +236,30 @@ if (-not (Test-WebGlobalModule "RewriteModule")) {
 if (-not (Test-WebGlobalModule "ApplicationRequestRouting")) {
     Write-Warning "IIS ARR module was not detected. Verify Application Request Routing is installed and proxy support is enabled."
 }
+if ($webSocketSupport -and -not (Test-WebSocketSupport)) {
+    Write-Warning "IIS WebSocket module was not detected. WebSocket traffic may fail until the WebSocket Protocol feature is installed."
+}
+
+if ($enableArrProxy -and $PSCmdlet.ShouldProcess("IIS ARR global proxy", "Enable ARR proxy support")) {
+    Ensure-ArrProxySettings $proxyTimeoutSeconds
+}
+if ($setForwardedHeaders -and $PSCmdlet.ShouldProcess("IIS URL Rewrite allowed server variables", "Allow forwarded header variables")) {
+    Ensure-UrlRewriteServerVariables @(
+        "HTTP_X_FORWARDED_HOST",
+        "HTTP_X_FORWARDED_PROTO",
+        "HTTP_X_FORWARDED_PORT",
+        "HTTP_X_FORWARDED_FOR"
+    )
+}
 
 New-Item -ItemType Directory -Force -Path $config.IisSitePath | Out-Null
 $template = Get-Content $templatePath -Raw
-$webConfig = Replace-Token $template @{ "APP_PORT" = $config.Port }
+$webConfig = Replace-Token $template @{
+    "APP_PORT" = ConvertTo-XmlAttributeValue ([string]$config.Port)
+    "HEALTH_PROXY_PATH" = ConvertTo-XmlAttributeValue $healthProxyPath
+    "HEALTH_URL" = ConvertTo-XmlAttributeValue $healthUrl
+    "FORWARDED_SERVER_VARIABLES" = New-ForwardedServerVariablesBlock -Enabled $setForwardedHeaders -PublicScheme $protocol -PublicPort $publicPort
+}
 $out = Join-Path $config.IisSitePath "web.config"
 if ($PSCmdlet.ShouldProcess($out, "Write IIS reverse proxy web.config")) {
     Set-TextFileWithBackup -Path $out -Content $webConfig -BackupDirectory $backupDirectory
@@ -155,3 +289,4 @@ if ($PSCmdlet.ShouldProcess($siteName, "Configure IIS site")) {
 Write-Host "IIS web.config created: $out" -ForegroundColor Green
 Write-Host "IIS site: $siteName"
 Write-Host "IIS app pool: $appPoolName"
+Write-Host "IIS health proxy: /$healthProxyPath -> $healthUrl"

@@ -81,11 +81,41 @@ The default install flow is:
 preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
 ```
 
+The WinSW installer writes safe runtime environment defaults into the service
+XML when they are not already set in `Environment`: `NODE_ENV`, `PORT`,
+`APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME`. This keeps the
+service aligned with `Port` and `BindAddress` and helps Node/Next.js apps bind
+to localhost behind IIS instead of opening a public listener.
+
+`ServiceAccount` controls the Windows service logon account. Supported
+values are `NetworkService`, `LocalService`, `LocalSystem`, a dedicated
+local/domain account, or a group managed service account such as
+`DOMAIN\ExampleNodeApp$`. Prefer `NetworkService` or a gMSA over `LocalSystem`
+for production. Ordinary domain/local users require `ServiceAccountPassword`,
+but a gMSA is preferred so no password has to be stored in deployment config.
+
 When `ReverseProxy` is `iis`, the IIS installer writes `web.config`, configures
 an always-running app pool, creates or updates the IIS site, and adds the
 configured HTTP/HTTPS binding. If `TlsEnabled` is true and
 `IisCertificateThumbprint` is empty or unavailable, certificate binding remains
 an explicit manual step and the script prints a warning.
+
+For production IIS reverse proxy deployments, install IIS URL Rewrite and
+Application Request Routing before running the installer. By default,
+`IisEnableArrProxy` enables ARR proxy mode, preserves the original `Host`
+header, disables response host rewrites, and applies `IisProxyTimeoutSeconds`.
+`IisSetForwardedHeaders` writes `X-Forwarded-Host`,
+`X-Forwarded-Proto`, `X-Forwarded-Port`, and `X-Forwarded-For` from IIS URL
+Rewrite so frameworks such as Next.js and Express can understand the public
+request URL while Node.js remains bound to `127.0.0.1`. The installer also
+adds a dedicated IIS health proxy path, controlled by `IisHealthProxyPath`,
+which forwards to `HealthUrl`.
+
+If the app uses WebSockets, install the IIS WebSocket Protocol feature and keep
+`IisWebSocketSupport` enabled so preflight warns when the server is missing the
+module. The script does not silently install Windows features; it checks and
+configures the IIS pieces that are safe to manage after the prerequisite
+modules exist.
 
 Use these switches when needed:
 
@@ -112,11 +142,16 @@ so normal service updates should not need `-AllowPortInUse`.
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
 ```
 
-The status command reports service state, node processes, configured port
-listeners, HTTP health, and recent log file metadata without printing
-environment variables or log contents.
+The status command reports host uptime, service state, service wrapper uptime,
+node processes, configured port listeners, whether the configured service owns
+the listener, HTTP health latency, scheduled health-check freshness, health
+history, and recent log file metadata without printing environment variables or
+log contents. `-MinimumUptimeHours` is useful after a reboot or several days of
+runtime because it warns when the service has restarted more recently than the
+period you expected.
 
 Managed file updates create timestamped backups in `BackupDirectory` before
 replacing existing WinSW XML/exe files, IIS `web.config`, or the scheduled
@@ -127,8 +162,23 @@ health-check task definition. If `BackupDirectory` is not set, the scripts use
 
 ```powershell
 .\restart.ps1 -ConfigPath .\config\windows\app.config.json
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
+
+For managed config rollback, list available backups first, then restore a
+specific target:
+
+```powershell
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target ServiceXml -Latest -RestartService
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target IisWebConfig -Latest -RecycleIisAppPool
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -FailOnCritical
+```
+
+Rollback restores only managed files created by this kit, such as WinSW XML,
+WinSW executable backups, IIS `web.config`, and scheduled task exports. Restore
+the previous application release or database separately when those changed.
 
 The WinSW template and installer set the service startup mode to `Automatic`,
 so the app is expected to start again after a Windows reboot as long as the

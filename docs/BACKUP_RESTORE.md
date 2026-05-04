@@ -48,9 +48,16 @@ Managed files include:
 Windows example:
 
 ```powershell
-Copy-Item C:\services\ExampleNodeApp\backups\ExampleNodeApp.xml.<timestamp>.bak C:\services\ExampleNodeApp\ExampleNodeApp.xml -Force
-Copy-Item C:\services\ExampleNodeApp\backups\web.config.<timestamp>.bak C:\inetpub\wwwroot\ExampleNodeApp\web.config -Force
-Restart-Service ExampleNodeApp
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target ServiceXml -Latest -RestartService
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -Target IisWebConfig -Latest -RecycleIisAppPool
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -FailOnCritical
+```
+
+You can restore a specific backup file instead of the latest file:
+
+```powershell
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -BackupPath C:\services\ExampleNodeApp\backups\web.config.20260504120000.1234.bak -RecycleIisAppPool
 ```
 
 Linux example:
@@ -63,3 +70,26 @@ sudo systemctl restart example-node-app
 
 For Nginx or Apache rollback, restore the backed-up proxy config, run the
 native config test, then reload the proxy service.
+
+## Windows Managed Rollback Targets
+
+`rollback.ps1` and `scripts/windows/Restore-ManagedBackup.ps1` only touch
+managed backup types produced by this kit:
+
+| Target | Restores |
+|---|---|
+| `ServiceExe` | WinSW wrapper executable under `ServiceDirectory` |
+| `ServiceXml` | WinSW XML under `ServiceDirectory` |
+| `IisWebConfig` | IIS site `web.config` under `IisSitePath` |
+| `HealthCheckTask` | Exported Windows scheduled task XML |
+| `All` | Latest backup for each available managed target |
+
+Use `-RestartService` when restoring `ServiceExe` or `ServiceXml`. Use
+`-RecycleIisAppPool` when restoring `IisWebConfig` and you want IIS to reload
+immediately. The helper requires Administrator rights for restore operations,
+but listing backups does not.
+
+Rollback does not replace a full release strategy. If the application files
+changed, restore or redeploy the previous application artifact first, then
+restore managed service/proxy/task config if needed, and finish with
+`status.ps1`.

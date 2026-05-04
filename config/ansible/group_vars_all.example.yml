@@ -29,7 +29,13 @@ node_deploy_windows_iis_site_path: C:\inetpub\wwwroot\ExampleNodeApp
 node_deploy_windows_iis_site_name: ExampleNodeApp
 node_deploy_windows_iis_app_pool_name: ExampleNodeApp-AppPool
 node_deploy_windows_iis_certificate_thumbprint: ""
-node_deploy_windows_service_account: LocalSystem
+node_deploy_windows_iis_enable_arr_proxy: true
+node_deploy_windows_iis_set_forwarded_headers: true
+node_deploy_windows_iis_health_proxy_path: health
+node_deploy_windows_iis_websocket_support: true
+node_deploy_windows_iis_proxy_timeout_seconds: 300
+node_deploy_windows_service_account: NetworkService
+node_deploy_windows_service_account_password: ""
 node_deploy_windows_winsw_source: ""
 node_deploy_failure_restart_delay_seconds: 60
 node_deploy_linux_service_manager: systemd

@@ -23,7 +23,9 @@
   <a href="#supported-platforms">Supported Platforms</a> •
   <a href="#deployment-modes">Deployment Modes</a> •
   <a href="docs/ANSIBLE.md">Ansible</a> •
+  <a href="docs/RUNBOOK.md">Runbook</a> •
   <a href="docs/VARIABLES.md">Variables</a> •
+  <a href="docs/BACKUP_RESTORE.md">Backup</a> •
   <a href="docs/RELEASE.md">Release</a> •
   <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a> •
   <a href="docs/HARDENING.md">Hardening</a>
@@ -74,9 +76,16 @@ opening a pull request:
 ```
 
 It checks PowerShell syntax, Linux shell syntax, LF-only deployment files,
-example config shape, template rendering, obvious secret patterns, and
-`git diff --check`. On Windows it needs Git Bash or another `bash` executable
-for the shell syntax step.
+example config shape, template rendering, release package hygiene, docs
+consistency, obvious secret patterns, and `git diff --check`. On Windows it
+needs Git Bash or another `bash` executable for the shell syntax step.
+
+To build a sanitized handoff package:
+
+```powershell
+.\scripts\dev\Test-ReleasePackage.ps1
+.\scripts\dev\New-ReleasePackage.ps1 -Version 1.0.0
+```
 
 ---
 
@@ -125,6 +134,11 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 
 This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer runs a safe preflight check, then runs configured `InstallCommand` and `BuildCommand`, then installs/updates the service, reverse proxy, and health check.
 
+For IIS deployments, install IIS URL Rewrite and Application Request Routing
+first. The IIS installer can enable ARR proxy mode, allow the URL Rewrite
+server variables needed for forwarded headers, render a dedicated health proxy
+path, and warn when WebSocket support is missing.
+
 For artifact-only deployments where dependencies are already installed and the app is already built:
 
 ```powershell
@@ -141,12 +155,19 @@ If preflight reports a known, intentional listener on the configured port that i
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
 ```
+
+The status command reports host uptime, service uptime, configured port
+ownership, HTTP health latency, scheduled health-check freshness, recent health
+history, and an operational verdict. Use `-MinimumUptimeHours` when you want to
+prove the service has stayed up for a required period.
 
 6. Restart or uninstall through the top-level wrappers when needed:
 
 ```powershell
 .\restart.ps1 -ConfigPath .\config\windows\app.config.json
+.\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
@@ -292,7 +313,7 @@ node-enterprise-deploy-kit/
 ├── scripts/
 │   ├── linux/                       # Unix-like services, reverse proxies, Tomcat, health checks
 │   └── windows/                     # WinSW, IIS, scheduled tasks, diagnostics
-├── scripts/dev/                     # CI and repository safety checks
+├── scripts/dev/                     # CI, repository safety checks, release packaging
 ├── templates/                       # WinSW, init/launchd, IIS, proxy templates
 ├── tools/                           # Place external wrappers here; no binaries included
 ├── install.bat                      # Windows double-click wrapper
@@ -300,6 +321,7 @@ node-enterprise-deploy-kit/
 ├── deploy.ps1                       # Windows deployment orchestrator
 ├── status.ps1                       # Windows service/port/health status
 ├── restart.ps1                      # Windows service restart helper
+├── rollback.ps1                     # Windows managed-backup rollback helper
 ├── uninstall.ps1                    # Windows service uninstall wrapper
 ├── .github/workflows/               # Basic CI checks
 ├── LICENSE
@@ -339,7 +361,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
 
 | Area | Recommended setting |
 |---|---|
-| Service user | Dedicated non-admin service account |
+| Service user | Dedicated non-admin account, `NetworkService`, or gMSA |
 | App bind address | `127.0.0.1` |
 | Public access | IIS/Nginx/Apache only |
 | Logs | Dedicated directory with rotation |
@@ -374,6 +396,13 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "PublicPort": 443,
   "TlsEnabled": true,
   "IisCertificateThumbprint": "",
+  "IisEnableArrProxy": true,
+  "IisSetForwardedHeaders": true,
+  "IisHealthProxyPath": "health",
+  "IisWebSocketSupport": true,
+  "IisProxyTimeoutSeconds": 300,
+  "ServiceAccount": "NetworkService",
+  "ServiceAccountPassword": "",
   "LogDirectory": "C:\\logs\\ExampleNodeApp",
   "ServiceDirectory": "C:\\services\\ExampleNodeApp",
   "BackupDirectory": "C:\\services\\ExampleNodeApp\\backups",
@@ -385,7 +414,12 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "DiagnosticRetentionDays": 14,
   "Environment": {
     "NODE_ENV": "production",
-    "PORT": "3000"
+    "PORT": "3000",
+    "APP_PORT": "3000",
+    "APP_NAME": "ExampleNodeApp",
+    "BIND_ADDRESS": "127.0.0.1",
+    "HOST": "127.0.0.1",
+    "HOSTNAME": "127.0.0.1"
   }
 }
 ```

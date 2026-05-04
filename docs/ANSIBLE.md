@@ -28,6 +28,13 @@ Important controls:
 | `node_deploy_skip_health_check` | Leave scheduled health checks unchanged |
 | `node_deploy_app_runtime` | `node` service deployment or `tomcat` WAR deployment |
 | `node_deploy_windows_winsw_source` | Controller-side WinSW executable path for WinSW deployments |
+| `node_deploy_windows_service_account` | Windows service account, such as `NetworkService`, `LocalService`, a dedicated account, or a gMSA |
+| `node_deploy_windows_service_account_password` | Optional password for non-gMSA service accounts; prefer a gMSA |
+| `node_deploy_windows_iis_enable_arr_proxy` | Enable IIS ARR proxy mode during IIS reverse proxy setup |
+| `node_deploy_windows_iis_set_forwarded_headers` | Configure URL Rewrite server variables for `X-Forwarded-*` headers |
+| `node_deploy_windows_iis_health_proxy_path` | Public IIS path that proxies to the configured health URL |
+| `node_deploy_windows_iis_websocket_support` | Warn when IIS WebSocket Protocol support is missing |
+| `node_deploy_windows_iis_proxy_timeout_seconds` | IIS ARR proxy timeout in seconds |
 | `node_deploy_windows_backup_dir` | Remote Windows directory for service/proxy/task backups |
 | `node_deploy_linux_deploy_dir` | Remote Linux directory for copied deployment scripts/templates |
 | `node_deploy_linux_config_path` | Remote Linux rendered deployment env file |

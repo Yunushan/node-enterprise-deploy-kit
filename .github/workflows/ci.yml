@@ -9,6 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install CI tooling
+        shell: bash
+        run: |
+          python3 -m pip install --user ansible-core
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ansible-playbook --version
       - name: Repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1

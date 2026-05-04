@@ -11,6 +11,7 @@ Recommended production controls:
 - Expose only IIS/Nginx/load-balancer ports to users.
 - Store secrets outside Git.
 - Enable TLS on the public reverse proxy.
+- Keep health checks on private localhost endpoints where possible.
 - Enable service restart policies and health checks.
 - Send logs to Wazuh, Graylog, OpenSearch, or another monitored logging platform.
 - Restrict deployment permissions to administrators or CI/CD service accounts.
@@ -37,3 +38,6 @@ internal hostnames
 ```
 
 Use the provided `.example` files and create local copies during deployment.
+
+The preflight scripts may warn about secret-like environment key names, but
+they do not print the corresponding values.

@@ -38,6 +38,12 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
         throw "$Action failed with exit code $LASTEXITCODE."
     }
 }
+function Get-ConfigString($Config, [string]$Name, [string]$Default = "") {
+    if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
+        return [string]$Config.$Name
+    }
+    return $Default
+}
 function Get-BackupDirectory($Config) {
     if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
         return [string]$Config.BackupDirectory
@@ -107,6 +113,88 @@ function Assert-ServicePathCompatible([string]$Name, [string]$ExpectedWrapperPat
         throw "A service named '$Name' already exists but points to a different executable: $pathName. Uninstall it or change AppName before deploying."
     }
 }
+function ConvertTo-ServiceEnvironmentMap($Config) {
+    $map = [ordered]@{}
+    $bindAddress = Get-ConfigString $Config "BindAddress" "127.0.0.1"
+
+    $map["NODE_ENV"] = "production"
+    $map["PORT"] = [string]$Config.Port
+    $map["APP_PORT"] = [string]$Config.Port
+    $map["APP_NAME"] = [string]$Config.AppName
+    $map["BIND_ADDRESS"] = $bindAddress
+    $map["HOST"] = $bindAddress
+    $map["HOSTNAME"] = $bindAddress
+
+    if ($Config.Environment) {
+        $Config.Environment.PSObject.Properties | ForEach-Object {
+            $map[$_.Name] = [string]$_.Value
+        }
+    }
+
+    return $map
+}
+function ConvertTo-EnvironmentBlock($EnvironmentMap) {
+    $block = ""
+    foreach ($name in $EnvironmentMap.Keys) {
+        $escapedName = Escape-XmlValue $name
+        $escapedValue = Escape-XmlValue $EnvironmentMap[$name]
+        $block += "  <env name=`"$escapedName`" value=`"$escapedValue`"/>`r`n"
+    }
+    return $block.TrimEnd()
+}
+function Get-ServiceAccountSettings($Config) {
+    $account = Get-ConfigString $Config "ServiceAccount" "LocalSystem"
+    $accountCredential = Get-ConfigString $Config "ServiceAccountPassword" ""
+    $normalized = $account.Trim()
+    $lower = $normalized.ToLowerInvariant()
+
+    switch ($lower) {
+        "localsystem" {
+            return [pscustomobject]@{ Account = "LocalSystem"; Password = ""; NeedsPassword = $false; GrantAccess = $false }
+        }
+        "localservice" {
+            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+        }
+        "nt authority\localservice" {
+            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+        }
+        "networkservice" {
+            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+        }
+        "nt authority\networkservice" {
+            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+        }
+        default {
+            $isGmsa = $normalized.EndsWith('$')
+            if (-not $isGmsa -and [string]::IsNullOrWhiteSpace($accountCredential)) {
+                throw "ServiceAccount '$normalized' requires ServiceAccountPassword unless it is a built-in account or gMSA ending in '$'. Prefer a gMSA for production instead of storing passwords in config."
+            }
+            return [pscustomobject]@{ Account = $normalized; Password = $accountCredential; NeedsPassword = (-not [string]::IsNullOrWhiteSpace($accountCredential)); GrantAccess = $true }
+        }
+    }
+}
+function Grant-ServiceAccountAccess([string]$Path, [string]$Account, [string]$Rights) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return }
+    $grant = "{0}:(OI)(CI){1}" -f $Account, $Rights
+    Invoke-NativeCommand "icacls.exe" @($Path, "/grant", $grant, "/T", "/C") "Grant $Rights access on $Path to $Account"
+}
+function Set-ServiceAccount($Config) {
+    $settings = Get-ServiceAccountSettings $Config
+    $args = @("config", $Config.AppName, "obj=", $settings.Account)
+    if ($settings.NeedsPassword) {
+        $args += @("password=", $settings.Password)
+    } elseif ($settings.Account.EndsWith('$')) {
+        $args += @("password=", "")
+    }
+
+    Invoke-NativeCommand "sc.exe" $args "Set service account"
+
+    if ($settings.GrantAccess) {
+        Grant-ServiceAccountAccess -Path $Config.ServiceDirectory -Account $settings.Account -Rights "RX"
+        Grant-ServiceAccountAccess -Path $Config.AppDirectory -Account $settings.Account -Rights "RX"
+        Grant-ServiceAccountAccess -Path $Config.LogDirectory -Account $settings.Account -Rights "M"
+    }
+}
 function Test-PostStartHealth($Config) {
     Start-Sleep -Seconds 3
     if ($Config.Port -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
@@ -150,14 +238,7 @@ if ($serviceExists -and $PSCmdlet.ShouldProcess($config.AppName, "Stop existing 
     [void](Stop-ExistingService -Name $config.AppName -WrapperPath $serviceExe)
 }
 
-$envBlock = ""
-if ($config.Environment) {
-    $config.Environment.PSObject.Properties | ForEach-Object {
-        $name = Escape-XmlValue $_.Name
-        $value = Escape-XmlValue $_.Value
-        $envBlock += "  <env name=`"$name`" value=`"$value`"/>`r`n"
-    }
-}
+$envBlock = ConvertTo-EnvironmentBlock (ConvertTo-ServiceEnvironmentMap $config)
 
 $templatePath = Join-Path $repoRoot "templates\windows\winsw-service.xml.tpl"
 $template = Get-Content $templatePath -Raw
@@ -196,6 +277,7 @@ if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
     $thirdRestartDelayMs = $restartDelayMs * 5
 
     Invoke-NativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set service startup mode"
+    Set-ServiceAccount $config
     Invoke-NativeCommand "sc.exe" @("failure", $config.AppName, "reset=", "86400", "actions=", "restart/$restartDelayMs/restart/$restartDelayMs/restart/$thirdRestartDelayMs") "Set service recovery actions"
     Invoke-NativeCommand "sc.exe" @("failureflag", $config.AppName, "1") "Enable service recovery actions"
     Invoke-NativeCommand $serviceExe @("start") "WinSW start"

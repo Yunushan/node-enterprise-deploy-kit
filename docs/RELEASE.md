@@ -21,6 +21,8 @@ The verifier checks:
 - plain token template rendering with unresolved-token detection
 - rendered XML validity for Windows templates
 - rendered shell syntax for Linux init templates when `bash` is available
+- release package hygiene and required release files
+- local docs links, README anchors, and documented entrypoint presence
 - obvious committed secret patterns
 - `git diff --check` whitespace problems
 
@@ -33,7 +35,27 @@ step. If you are only checking Windows scripts on a restricted machine, use:
 
 Ansible playbook syntax is checked automatically when `ansible-playbook` is
 available. If Ansible is not installed on the validation machine, that optional
-check is skipped.
+check is skipped. CI installs `ansible-core` before repository verification so
+the playbook syntax check runs deterministically in GitHub Actions.
+
+## Release Package
+
+Build a sanitized source package from tracked and non-ignored release files:
+
+```powershell
+.\scripts\dev\Test-ReleasePackage.ps1
+.\scripts\dev\New-ReleasePackage.ps1 -Version 1.0.0
+```
+
+The package builder writes output under `.tmp/release` and creates a manifest
+next to the zip. It blocks private configs, local environment files, logs,
+build output, external service-wrapper binaries, certificates, and key files.
+
+Use `-NoZip` when you only want a staging directory for inspection:
+
+```powershell
+.\scripts\dev\New-ReleasePackage.ps1 -Version 1.0.0 -NoZip
+```
 
 ## Private Config Safety
 

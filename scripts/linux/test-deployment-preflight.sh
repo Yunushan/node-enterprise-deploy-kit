@@ -63,6 +63,29 @@ service_main_pid() {
       ;;
   esac
 }
+url_host() {
+  local url="${1:-}" host
+  host="${url#*://}"
+  host="${host%%/*}"
+  host="${host%%:*}"
+  host="${host#[}"
+  host="${host%]}"
+  printf '%s\n' "$host"
+}
+is_loopback_host() {
+  local host
+  host="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "0:0:0:0:0:0:0:1" || "$host" == "::1" || "$host" =~ ^127\. ]]
+}
+is_sensitive_key_name() {
+  [[ "${1:-}" =~ ([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Cc][Oo][Nn][Nn][Ee][Cc][Tt][Ii][Oo][Nn][Ss][Tt][Rr][Ii][Nn][Gg]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]|[Jj][Ww][Tt]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]) ]]
+}
+runtime_env_key_list() {
+  printf '%s' "${RUNTIME_ENV_KEYS:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
+}
+is_user_runtime_path() {
+  [[ "${1:-}" =~ ^/home/[^/]+/(Desktop|Downloads|Documents)(/|$) || "${1:-}" =~ ^/Users/[^/]+/(Desktop|Downloads|Documents)(/|$) ]]
+}
 
 for key in APP_NAME APP_DISPLAY_NAME APP_PORT BIND_ADDRESS HEALTH_URL LOG_DIR SERVICE_MANAGER REVERSE_PROXY; do
   require_value "$key"
@@ -91,10 +114,18 @@ fi
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && ! -x "$NODE_BIN" ]]; then
   add_error "NODE_BIN not found or not executable: $NODE_BIN"
 fi
+if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && "$NODE_BIN" != /* ]]; then
+  add_warning "NODE_BIN is not an absolute path. Use an explicit trusted Node.js path in production."
+fi
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && ! -d "$APP_DIR" ]]; then
   add_error "APP_DIR not found: $APP_DIR"
 fi
+for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR; do
+  if is_user_runtime_path "${!path_name:-}"; then
+    add_warning "$path_name is under a user desktop/downloads/documents path. Use a service-owned production directory."
+  fi
+done
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && -d "$APP_DIR" && -n "${START_SCRIPT:-}" ]]; then
   if [[ "$START_SCRIPT" = /* ]]; then
@@ -113,6 +144,25 @@ if [[ -n "${HEALTH_URL:-}" ]]; then
     http://*|https://*) ;;
     *) add_error "HEALTH_URL must start with http:// or https://" ;;
   esac
+fi
+
+if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "${SERVICE_USER:-}" == "root" ]]; then
+  add_warning "SERVICE_USER is root. Use a dedicated non-root service user for production."
+fi
+if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "${SERVICE_GROUP:-}" == "root" ]]; then
+  add_warning "SERVICE_GROUP is root. Use a dedicated non-root service group for production."
+fi
+if [[ "${INSTALL_COMMAND:-}" =~ npm[[:space:]]+install($|[[:space:]]) ]]; then
+  add_warning "INSTALL_COMMAND uses npm install. Prefer npm ci --omit=dev or deploy a built artifact for deterministic production installs."
+fi
+secret_like_runtime_keys=()
+while IFS= read -r runtime_key; do
+  if is_sensitive_key_name "$runtime_key"; then
+    secret_like_runtime_keys+=("$runtime_key")
+  fi
+done < <(runtime_env_key_list)
+if [[ "${#secret_like_runtime_keys[@]}" -gt 0 ]]; then
+  add_warning "RUNTIME_ENV_KEYS contains secret-like key name(s): ${secret_like_runtime_keys[*]}. Keep values out of committed config and prefer a secret manager or target-local private env file."
 fi
 
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"
@@ -143,6 +193,15 @@ esac
 
 if ! is_true "$SKIP_REVERSE_PROXY"; then
   REVERSE_PROXY_NORMALIZED="$(normalize_name "${REVERSE_PROXY:-none}")"
+  if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" && -n "${BIND_ADDRESS:-}" ]] && ! is_loopback_host "$BIND_ADDRESS"; then
+    add_warning "BIND_ADDRESS is '$BIND_ADDRESS' while REVERSE_PROXY is '${REVERSE_PROXY:-}'. Bind the app to 127.0.0.1 unless direct exposure is intentional."
+  fi
+  if [[ "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" && -n "${HEALTH_URL:-}" ]] && ! is_loopback_host "$(url_host "$HEALTH_URL")"; then
+    add_warning "HEALTH_URL host is '$(url_host "$HEALTH_URL")'. For reverse-proxy deployments, health checks should normally target localhost/127.0.0.1."
+  fi
+  if [[ "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" ]] && ! is_true "${TLS_ENABLED:-false}"; then
+    add_warning "TLS_ENABLED is false while a reverse proxy is configured. Use TLS at the proxy or a documented upstream load balancer in production."
+  fi
   case "$REVERSE_PROXY_NORMALIZED" in
     nginx)
       command -v nginx >/dev/null 2>&1 || add_warning "REVERSE_PROXY=nginx but nginx was not found."

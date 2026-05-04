@@ -133,8 +133,17 @@ function Test-WindowsExampleConfig {
     "HealthUrl",
     "ServiceDirectory",
     "LogDirectory",
-    "BackupDirectory"
+    "BackupDirectory",
+    "IisEnableArrProxy",
+    "IisSetForwardedHeaders",
+    "IisHealthProxyPath",
+    "IisWebSocketSupport",
+    "IisProxyTimeoutSeconds",
+    "ServiceAccount"
   ) "config/windows/app.config.example.json"
+  if (-not $config.PSObject.Properties["ServiceAccountPassword"]) {
+    throw "config/windows/app.config.example.json is missing ServiceAccountPassword."
+  }
 
   Assert-Port ([string]$config.Port) "Windows Port"
   Assert-Port ([string]$config.PublicPort) "Windows PublicPort"
@@ -146,14 +155,45 @@ function Test-WindowsExampleConfig {
   Assert-IntegerAtLeast ([string]$config.LogRetentionDays) "LogRetentionDays"
   Assert-IntegerAtLeast ([string]$config.BackupRetentionDays) "BackupRetentionDays"
   Assert-IntegerAtLeast ([string]$config.DiagnosticRetentionDays) "DiagnosticRetentionDays"
+  Assert-IntegerAtLeast ([string]$config.IisProxyTimeoutSeconds) "IisProxyTimeoutSeconds"
+  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport")) {
+    Assert-BoolString ([string]$config.$name) $name
+  }
+  $iisHealthProxyPath = ([string]$config.IisHealthProxyPath).Trim() -replace "\\", "/"
+  $iisHealthProxyPath = $iisHealthProxyPath.Trim("/")
+  if ([string]::IsNullOrWhiteSpace($iisHealthProxyPath) -or $iisHealthProxyPath -match '(^|/)\.\.($|/)' -or $iisHealthProxyPath -notmatch '^[A-Za-z0-9._~/-]+$') {
+    throw "Windows IisHealthProxyPath must be a safe relative URL path."
+  }
 
   $healthUri = [Uri][string]$config.HealthUrl
   if ($healthUri.Scheme -notin @("http", "https")) {
     throw "Windows HealthUrl must use http or https."
   }
+  if ($healthUri.Host -notin @("127.0.0.1", "localhost")) {
+    throw "Windows HealthUrl should default to localhost/127.0.0.1."
+  }
   if ($config.Environment -and $config.Environment.PSObject.Properties["PORT"]) {
     if ([string]$config.Environment.PORT -ne [string]$config.Port) {
       throw "Windows Environment.PORT must match Port in the example config."
+    }
+  }
+  foreach ($name in @("APP_PORT", "APP_NAME", "BIND_ADDRESS", "HOST", "HOSTNAME")) {
+    if (-not $config.Environment.PSObject.Properties[$name]) {
+      throw "Windows example Environment is missing $name."
+    }
+  }
+  if ([string]$config.Environment.APP_PORT -ne [string]$config.Port) {
+    throw "Windows Environment.APP_PORT must match Port in the example config."
+  }
+  if ([string]$config.BindAddress -ne "127.0.0.1") {
+    throw "Windows BindAddress should default to 127.0.0.1."
+  }
+  if ([string]$config.ServiceAccount -eq "LocalSystem") {
+    throw "Windows ServiceAccount example should not default to LocalSystem."
+  }
+  foreach ($name in @("BIND_ADDRESS", "HOST", "HOSTNAME")) {
+    if ([string]$config.Environment.$name -ne [string]$config.BindAddress) {
+      throw "Windows Environment.$name must match BindAddress in the example config."
     }
   }
 
@@ -209,8 +249,20 @@ function Test-LinuxExampleConfig {
   if ($healthUri.Scheme -notin @("http", "https")) {
     throw "Linux HEALTH_URL must use http or https."
   }
+  if ($healthUri.Host -notin @("127.0.0.1", "localhost")) {
+    throw "Linux HEALTH_URL should default to localhost/127.0.0.1."
+  }
   if ($healthUri.Port -ne [int]$env.APP_PORT) {
     throw "Linux HEALTH_URL port must match APP_PORT in the example env."
+  }
+  if ($env.BIND_ADDRESS -ne "127.0.0.1") {
+    throw "Linux BIND_ADDRESS should default to 127.0.0.1."
+  }
+  if ($env.SERVICE_USER -eq "root" -or $env.SERVICE_GROUP -eq "root") {
+    throw "Linux SERVICE_USER/SERVICE_GROUP examples should not default to root."
+  }
+  if ($env.TLS_ENABLED -ne "true") {
+    throw "Linux TLS_ENABLED should default to true."
   }
 
   Write-Host "Linux example env OK"
@@ -234,6 +286,12 @@ function Test-AnsibleDefaults {
     "node_deploy_skip_reverse_proxy",
     "node_deploy_skip_health_check",
     "node_deploy_windows_winsw_source",
+    "node_deploy_windows_iis_enable_arr_proxy",
+    "node_deploy_windows_iis_set_forwarded_headers",
+    "node_deploy_windows_iis_health_proxy_path",
+    "node_deploy_windows_iis_websocket_support",
+    "node_deploy_windows_iis_proxy_timeout_seconds",
+    "node_deploy_windows_service_account_password",
     "node_deploy_windows_backup_dir",
     "node_deploy_linux_deploy_dir",
     "node_deploy_linux_config_path",
@@ -376,6 +434,15 @@ function Test-RenderedTemplates {
     TRAEFIK_ENTRYPOINT = $LinuxEnv.TRAEFIK_ENTRYPOINT
     TRAEFIK_ROUTER_NAME = $LinuxEnv.TRAEFIK_ROUTER_NAME
     TRAEFIK_SERVICE_NAME = $LinuxEnv.TRAEFIK_SERVICE_NAME
+    HEALTH_PROXY_PATH = [string]$WindowsConfig.IisHealthProxyPath
+    FORWARDED_SERVER_VARIABLES = @"
+          <serverVariables>
+            <set name="HTTP_X_FORWARDED_HOST" value="{HTTP_HOST}" />
+            <set name="HTTP_X_FORWARDED_PROTO" value="https" />
+            <set name="HTTP_X_FORWARDED_PORT" value="443" />
+            <set name="HTTP_X_FORWARDED_FOR" value="{REMOTE_ADDR}" />
+          </serverVariables>
+"@
     DISPLAY_NAME = [string]$WindowsConfig.DisplayName
     DESCRIPTION = [string]$WindowsConfig.Description
     NODE_EXE = [string]$WindowsConfig.NodeExe
@@ -448,12 +515,18 @@ function Test-AnsibleSyntaxIfAvailable {
 
   Push-Location $RepoRoot
   try {
+    $previousAnsibleConfig = $env:ANSIBLE_CONFIG
+    $previousAnsibleRolesPath = $env:ANSIBLE_ROLES_PATH
+    $env:ANSIBLE_CONFIG = Join-Path $RepoRoot "ansible.cfg"
+    $env:ANSIBLE_ROLES_PATH = Join-Path $RepoRoot "ansible/roles"
     & $ansible.Source --syntax-check -i "ansible/inventory.example.yml" "ansible/playbooks/site.yml"
     if ($LASTEXITCODE -ne 0) {
       throw "Ansible syntax check failed."
     }
   }
   finally {
+    $env:ANSIBLE_CONFIG = $previousAnsibleConfig
+    $env:ANSIBLE_ROLES_PATH = $previousAnsibleRolesPath
     Pop-Location
   }
 }

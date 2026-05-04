@@ -12,3 +12,24 @@ ansible/roles/linux_node_service/templates/* text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+
+# Keep generated or private deployment material out of git archive releases.
+config/windows/app.config.json export-ignore
+config/linux/app.env export-ignore
+.env export-ignore
+.env.* export-ignore
+*.key export-ignore
+*.pem export-ignore
+*.pfx export-ignore
+*.p12 export-ignore
+*.crt export-ignore
+*.csr export-ignore
+tools/winsw/*.exe export-ignore
+tools/nssm/*.exe export-ignore
+node_modules/ export-ignore
+.next/ export-ignore
+dist/ export-ignore
+build/ export-ignore
+coverage/ export-ignore
+logs/ export-ignore
+.tmp/ export-ignore

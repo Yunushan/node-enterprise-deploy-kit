@@ -52,11 +52,26 @@ without printing health-check log contents:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
 ```
 
 It reports scheduled task last run, next run, last result, consecutive failure
-state, last successful check, last failed check, and summarized health log event
-counts.
+state, last successful check, last failed check, summarized health log event
+counts, and a final operational verdict. It also verifies that the configured
+port is owned by the configured service process tree, which helps distinguish a
+proper service deployment from a manually started `node.exe`.
+
+For long-running confidence after days of uptime, check these signals together:
+
+| Signal | Healthy expectation |
+|---|---|
+| Service | `Running` and automatic startup |
+| Service uptime | Meets your expected runtime window, for example 72 hours |
+| Port ownership | Configured port is owned by the service process tree |
+| HTTP health | 2xx/3xx response inside the configured timeout |
+| Scheduled task | Recent successful run and no missed runs |
+| Health state | Recent `LastSuccess`, zero consecutive failures |
+| Health log summary | No recent restart loops or repeated failures |
 
 ## Linux
 

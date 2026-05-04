@@ -16,6 +16,8 @@
 | Backup directory | `BackupDirectory` | `BACKUP_DIR` | Timestamped backups of overwritten service/proxy/health files |
 | Reverse proxy | `ReverseProxy` | `REVERSE_PROXY` | Windows: `iis` or `none`; Unix-like: `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
 | Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Unix-like: `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
+| Service account | `ServiceAccount` | `SERVICE_USER` | Windows service logon account or Unix runtime user |
+| Service account password | `ServiceAccountPassword` | n/a | Optional Windows password for non-gMSA accounts; prefer gMSA or built-in accounts |
 | Install command | `InstallCommand` | `INSTALL_COMMAND` | Production dependency install command |
 | Build command | `BuildCommand` | `BUILD_COMMAND` | Optional application build command |
 | Skip install | script flag | `SKIP_INSTALL` | Skip dependency install during artifact-only deployments |
@@ -34,6 +36,11 @@
 | IIS site | `IisSiteName` | n/a | Windows IIS site name |
 | IIS app pool | `IisAppPoolName` | n/a | Windows IIS app pool name |
 | IIS certificate | `IisCertificateThumbprint` | n/a | Optional LocalMachine\My certificate thumbprint |
+| IIS ARR proxy | `IisEnableArrProxy` | n/a | Enable and configure IIS ARR proxy mode for localhost reverse proxying |
+| IIS forwarded headers | `IisSetForwardedHeaders` | n/a | Add `X-Forwarded-*` server variables in the generated IIS rewrite rule |
+| IIS health proxy path | `IisHealthProxyPath` | n/a | Public relative path that proxies to `HealthUrl`, for example `health` |
+| IIS WebSocket support | `IisWebSocketSupport` | n/a | Warn when IIS WebSocket Protocol support is missing |
+| IIS proxy timeout | `IisProxyTimeoutSeconds` | n/a | ARR proxy timeout in seconds |
 | Apache site name | n/a | `APACHE_SITE_NAME` | Linux Apache virtual host name |
 | Nginx site name | n/a | `NGINX_SITE_NAME` | Linux Nginx config name |
 | HAProxy config | n/a | `HAPROXY_CONFIG_FILE` | Dedicated HAProxy config file to render and validate |
@@ -51,6 +58,7 @@
 | Node bind address | `127.0.0.1` |
 | Health endpoint | `/health` |
 | Windows service manager | WinSW |
+| Windows service account | `NetworkService`, `LocalService`, dedicated account, or gMSA; avoid `LocalSystem` unless required |
 | Unix-like service manager | systemd on mainstream Linux, launchd on macOS, bsdrc on BSD |
 | Windows reverse proxy | IIS |
 | Unix-like reverse proxy | Nginx, Apache, HAProxy, or Traefik |
