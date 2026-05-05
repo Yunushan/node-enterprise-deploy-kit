@@ -16,6 +16,8 @@
 - Added launchd and BSD rc service templates for macOS and BSD targets.
 - Added Linux service manager selection for scripts and Ansible.
 - Expanded Unix-like support notes for Oracle Linux, CentOS, CentOS Stream, Fedora, Linux Mint, FreeBSD, OpenBSD, NetBSD, and macOS.
+- Hardened Linux health-check state handling with a root-owned state directory and non-executable state parsing.
+- Made Linux diagnostics summary-only by default with explicit raw-detail opt-in.
 
 ## v1.0.0
 

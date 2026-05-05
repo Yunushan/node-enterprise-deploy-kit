@@ -67,6 +67,7 @@ node_deploy_linux_traefik_router_name: example-node-app-router
 node_deploy_linux_traefik_service_name: example-node-app-service
 node_deploy_linux_traefik_service: traefik
 node_deploy_linux_healthcheck_path: /health
+node_deploy_linux_healthcheck_state_dir: /var/lib/node-enterprise-deploy-kit/example-node-app
 node_deploy_tomcat_package: ""
 node_deploy_tomcat_service: tomcat
 node_deploy_tomcat_webapps_dir: /var/lib/tomcat/webapps

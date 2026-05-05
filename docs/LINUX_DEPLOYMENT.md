@@ -103,9 +103,10 @@ replacing existing env files, service units/init scripts, reverse proxy configs,
 or health-check files. If `BACKUP_DIR` is not set, the scripts use
 `/var/backups/<APP_NAME>`.
 
-Health checks record `healthcheck.state` and `healthcheck.log` under `LOG_DIR`
-and prune old managed logs, diagnostics, and backups using
-`LOG_RETENTION_DAYS`, `DIAGNOSTIC_RETENTION_DAYS`, and
+Health checks record `healthcheck.log` under `LOG_DIR` and `healthcheck.state`
+under the root-owned `HEALTHCHECK_STATE_DIR`, which must stay outside
+app-writable log directories. They prune old managed logs, diagnostics, and
+backups using `LOG_RETENTION_DAYS`, `DIAGNOSTIC_RETENTION_DAYS`, and
 `BACKUP_RETENTION_DAYS`.
 
 8. Manual service install:

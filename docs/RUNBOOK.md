@@ -39,7 +39,7 @@ Get-EventLog Application -Newest 50
 ```bash
 bash scripts/linux/test-deployment-preflight.sh config/linux/app.env
 bash deploy.sh config/linux/app.env
-bash scripts/linux/diagnose-node-app.sh config/linux/app.env
+sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 systemctl status <app-name>
 systemctl restart <app-name>
 journalctl -u <app-name> -n 200 --no-pager
@@ -59,6 +59,11 @@ apache2ctl configtest || httpd -t
 haproxy -c -f /etc/haproxy/haproxy.cfg
 traefik check --configFile=/etc/traefik/traefik.yml
 ```
+
+Linux diagnostics are summary-only by default. For deep incident response, run
+`sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env --include-raw-details`
+and treat the generated file as sensitive because it may include logs, process
+arguments, and HTTP response bodies.
 
 ## Emergency Recovery
 
@@ -97,6 +102,6 @@ configured port is owned by the configured service process tree, the HTTP health
 probe succeeds, and the scheduled health check has a recent successful run.
 
 ```bash
-sudo cat /var/log/<app-name>/healthcheck.state
+sudo cat /var/lib/node-enterprise-deploy-kit/<app-name>/healthcheck.state
 sudo grep -Ec ' OK |FAILED|RESTARTING_SERVICE|RESTART_SUPPRESSED' /var/log/<app-name>/healthcheck.log
 ```

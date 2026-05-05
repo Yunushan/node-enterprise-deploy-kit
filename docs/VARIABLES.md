@@ -14,6 +14,7 @@
 | Health URL | `HealthUrl` | `HEALTH_URL` | HTTP health probe URL |
 | Log directory | `LogDirectory` | `LOG_DIR` | Production log directory |
 | Backup directory | `BackupDirectory` | `BACKUP_DIR` | Timestamped backups of overwritten service/proxy/health files |
+| Health state directory | n/a | `HEALTHCHECK_STATE_DIR` | Root-owned Linux health-check state directory; keep outside `LOG_DIR` |
 | Reverse proxy | `ReverseProxy` | `REVERSE_PROXY` | Windows: `iis` or `none`; Unix-like: `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
 | Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Unix-like: `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | Service account | `ServiceAccount` | `SERVICE_USER` | Windows service logon account or Unix runtime user |

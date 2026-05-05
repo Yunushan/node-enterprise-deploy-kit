@@ -39,6 +39,7 @@ Important controls:
 | `node_deploy_linux_deploy_dir` | Remote Linux directory for copied deployment scripts/templates |
 | `node_deploy_linux_config_path` | Remote Linux rendered deployment env file |
 | `node_deploy_linux_backup_dir` | Remote Linux directory for service/proxy/health-check backups |
+| `node_deploy_linux_healthcheck_state_dir` | Root-owned Linux health-check state directory |
 | `node_deploy_linux_service_manager` | `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | `node_deploy_linux_reverse_proxy` | `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
 | `node_deploy_linux_haproxy_config_file` | HAProxy config path rendered by the role |

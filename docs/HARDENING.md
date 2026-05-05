@@ -29,6 +29,10 @@
 - Run Node.js as a dedicated non-root service user and group.
 - Use Nginx or Apache TLS configuration from your enterprise baseline.
 - Use firewall rules to block external access to the Node.js port.
+- Keep Linux health-check state in a root-owned directory outside app-writable
+  log paths.
+- Keep Linux diagnostic bundles summary-only unless raw logs are explicitly
+  needed for incident response.
 - Collect journald and log files into Wazuh, Graylog, or your logging platform.
 
 ## Preflight Hardening Warnings

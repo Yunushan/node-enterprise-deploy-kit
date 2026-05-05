@@ -12,7 +12,17 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "tomcat" || "$APP_RUNTIME_NORMALIZED" == "apa
 fi
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/healthcheck.log"
-STATE_FILE="$LOG_DIR/healthcheck.state"
+HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME}}"
+LOG_DIR_NORMALIZED="${LOG_DIR%/}"
+HEALTHCHECK_STATE_DIR_NORMALIZED="${HEALTHCHECK_STATE_DIR%/}"
+if [[ "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED" || "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED"/* ]]; then
+  echo "HEALTHCHECK_STATE_DIR must not be inside LOG_DIR because healthcheck state is root-owned control data." >&2
+  exit 1
+fi
+mkdir -p "$HEALTHCHECK_STATE_DIR"
+chmod 0750 "$HEALTHCHECK_STATE_DIR" 2>/dev/null || true
+chown root:root "$HEALTHCHECK_STATE_DIR" 2>/dev/null || true
+STATE_FILE="$HEALTHCHECK_STATE_DIR/healthcheck.state"
 HEALTHCHECK_FAILURE_THRESHOLD="${HEALTHCHECK_FAILURE_THRESHOLD:-2}"
 HEALTHCHECK_RESTART_COOLDOWN="${HEALTHCHECK_RESTART_COOLDOWN:-300}"
 HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-10}"
@@ -50,19 +60,38 @@ LAST_RESTART_EPOCH=0
 LAST_SUCCESS_EPOCH=0
 LAST_FAILURE_EPOCH=0
 LAST_CHECK_EPOCH=0
-if [[ -f "$STATE_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$STATE_FILE" || true
-fi
+read_state() {
+  local key value
+  if [[ ! -f "$STATE_FILE" ]]; then
+    return
+  fi
+  while IFS='=' read -r key value; do
+    case "$key" in
+      CONSECUTIVE_FAILURES|LAST_RESTART_EPOCH|LAST_SUCCESS_EPOCH|LAST_FAILURE_EPOCH|LAST_CHECK_EPOCH)
+        if [[ "$value" =~ ^[0-9]+$ ]]; then
+          printf -v "$key" '%s' "$value"
+        else
+          log "STATE_IGNORED key=$key reason=non_integer"
+        fi
+        ;;
+    esac
+  done < "$STATE_FILE"
+}
+read_state
 retention_cleanup
 write_state() {
+  local tmp
+  tmp="$(mktemp "${STATE_FILE}.tmp.XXXXXX")"
   {
     echo "CONSECUTIVE_FAILURES=${CONSECUTIVE_FAILURES:-0}"
     echo "LAST_RESTART_EPOCH=${LAST_RESTART_EPOCH:-0}"
     echo "LAST_SUCCESS_EPOCH=${LAST_SUCCESS_EPOCH:-0}"
     echo "LAST_FAILURE_EPOCH=${LAST_FAILURE_EPOCH:-0}"
     echo "LAST_CHECK_EPOCH=${LAST_CHECK_EPOCH:-0}"
-  } > "$STATE_FILE"
+  } > "$tmp"
+  chmod 0640 "$tmp" 2>/dev/null || true
+  chown root:root "$tmp" 2>/dev/null || true
+  mv "$tmp" "$STATE_FILE"
 }
 reset_failures() {
   LAST_CHECK_EPOCH="$(date +%s)"

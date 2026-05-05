@@ -110,6 +110,7 @@ esac
 if [[ -n "${APP_NAME:-}" && ! "$APP_NAME" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   add_error "APP_NAME should contain only letters, numbers, dot, underscore, or dash."
 fi
+HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME:-app}}"
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && ! -x "$NODE_BIN" ]]; then
   add_error "NODE_BIN not found or not executable: $NODE_BIN"
@@ -121,7 +122,7 @@ fi
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && ! -d "$APP_DIR" ]]; then
   add_error "APP_DIR not found: $APP_DIR"
 fi
-for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR; do
+for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR HEALTHCHECK_STATE_DIR; do
   if is_user_runtime_path "${!path_name:-}"; then
     add_warning "$path_name is under a user desktop/downloads/documents path. Use a service-owned production directory."
   fi
@@ -232,6 +233,13 @@ if [[ "$APP_RUNTIME_NORMALIZED" =~ ^(tomcat|apache-tomcat)$ ]]; then
 fi
 
 if ! is_true "$SKIP_HEALTH_CHECK"; then
+  if [[ -n "${LOG_DIR:-}" ]]; then
+    log_dir_normalized="${LOG_DIR%/}"
+    healthcheck_state_dir_normalized="${HEALTHCHECK_STATE_DIR%/}"
+    if [[ "$healthcheck_state_dir_normalized" == "$log_dir_normalized" || "$healthcheck_state_dir_normalized" == "$log_dir_normalized"/* ]]; then
+      add_error "HEALTHCHECK_STATE_DIR must not be inside LOG_DIR because healthcheck state is root-owned control data."
+    fi
+  fi
   for value_name in HEALTHCHECK_FAILURE_THRESHOLD HEALTHCHECK_RESTART_COOLDOWN HEALTHCHECK_TIMEOUT; do
     if [[ -n "${!value_name:-}" ]] && ! is_integer "${!value_name}"; then
       add_warning "$value_name should be an integer."

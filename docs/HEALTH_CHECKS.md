@@ -87,14 +87,21 @@ Recommended controls:
 HEALTHCHECK_FAILURE_THRESHOLD="2"
 HEALTHCHECK_RESTART_COOLDOWN="300"
 HEALTHCHECK_TIMEOUT="10"
+HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 ```
 
-The Linux health check writes `healthcheck.state` and `healthcheck.log` under
-`LOG_DIR`. Use diagnostics for a safe summary:
+The Linux health check writes `healthcheck.log` under `LOG_DIR` and writes
+`healthcheck.state` under the root-owned `HEALTHCHECK_STATE_DIR`. Keep
+`HEALTHCHECK_STATE_DIR` outside `LOG_DIR` so app-writable logs cannot influence
+root-run health-check control state. Use diagnostics for a safe summary:
 
 ```bash
-bash scripts/linux/diagnose-node-app.sh config/linux/app.env
+sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 ```
+
+Linux diagnostics omit raw service logs, process command lines, and HTTP
+response bodies by default. Use `--include-raw-details` only when the output can
+be handled as sensitive incident data.
 
 When `APP_RUNTIME="tomcat"`, the health check restarts `TOMCAT_SERVICE` instead
 of the Node app service.

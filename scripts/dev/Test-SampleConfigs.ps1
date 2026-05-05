@@ -224,7 +224,8 @@ function Test-LinuxExampleConfig {
     "SERVICE_GROUP",
     "LOG_DIR",
     "ENV_FILE",
-    "BACKUP_DIR"
+    "BACKUP_DIR",
+    "HEALTHCHECK_STATE_DIR"
   ) "config/linux/app.env.example"
 
   Assert-Port $env.APP_PORT "Linux APP_PORT"
@@ -260,6 +261,12 @@ function Test-LinuxExampleConfig {
   }
   if ($env.SERVICE_USER -eq "root" -or $env.SERVICE_GROUP -eq "root") {
     throw "Linux SERVICE_USER/SERVICE_GROUP examples should not default to root."
+  }
+  if (-not $env.HEALTHCHECK_STATE_DIR.StartsWith("/")) {
+    throw "Linux HEALTHCHECK_STATE_DIR should be an absolute root-owned state path."
+  }
+  if ($env.HEALTHCHECK_STATE_DIR.TrimEnd("/") -eq $env.LOG_DIR.TrimEnd("/") -or $env.HEALTHCHECK_STATE_DIR.StartsWith($env.LOG_DIR.TrimEnd("/") + "/")) {
+    throw "Linux HEALTHCHECK_STATE_DIR must not be inside LOG_DIR."
   }
   if ($env.TLS_ENABLED -ne "true") {
     throw "Linux TLS_ENABLED should default to true."
@@ -313,6 +320,7 @@ function Test-AnsibleDefaults {
     "node_deploy_linux_traefik_service_name",
     "node_deploy_linux_traefik_service",
     "node_deploy_linux_healthcheck_path",
+    "node_deploy_linux_healthcheck_state_dir",
     "node_deploy_tomcat_package",
     "node_deploy_tomcat_service",
     "node_deploy_tomcat_webapps_dir",
@@ -421,6 +429,7 @@ function Test-RenderedTemplates {
     NODE_ARGUMENTS = $LinuxEnv.NODE_ARGUMENTS
     FAILURE_RESTART_DELAY = $LinuxEnv.FAILURE_RESTART_DELAY
     LOG_DIR = $LinuxEnv.LOG_DIR
+    BACKUP_DIR = $LinuxEnv.BACKUP_DIR
     APP_PORT = $LinuxEnv.APP_PORT
     PUBLIC_HOSTNAME = $LinuxEnv.PUBLIC_HOSTNAME
     HEALTH_URL = $LinuxEnv.HEALTH_URL
@@ -431,6 +440,7 @@ function Test-RenderedTemplates {
     HAPROXY_FRONTEND_NAME = $LinuxEnv.HAPROXY_FRONTEND_NAME
     HAPROXY_BACKEND_NAME = $LinuxEnv.HAPROXY_BACKEND_NAME
     HEALTHCHECK_PATH = $LinuxEnv.HEALTHCHECK_PATH
+    HEALTHCHECK_STATE_DIR = $LinuxEnv.HEALTHCHECK_STATE_DIR
     TRAEFIK_ENTRYPOINT = $LinuxEnv.TRAEFIK_ENTRYPOINT
     TRAEFIK_ROUTER_NAME = $LinuxEnv.TRAEFIK_ROUTER_NAME
     TRAEFIK_SERVICE_NAME = $LinuxEnv.TRAEFIK_SERVICE_NAME

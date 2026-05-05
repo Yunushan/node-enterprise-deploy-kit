@@ -49,10 +49,13 @@ rc-service <app-name> status
 launchctl print system/<app-name>
 rcctl check <app-name>
 ss -ltnp | grep :3000
-curl -i http://127.0.0.1:3000/health
-bash scripts/linux/diagnose-node-app.sh config/linux/app.env
-cat /var/log/<app-name>/healthcheck.state
+curl -fsS -o /dev/null -w 'http_code=%{http_code} time_total=%{time_total}\n' http://127.0.0.1:3000/health
+sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
+sudo cat /var/lib/node-enterprise-deploy-kit/<app-name>/healthcheck.state
 ```
+
+Use `--include-raw-details` with Linux diagnostics only when raw logs and HTTP
+response bodies are acceptable in the generated bundle.
 
 ## Common Issues
 
