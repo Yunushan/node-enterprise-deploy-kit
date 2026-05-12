@@ -56,6 +56,7 @@ node_deploy_linux_apache_site_name: example-node-app
 node_deploy_linux_apache_config_dir: ""
 node_deploy_linux_apache_service: ""
 node_deploy_linux_haproxy_config_file: /etc/haproxy/haproxy.cfg
+node_deploy_linux_haproxy_allow_main_config_replace: false
 node_deploy_linux_haproxy_bind: "*:80"
 node_deploy_linux_haproxy_frontend_name: example-node-app_frontend
 node_deploy_linux_haproxy_backend_name: example-node-app_backend
@@ -82,6 +83,9 @@ node_deploy_linux_runtime_env_keys: []
 node_deploy_public_hostname: app.example.local
 node_deploy_public_port: 443
 node_deploy_tls_enabled: true
+node_deploy_linux_proxy_listen_port: 80
+node_deploy_linux_forwarded_proto: https
+node_deploy_linux_forwarded_port: 443
 node_deploy_healthcheck_enabled: true
 node_deploy_healthcheck_interval: 60
 node_deploy_healthcheck_interval_minutes: 1

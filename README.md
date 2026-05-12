@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <strong>English</strong> | <a href="README.tr.md">Türkçe</a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#what-this-solves">What this solves</a> •
   <a href="#supported-platforms">Supported Platforms</a> •
@@ -187,6 +191,11 @@ APP_RUNTIME="node"          # node or tomcat
 SERVICE_MANAGER="systemd"   # systemd, systemv, openrc, launchd, or bsdrc
 REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 ```
+
+Linux proxy templates listen on `PROXY_LISTEN_PORT` and set forwarded headers
+from `FORWARDED_PROTO` and `FORWARDED_PORT`. For the common pattern where TLS
+terminates upstream, keep the local proxy on port 80 and set forwarded headers
+to the public HTTPS edge.
 
 3. Optional dependency bootstrap:
 
@@ -445,8 +454,14 @@ HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 REVERSE_PROXY="nginx"
 HEALTHCHECK_PATH="/health"
 HAPROXY_CONFIG_FILE="/etc/haproxy/haproxy.cfg"
+HAPROXY_ALLOW_MAIN_CONFIG_REPLACE="false"
 TRAEFIK_DYNAMIC_FILE="/etc/traefik/dynamic/example-node-app.yml"
 PUBLIC_HOSTNAME="app.example.local"
+PUBLIC_PORT="443"
+TLS_ENABLED="true"
+PROXY_LISTEN_PORT="80"
+FORWARDED_PROTO="https"
+FORWARDED_PORT="443"
 HEALTHCHECK_FAILURE_THRESHOLD="2"
 HEALTHCHECK_RESTART_COOLDOWN="300"
 HEALTHCHECK_TIMEOUT="10"
@@ -455,7 +470,7 @@ BACKUP_RETENTION_DAYS="90"
 DIAGNOSTIC_RETENTION_DAYS="14"
 ```
 
-Set `SERVICE_MANAGER` to `systemv` for legacy init hosts, `openrc` for OpenRC hosts, `launchd` for macOS, or `bsdrc` for BSD. Set `REVERSE_PROXY` to `apache`, `haproxy`, or `traefik` to use those installers instead of Nginx. Set `APP_RUNTIME` to `tomcat` when deploying a WAR with `TOMCAT_WAR_FILE`.
+Set `SERVICE_MANAGER` to `systemv` for legacy init hosts, `openrc` for OpenRC hosts, `launchd` for macOS, or `bsdrc` for BSD. Set `REVERSE_PROXY` to `apache`, `haproxy`, or `traefik` to use those installers instead of Nginx. Set `APP_RUNTIME` to `tomcat` when deploying a WAR with `TOMCAT_WAR_FILE`. HAProxy refuses to replace an existing main config unless `HAPROXY_ALLOW_MAIN_CONFIG_REPLACE="true"` is set.
 
 ---
 

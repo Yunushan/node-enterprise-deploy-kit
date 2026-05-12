@@ -1,12 +1,12 @@
-<VirtualHost *:80>
+<VirtualHost *:{{PROXY_LISTEN_PORT}}>
     ServerName {{PUBLIC_HOSTNAME}}
 
     ProxyPreserveHost On
     ProxyRequests Off
     ProxyTimeout 300
 
-    RequestHeader set X-Forwarded-Proto "http"
-    RequestHeader set X-Forwarded-Port "80"
+    RequestHeader set X-Forwarded-Proto "{{FORWARDED_PROTO}}"
+    RequestHeader set X-Forwarded-Port "{{FORWARDED_PORT}}"
 
     ErrorLog {{LOG_DIR}}/apache-error.log
     CustomLog {{LOG_DIR}}/apache-access.log combined

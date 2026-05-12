@@ -21,3 +21,19 @@ jobs:
       - name: Repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1
+      - name: Optional ShellCheck
+        shell: bash
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck deploy.sh scripts/dev/*.sh scripts/linux/*.sh
+          else
+            echo "shellcheck not found; skipping optional ShellCheck validation."
+          fi
+
+  windows-checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Windows repository verification
+        shell: pwsh
+        run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax

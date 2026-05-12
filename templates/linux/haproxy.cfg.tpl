@@ -1,3 +1,8 @@
+#
+# Managed by node-enterprise-deploy-kit for {{APP_NAME}}.
+# This template is intended for a dedicated HAProxy config or an explicit main
+# config replacement. Do not append unrelated frontends/backends here.
+#
 global
     log stdout format raw local0
     maxconn 4096
@@ -13,8 +18,8 @@ defaults
 
 frontend {{HAPROXY_FRONTEND_NAME}}
     bind {{HAPROXY_BIND}}
-    http-request set-header X-Forwarded-Proto http
-    http-request set-header X-Forwarded-Port %[dst_port]
+    http-request set-header X-Forwarded-Proto {{FORWARDED_PROTO}}
+    http-request set-header X-Forwarded-Port {{FORWARDED_PORT}}
     default_backend {{HAPROXY_BACKEND_NAME}}
 
 backend {{HAPROXY_BACKEND_NAME}}

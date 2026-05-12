@@ -100,6 +100,11 @@ configured HTTP/HTTPS binding. If `TlsEnabled` is true and
 `IisCertificateThumbprint` is empty or unavailable, certificate binding remains
 an explicit manual step and the script prints a warning.
 
+Windows automation in this kit supports `ReverseProxy` values `iis` and `none`.
+Apache, HAProxy, and Traefik helper installers are Linux/Unix scripts here. If
+you run those proxies on Windows, manage their configuration separately and keep
+`ReverseProxy` set to `none` for this Windows deployment flow.
+
 For production IIS reverse proxy deployments, install IIS URL Rewrite and
 Application Request Routing before running the installer. By default,
 `IisEnableArrProxy` enables ARR proxy mode, preserves the original `Host`

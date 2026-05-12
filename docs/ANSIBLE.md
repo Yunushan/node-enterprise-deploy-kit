@@ -42,7 +42,11 @@ Important controls:
 | `node_deploy_linux_healthcheck_state_dir` | Root-owned Linux health-check state directory |
 | `node_deploy_linux_service_manager` | `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | `node_deploy_linux_reverse_proxy` | `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
+| `node_deploy_linux_proxy_listen_port` | Local Nginx/Apache template listener port |
+| `node_deploy_linux_forwarded_proto` | Forwarded public scheme, usually `https` behind upstream TLS |
+| `node_deploy_linux_forwarded_port` | Forwarded public port, usually `443` behind upstream TLS |
 | `node_deploy_linux_haproxy_config_file` | HAProxy config path rendered by the role |
+| `node_deploy_linux_haproxy_allow_main_config_replace` | Explicit opt-in before replacing an existing main HAProxy config |
 | `node_deploy_linux_traefik_dynamic_file` | Traefik dynamic file rendered by the role |
 | `node_deploy_tomcat_war_file` | WAR artifact path used when `node_deploy_app_runtime: tomcat` |
 | `node_deploy_log_retention_days` | Managed log file retention period |
@@ -82,6 +86,9 @@ repository does not bundle service-wrapper executables.
 
 Install `ansible/requirements.yml` on control nodes that run the playbook or
 local syntax checks. The Windows role uses the `ansible.windows` collection.
+The sample `ansible.cfg` files keep SSH host key checking enabled. Use an
+inventory-specific override only for disposable lab hosts if your organization
+permits it.
 
 Set `node_deploy_linux_install_dependencies: true` only when the playbook is
 allowed to modify OS packages. Node.js itself should still come from your

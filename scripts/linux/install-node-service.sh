@@ -5,10 +5,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-config/linux/app.env}"
-CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
-if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config file not found: $CONFIG_FILE" >&2; exit 1; fi
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 PLATFORM_FAMILY="$(detect_platform_family)"
 SERVICE_MANAGER="${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}"
@@ -36,14 +33,14 @@ write_runtime_env_file() {
   ENV_FILE="$tmp" write_env_value "APP_NAME" "$APP_NAME"
   ENV_FILE="$tmp" write_env_value "BIND_ADDRESS" "$BIND_ADDRESS"
 
-  for key in $RUNTIME_ENV_KEYS; do
+  while IFS= read -r key; do
     case "$key" in
       NODE_ENV|PORT|APP_PORT|APP_NAME|BIND_ADDRESS|"") continue ;;
     esac
     if [[ -n "${!key+x}" ]]; then
       ENV_FILE="$tmp" write_env_value "$key" "${!key}"
     fi
-  done
+  done < <(runtime_env_key_list "$RUNTIME_ENV_KEYS")
   replace_file_with_backup "$tmp" "$ENV_FILE" "$BACKUP_DIR"
 }
 run_as_service_user() {

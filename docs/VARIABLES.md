@@ -16,6 +16,11 @@
 | Backup directory | `BackupDirectory` | `BACKUP_DIR` | Timestamped backups of overwritten service/proxy/health files |
 | Health state directory | n/a | `HEALTHCHECK_STATE_DIR` | Root-owned Linux health-check state directory; keep outside `LOG_DIR` |
 | Reverse proxy | `ReverseProxy` | `REVERSE_PROXY` | Windows: `iis` or `none`; Unix-like: `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
+| Public port | `PublicPort` | `PUBLIC_PORT` | Public edge port used for generated forwarded headers |
+| TLS enabled | `TlsEnabled` | `TLS_ENABLED` | Public edge TLS expectation; Linux templates do not create certificates by themselves |
+| Proxy listen port | n/a | `PROXY_LISTEN_PORT` | Local reverse-proxy listener port rendered by Nginx/Apache helper templates |
+| Forwarded protocol | n/a | `FORWARDED_PROTO` | `X-Forwarded-Proto` value, usually `https` when TLS terminates upstream |
+| Forwarded port | n/a | `FORWARDED_PORT` | `X-Forwarded-Port` value, usually `PUBLIC_PORT` |
 | Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Unix-like: `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | Service account | `ServiceAccount` | `SERVICE_USER` | Windows service logon account or Unix runtime user |
 | Service account password | `ServiceAccountPassword` | n/a | Optional Windows password for non-gMSA accounts; prefer gMSA or built-in accounts |
@@ -45,6 +50,7 @@
 | Apache site name | n/a | `APACHE_SITE_NAME` | Linux Apache virtual host name |
 | Nginx site name | n/a | `NGINX_SITE_NAME` | Linux Nginx config name |
 | HAProxy config | n/a | `HAPROXY_CONFIG_FILE` | Dedicated HAProxy config file to render and validate |
+| HAProxy main config opt-in | n/a | `HAPROXY_ALLOW_MAIN_CONFIG_REPLACE` | Must be true before replacing an existing `/etc/haproxy/haproxy.cfg` not already managed by this kit |
 | HAProxy bind | n/a | `HAPROXY_BIND` | HAProxy frontend bind value, for example `*:80` |
 | Traefik dynamic file | n/a | `TRAEFIK_DYNAMIC_FILE` | Dynamic Traefik provider file for the app router/service |
 | Traefik entrypoint | n/a | `TRAEFIK_ENTRYPOINT` | Existing Traefik entrypoint name, usually `web` or `websecure` |

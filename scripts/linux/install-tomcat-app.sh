@@ -5,10 +5,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-config/linux/app.env}"
-CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
-if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config not found: $CONFIG_FILE" >&2; exit 1; fi
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"

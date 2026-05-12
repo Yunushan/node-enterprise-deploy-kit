@@ -54,8 +54,13 @@ switch ($config.ServiceManager) {
     default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }
 }
 
-if (-not $SkipReverseProxy -and $config.ReverseProxy -eq "iis") {
-    & (Join-Path $repoRoot "scripts\windows\Install-IISReverseProxy.ps1") -ConfigPath $ConfigPath
+if (-not $SkipReverseProxy) {
+    switch ([string]$config.ReverseProxy) {
+        "iis" { & (Join-Path $repoRoot "scripts\windows\Install-IISReverseProxy.ps1") -ConfigPath $ConfigPath }
+        "none" { }
+        "" { }
+        default { throw "Unsupported Windows ReverseProxy: $($config.ReverseProxy). Use iis or none. Apache, HAProxy, and Traefik installers are Linux/Unix scripts in this kit." }
+    }
 }
 
 if (-not $SkipHealthCheck) {

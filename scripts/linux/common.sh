@@ -109,6 +109,49 @@ is_true() {
   esac
 }
 
+runtime_env_key_list() {
+  printf '%s' "${1:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
+}
+
+load_config_file() {
+  local __result_var="$1" repo_root="$2" config_file="${3:-config/linux/app.env}"
+  config_file="$(resolve_config_path "$repo_root" "$config_file")"
+  if [[ ! -f "$config_file" ]]; then
+    echo "Config not found: $config_file" >&2
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  source "$config_file"
+  printf -v "$__result_var" '%s' "$config_file"
+}
+
+proxy_listen_port() {
+  printf '%s\n' "${PROXY_LISTEN_PORT:-80}"
+}
+
+proxy_forwarded_proto() {
+  if [[ -n "${FORWARDED_PROTO:-}" ]]; then
+    printf '%s\n' "$FORWARDED_PROTO"
+  elif is_true "${TLS_ENABLED:-false}"; then
+    printf '%s\n' "https"
+  else
+    printf '%s\n' "http"
+  fi
+}
+
+proxy_forwarded_port() {
+  if [[ -n "${FORWARDED_PORT:-}" ]]; then
+    printf '%s\n' "$FORWARDED_PORT"
+  elif [[ -n "${PUBLIC_PORT:-}" ]]; then
+    printf '%s\n' "$PUBLIC_PORT"
+  elif is_true "${TLS_ENABLED:-false}"; then
+    printf '%s\n' "443"
+  else
+    printf '%s\n' "80"
+  fi
+}
+
 timestamp_utc() {
   date -u +%Y%m%d%H%M%S
 }

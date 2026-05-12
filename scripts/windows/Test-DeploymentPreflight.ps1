@@ -353,7 +353,7 @@ if (-not $SkipReverseProxy) {
         "none" {}
         "" {}
         default {
-            Add-Error "Unsupported ReverseProxy: $($config.ReverseProxy). Use iis or none on Windows."
+            Add-Error "Unsupported ReverseProxy: $($config.ReverseProxy). Use iis or none on Windows. Apache, HAProxy, and Traefik installers are Linux/Unix scripts in this kit."
         }
     }
 }

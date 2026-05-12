@@ -98,6 +98,7 @@ $failures = New-Object System.Collections.Generic.List[string]
 $docFiles = @(Get-DocFiles)
 $requiredFiles = @(
   "README.md",
+  "README.tr.md",
   "SECURITY.md",
   "CONTRIBUTING.md",
   "docs/ARCHITECTURE.md",

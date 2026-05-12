@@ -5,14 +5,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-config/linux/app.env}"
-CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
-if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config not found: $CONFIG_FILE" >&2; exit 1; fi
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi
 
 APACHE_SITE_NAME="${APACHE_SITE_NAME:-$APP_NAME}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
+PROXY_LISTEN_PORT="$(proxy_listen_port)"
+FORWARDED_PROTO="$(proxy_forwarded_proto)"
+FORWARDED_PORT="$(proxy_forwarded_port)"
 TEMPLATE="$REPO_ROOT/templates/linux/apache-vhost.conf.tpl"
 
 if command -v apache2ctl >/dev/null 2>&1; then
@@ -60,9 +60,12 @@ fi
 
 render_template_file "$TEMPLATE" "$OUT" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
+  PROXY_LISTEN_PORT "$PROXY_LISTEN_PORT" \
   APP_PORT "$APP_PORT" \
   HEALTH_URL "$HEALTH_URL" \
-  LOG_DIR "$LOG_DIR"
+  LOG_DIR "$LOG_DIR" \
+  FORWARDED_PROTO "$FORWARDED_PROTO" \
+  FORWARDED_PORT "$FORWARDED_PORT"
 backup_path="$LAST_BACKUP_PATH"
 
 if [[ "$ENABLE_WITH_A2ENSITE" == "true" ]] && command -v a2ensite >/dev/null 2>&1; then

@@ -5,13 +5,7 @@ REPO_ROOT="$SCRIPT_DIR"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-$REPO_ROOT/config/linux/app.env}"
-CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "Config not found: $CONFIG_FILE. Copy config/linux/app.env.example first." >&2
-  exit 1
-fi
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"

@@ -52,10 +52,12 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=scripts/linux/common.sh
+source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${CONFIG_FILE:-config/linux/app.env}"
-if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config not found: $CONFIG_FILE" >&2; exit 1; fi
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 SERVICE_MANAGER="${SERVICE_MANAGER:-systemd}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"

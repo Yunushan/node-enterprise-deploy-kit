@@ -225,16 +225,26 @@ function Test-LinuxExampleConfig {
     "LOG_DIR",
     "ENV_FILE",
     "BACKUP_DIR",
+    "PUBLIC_PORT",
+    "PROXY_LISTEN_PORT",
+    "FORWARDED_PROTO",
+    "FORWARDED_PORT",
+    "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE",
     "HEALTHCHECK_STATE_DIR"
   ) "config/linux/app.env.example"
 
   Assert-Port $env.APP_PORT "Linux APP_PORT"
   Assert-Port $env.PUBLIC_PORT "Linux PUBLIC_PORT"
+  Assert-Port $env.PROXY_LISTEN_PORT "Linux PROXY_LISTEN_PORT"
+  Assert-Port $env.FORWARDED_PORT "Linux FORWARDED_PORT"
   foreach ($name in @("HEALTHCHECK_INTERVAL", "HEALTHCHECK_FAILURE_THRESHOLD", "HEALTHCHECK_RESTART_COOLDOWN", "HEALTHCHECK_TIMEOUT", "FAILURE_RESTART_DELAY", "LOG_RETENTION_DAYS", "BACKUP_RETENTION_DAYS", "DIAGNOSTIC_RETENTION_DAYS")) {
     Assert-IntegerAtLeast $env[$name] $name
   }
-  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "TOMCAT_RESTART")) {
+  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
+  }
+  if ($env.FORWARDED_PROTO -notin @("http", "https")) {
+    throw "Linux FORWARDED_PROTO must be http or https."
   }
   if ($env.APP_RUNTIME -notin @("node", "tomcat")) {
     throw "Linux APP_RUNTIME must be node or tomcat."
@@ -309,6 +319,7 @@ function Test-AnsibleDefaults {
     "node_deploy_linux_apache_config_dir",
     "node_deploy_linux_apache_service",
     "node_deploy_linux_haproxy_config_file",
+    "node_deploy_linux_haproxy_allow_main_config_replace",
     "node_deploy_linux_haproxy_bind",
     "node_deploy_linux_haproxy_frontend_name",
     "node_deploy_linux_haproxy_backend_name",
@@ -327,6 +338,9 @@ function Test-AnsibleDefaults {
     "node_deploy_tomcat_war_file",
     "node_deploy_tomcat_context_path",
     "node_deploy_tomcat_restart",
+    "node_deploy_linux_proxy_listen_port",
+    "node_deploy_linux_forwarded_proto",
+    "node_deploy_linux_forwarded_port",
     "node_deploy_linux_nginx_package",
     "node_deploy_linux_apache_package",
     "node_deploy_linux_haproxy_package",
@@ -432,6 +446,9 @@ function Test-RenderedTemplates {
     BACKUP_DIR = $LinuxEnv.BACKUP_DIR
     APP_PORT = $LinuxEnv.APP_PORT
     PUBLIC_HOSTNAME = $LinuxEnv.PUBLIC_HOSTNAME
+    PROXY_LISTEN_PORT = $LinuxEnv.PROXY_LISTEN_PORT
+    FORWARDED_PROTO = $LinuxEnv.FORWARDED_PROTO
+    FORWARDED_PORT = $LinuxEnv.FORWARDED_PORT
     HEALTH_URL = $LinuxEnv.HEALTH_URL
     HEALTHCHECK_INTERVAL = $LinuxEnv.HEALTHCHECK_INTERVAL
     HEALTHCHECK_COMMAND = "/usr/local/sbin/$($LinuxEnv.APP_NAME)-healthcheck.sh /etc/node-enterprise-deploy-kit/$($LinuxEnv.APP_NAME).env"

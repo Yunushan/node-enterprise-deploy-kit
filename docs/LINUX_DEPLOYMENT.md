@@ -72,6 +72,15 @@ REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 APP_RUNTIME="node"          # node or tomcat
 ```
 
+For macOS use `SERVICE_MANAGER="launchd"`; for FreeBSD, OpenBSD, or NetBSD use
+`SERVICE_MANAGER="bsdrc"`.
+
+`TLS_ENABLED`, `PUBLIC_PORT`, `FORWARDED_PROTO`, and `FORWARDED_PORT` describe
+the public edge seen by the application through forwarded headers. The Linux
+Nginx, Apache, and HAProxy templates listen on `PROXY_LISTEN_PORT` and do not
+create certificate bindings. If TLS terminates at an upstream load balancer,
+keep `PROXY_LISTEN_PORT="80"` and set `FORWARDED_PROTO="https"`.
+
 5. Optional dependency bootstrap:
 
 ```bash
@@ -141,8 +150,11 @@ sudo bash scripts/linux/install-haproxy-reverse-proxy.sh config/linux/app.env
 
 The HAProxy installer renders a complete config to `HAPROXY_CONFIG_FILE`, backs
 up any previous file, validates with `haproxy -c`, and reloads/restarts HAProxy.
-Use it on a dedicated HAProxy instance or point `HAPROXY_CONFIG_FILE` at your
-managed app-specific config path.
+It refuses to replace an existing `/etc/haproxy/haproxy.cfg` unless that file is
+already managed by this kit or `HAPROXY_ALLOW_MAIN_CONFIG_REPLACE="true"` is
+set. Use it on a dedicated HAProxy instance, explicitly opt in, or point
+`HAPROXY_CONFIG_FILE` at an app-specific config path that your HAProxy service
+includes.
 
 12. Optional Traefik dynamic config:
 
@@ -152,7 +164,8 @@ sudo bash scripts/linux/install-traefik-reverse-proxy.sh config/linux/app.env
 
 The Traefik installer writes a dynamic file provider config under
 `TRAEFIK_DYNAMIC_DIR`. Your static Traefik config must already watch that
-directory.
+directory. The installer validates the rendered dynamic file through a temporary
+Traefik file-provider config before reloading the service.
 
 13. Optional Tomcat WAR deployment:
 

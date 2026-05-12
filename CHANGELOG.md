@@ -18,6 +18,14 @@
 - Expanded Unix-like support notes for Oracle Linux, CentOS, CentOS Stream, Fedora, Linux Mint, FreeBSD, OpenBSD, NetBSD, and macOS.
 - Hardened Linux health-check state handling with a root-owned state directory and non-executable state parsing.
 - Made Linux diagnostics summary-only by default with explicit raw-detail opt-in.
+- Added a Turkish companion README while keeping the English README as the default project entry point.
+- Made Linux reverse proxy templates use explicit forwarded scheme/port variables for upstream TLS truthfulness.
+- Added a safety opt-in before replacing an existing main HAProxy config.
+- Centralized Linux config loading and aligned runtime environment key parsing across preflight and install flows.
+- Added Traefik dynamic config validation through a temporary file-provider config.
+- Expanded CI with a Windows verification job and optional ShellCheck step.
+- Hardened Ansible sample config defaults by keeping SSH host key checking enabled.
+- Clarified that Windows reverse proxy automation supports IIS or none, while Apache, HAProxy, and Traefik installers are Linux/Unix helpers.
 
 ## v1.0.0
 

@@ -57,6 +57,7 @@ $requiredFiles = @(
   ".github/workflows/ci.yml",
   "LICENSE",
   "README.md",
+  "README.tr.md",
   "docs/RELEASE.md",
   "docs/BACKUP_RESTORE.md",
   "config/windows/app.config.example.json",

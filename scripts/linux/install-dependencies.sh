@@ -5,9 +5,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-}"
-if [[ -n "$CONFIG_FILE" && -f "$CONFIG_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$CONFIG_FILE"
+if [[ -n "$CONFIG_FILE" ]]; then
+  load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 fi
 REVERSE_PROXY="${REVERSE_PROXY:-nginx}"
 REVERSE_PROXY_NORMALIZED="$(normalize_name "$REVERSE_PROXY")"

@@ -8,7 +8,7 @@ source "$REPO_ROOT/scripts/linux/common.sh"
 
 CONFIG_FILE="${1:-config/linux/app.env}"
 shift || true
-CONFIG_FILE="$(resolve_config_path "$REPO_ROOT" "$CONFIG_FILE")"
+load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
 SKIP_REVERSE_PROXY="${SKIP_REVERSE_PROXY:-false}"
@@ -24,13 +24,6 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "Config not found: $CONFIG_FILE" >&2
-  exit 1
-fi
-
-# shellcheck disable=SC1090
-source "$CONFIG_FILE"
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
 
@@ -79,9 +72,6 @@ is_loopback_host() {
 }
 is_sensitive_key_name() {
   [[ "${1:-}" =~ ([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Cc][Oo][Nn][Nn][Ee][Cc][Tt][Ii][Oo][Nn][Ss][Tt][Rr][Ii][Nn][Gg]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]|[Jj][Ww][Tt]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]) ]]
-}
-runtime_env_key_list() {
-  printf '%s' "${RUNTIME_ENV_KEYS:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
 }
 is_user_runtime_path() {
   [[ "${1:-}" =~ ^/home/[^/]+/(Desktop|Downloads|Documents)(/|$) || "${1:-}" =~ ^/Users/[^/]+/(Desktop|Downloads|Documents)(/|$) ]]
@@ -161,7 +151,7 @@ while IFS= read -r runtime_key; do
   if is_sensitive_key_name "$runtime_key"; then
     secret_like_runtime_keys+=("$runtime_key")
   fi
-done < <(runtime_env_key_list)
+done < <(runtime_env_key_list "${RUNTIME_ENV_KEYS:-}")
 if [[ "${#secret_like_runtime_keys[@]}" -gt 0 ]]; then
   add_warning "RUNTIME_ENV_KEYS contains secret-like key name(s): ${secret_like_runtime_keys[*]}. Keep values out of committed config and prefer a secret manager or target-local private env file."
 fi
@@ -194,6 +184,25 @@ esac
 
 if ! is_true "$SKIP_REVERSE_PROXY"; then
   REVERSE_PROXY_NORMALIZED="$(normalize_name "${REVERSE_PROXY:-none}")"
+  proxy_listen_port_value="$(proxy_listen_port)"
+  forwarded_proto_value="$(proxy_forwarded_proto)"
+  forwarded_port_value="$(proxy_forwarded_port)"
+  if ! is_integer "$proxy_listen_port_value" || [[ "$proxy_listen_port_value" -lt 1 || "$proxy_listen_port_value" -gt 65535 ]]; then
+    add_error "PROXY_LISTEN_PORT must be an integer between 1 and 65535."
+  fi
+  if ! is_integer "$forwarded_port_value" || [[ "$forwarded_port_value" -lt 1 || "$forwarded_port_value" -gt 65535 ]]; then
+    add_error "FORWARDED_PORT/PUBLIC_PORT must resolve to an integer between 1 and 65535."
+  fi
+  case "$forwarded_proto_value" in
+    http|https) ;;
+    *) add_error "FORWARDED_PROTO must be http or https." ;;
+  esac
+  if is_true "${TLS_ENABLED:-false}" && [[ "$forwarded_proto_value" != "https" ]]; then
+    add_warning "TLS_ENABLED=true but forwarded protocol resolves to '$forwarded_proto_value'. Use FORWARDED_PROTO=https for upstream/public TLS."
+  fi
+  if [[ "$proxy_listen_port_value" == "443" ]]; then
+    add_warning "PROXY_LISTEN_PORT=443, but Linux proxy templates do not configure certificate files. Confirm TLS is configured manually or terminate TLS upstream."
+  fi
   if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" && -n "${BIND_ADDRESS:-}" ]] && ! is_loopback_host "$BIND_ADDRESS"; then
     add_warning "BIND_ADDRESS is '$BIND_ADDRESS' while REVERSE_PROXY is '${REVERSE_PROXY:-}'. Bind the app to 127.0.0.1 unless direct exposure is intentional."
   fi
@@ -215,6 +224,10 @@ if ! is_true "$SKIP_REVERSE_PROXY"; then
       ;;
     haproxy)
       command -v haproxy >/dev/null 2>&1 || add_warning "REVERSE_PROXY=haproxy but haproxy was not found."
+      case "${HAPROXY_ALLOW_MAIN_CONFIG_REPLACE:-false}" in
+        true|false|TRUE|FALSE|True|False|1|0|yes|no|YES|NO|Yes|No) ;;
+        *) add_warning "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE should be true or false." ;;
+      esac
       ;;
     traefik)
       command -v traefik >/dev/null 2>&1 || add_warning "REVERSE_PROXY=traefik but traefik was not found."
