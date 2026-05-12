@@ -162,6 +162,10 @@ sed_escape_replacement() {
 
 LAST_BACKUP_PATH=""
 
+get_last_backup_path() {
+  printf '%s\n' "$LAST_BACKUP_PATH"
+}
+
 backup_file_if_exists() {
   local file_path="$1" backup_dir="${2:-${BACKUP_DIR:-}}"
   LAST_BACKUP_PATH=""
@@ -174,7 +178,10 @@ backup_file_if_exists() {
 
   mkdir -p "$backup_dir"
   chmod 0750 "$backup_dir" 2>/dev/null || true
-  local backup_path="$backup_dir/$(basename "$file_path").$(timestamp_utc).$$.bak"
+  local backup_name backup_timestamp backup_path
+  backup_name="$(basename "$file_path")"
+  backup_timestamp="$(timestamp_utc)"
+  backup_path="$backup_dir/${backup_name}.${backup_timestamp}.$$.bak"
   cp -p "$file_path" "$backup_path"
   LAST_BACKUP_PATH="$backup_path"
   echo "Backed up $file_path to $backup_path"
