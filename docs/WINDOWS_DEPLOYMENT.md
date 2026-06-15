@@ -56,13 +56,17 @@ Copy-Item config\windows\app.config.example.json config\windows\app.config.json
 notepad config\windows\app.config.json
 ```
 
-4. Place WinSW executable:
+4. Let the installer fetch WinSW automatically, or place your internal copy:
 
 ```text
 tools\winsw\winsw-x64.exe
 ```
 
-No service wrapper binaries are bundled in this repository.
+No service wrapper binaries are bundled in this repository. By default,
+`AutoDownloadWinSW` downloads the pinned stable WinSW executable from
+`WinSWDownloadUrl` if the local file is missing. Set `AutoDownloadWinSW` to
+`false` when the server is offline or your organization requires a trusted
+internal artifact source.
 
 5. Install using the one-command Windows wrapper:
 
@@ -145,6 +149,7 @@ Use these switches when needed:
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -PackagePath C:\deploy\app.zip -SkipInstall -SkipBuild
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipReverseProxy -SkipHealthCheck
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipWinSWDownload
 ```
 
 Preflight treats the configured service's own existing listener as a warning,

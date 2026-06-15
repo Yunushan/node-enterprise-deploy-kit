@@ -5,6 +5,9 @@
   "DeploymentMode": "reverse_proxy",
   "ServiceManager": "winsw",
   "ReverseProxy": "iis",
+  "AutoDownloadWinSW": true,
+  "WinSWDownloadUrl": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
+  "WinSWDownloadSha256": "",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "PackagePath": "",
   "PackageExpectedFiles": [

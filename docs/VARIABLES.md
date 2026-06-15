@@ -26,6 +26,9 @@
 | Forwarded protocol | n/a | `FORWARDED_PROTO` | `X-Forwarded-Proto` value, usually `https` when TLS terminates upstream |
 | Forwarded port | n/a | `FORWARDED_PORT` | `X-Forwarded-Port` value, usually `PUBLIC_PORT` |
 | Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Unix-like: `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
+| Auto-download WinSW | `AutoDownloadWinSW` | n/a | Download pinned WinSW automatically when the local executable is missing |
+| WinSW download URL | `WinSWDownloadUrl` | n/a | HTTPS URL for the pinned WinSW executable |
+| WinSW SHA256 | `WinSWDownloadSha256` | n/a | Optional SHA256 digest to verify the downloaded or existing WinSW executable |
 | Service account | `ServiceAccount` | `SERVICE_USER` | Windows service logon account or Unix runtime user |
 | Service account password | `ServiceAccountPassword` | n/a | Optional Windows password for non-gMSA accounts; prefer gMSA or built-in accounts |
 | Install command | `InstallCommand` | `INSTALL_COMMAND` | Production dependency install command |
@@ -69,6 +72,7 @@
 | Node bind address | `127.0.0.1` |
 | Health endpoint | `/health` |
 | Windows service manager | WinSW |
+| Windows WinSW source | Auto-download pinned stable WinSW, or provide an internal `tools\winsw\winsw-x64.exe` |
 | Windows service account | `NetworkService`, `LocalService`, dedicated account, or gMSA; avoid `LocalSystem` unless required |
 | Unix-like service manager | systemd on mainstream Linux, launchd on macOS, bsdrc on BSD |
 | Windows reverse proxy | IIS |

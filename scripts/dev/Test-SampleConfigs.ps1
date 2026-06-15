@@ -125,6 +125,8 @@ function Test-WindowsExampleConfig {
     "DeploymentMode",
     "ServiceManager",
     "ReverseProxy",
+    "AutoDownloadWinSW",
+    "WinSWDownloadUrl",
     "AppDirectory",
     "StartCommand",
     "NodeExe",
@@ -149,6 +151,9 @@ function Test-WindowsExampleConfig {
       throw "config/windows/app.config.example.json is missing $name."
     }
   }
+  if (-not $config.PSObject.Properties["WinSWDownloadSha256"]) {
+    throw "config/windows/app.config.example.json is missing WinSWDownloadSha256."
+  }
 
   Assert-Port ([string]$config.Port) "Windows Port"
   Assert-Port ([string]$config.PublicPort) "Windows PublicPort"
@@ -163,6 +168,14 @@ function Test-WindowsExampleConfig {
   Assert-IntegerAtLeast ([string]$config.IisProxyTimeoutSeconds) "IisProxyTimeoutSeconds"
   foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport")) {
     Assert-BoolString ([string]$config.$name) $name
+  }
+  Assert-BoolString ([string]$config.AutoDownloadWinSW) "AutoDownloadWinSW"
+  $winswUri = [Uri][string]$config.WinSWDownloadUrl
+  if ($winswUri.Scheme -ne "https") {
+    throw "Windows WinSWDownloadUrl must use https."
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$config.WinSWDownloadSha256) -and [string]$config.WinSWDownloadSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+    throw "Windows WinSWDownloadSha256 must be empty or a 64-character SHA256 hex digest."
   }
   Assert-BoolString ([string]$config.PackageStripSingleTopLevelDirectory) "PackageStripSingleTopLevelDirectory"
   $iisHealthProxyPath = ([string]$config.IisHealthProxyPath).Trim() -replace "\\", "/"
@@ -326,6 +339,9 @@ function Test-AnsibleDefaults {
     "node_deploy_windows_iis_websocket_support",
     "node_deploy_windows_iis_proxy_timeout_seconds",
     "node_deploy_windows_service_account_password",
+    "node_deploy_windows_auto_download_winsw",
+    "node_deploy_windows_winsw_download_url",
+    "node_deploy_windows_winsw_download_sha256",
     "node_deploy_windows_backup_dir",
     "node_deploy_linux_deploy_dir",
     "node_deploy_linux_config_path",

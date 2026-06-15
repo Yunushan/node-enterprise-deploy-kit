@@ -115,17 +115,22 @@ notepad .\config\windows\app.config.json
   "Port": 3000,
   "HealthUrl": "http://127.0.0.1:3000/health",
   "ServiceManager": "winsw",
+  "AutoDownloadWinSW": true,
   "ReverseProxy": "iis"
 }
 ```
 
-3. Place the WinSW executable:
+3. Let the installer fetch WinSW automatically, or place your internal copy:
 
 ```text
 tools\winsw\winsw-x64.exe
 ```
 
-No service wrapper binaries are bundled in this repository.
+No service wrapper binaries are bundled in this repository. By default,
+`AutoDownloadWinSW` downloads the pinned stable WinSW executable from the
+official WinSW GitHub release when the file is missing. Set
+`AutoDownloadWinSW` to `false` when servers are offline or your organization
+requires an internally approved artifact.
 
 4. Install with the recommended Windows entrypoint:
 
@@ -409,6 +414,9 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "BindAddress": "127.0.0.1",
   "HealthUrl": "http://127.0.0.1:3000/health",
   "ServiceManager": "winsw",
+  "AutoDownloadWinSW": true,
+  "WinSWDownloadUrl": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
+  "WinSWDownloadSha256": "",
   "ReverseProxy": "iis",
   "IisSitePath": "C:\\inetpub\\wwwroot\\ExampleNodeApp",
   "IisSiteName": "ExampleNodeApp",

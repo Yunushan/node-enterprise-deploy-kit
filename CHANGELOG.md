@@ -27,6 +27,7 @@
 - Hardened Ansible sample config defaults by keeping SSH host key checking enabled.
 - Clarified that Windows reverse proxy automation supports IIS or none, while Apache, HAProxy, and Traefik installers are Linux/Unix helpers.
 - Added safe application package import before deployment: `.zip` on Windows and `.zip`, `.tar.gz`, `.tgz`, or `.tar` on Linux/Unix.
+- Added automatic pinned WinSW download for Windows service deployments when `tools\winsw\winsw-x64.exe` is missing.
 
 ## v1.0.0
 

@@ -42,6 +42,9 @@ node_deploy_windows_iis_websocket_support: true
 node_deploy_windows_iis_proxy_timeout_seconds: 300
 node_deploy_windows_service_account: NetworkService
 node_deploy_windows_service_account_password: ""
+node_deploy_windows_auto_download_winsw: true
+node_deploy_windows_winsw_download_url: https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe
+node_deploy_windows_winsw_download_sha256: ""
 node_deploy_windows_winsw_source: ""
 node_deploy_failure_restart_delay_seconds: 60
 node_deploy_linux_service_manager: systemd

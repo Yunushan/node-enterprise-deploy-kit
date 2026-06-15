@@ -11,7 +11,10 @@
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
-    [string] $WinSWPath = "tools\winsw\winsw-x64.exe"
+    [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
+    [string] $WinSWDownloadUrl = "",
+    [string] $WinSWDownloadSha256 = "",
+    [switch] $SkipWinSWDownload
 )
 
 function Assert-Admin {
@@ -37,6 +40,10 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
     if ($LASTEXITCODE -ne 0) {
         throw "$Action failed with exit code $LASTEXITCODE."
     }
+}
+function Resolve-RepoPath([string]$Path, [string]$BasePath) {
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
+    return (Join-Path $BasePath $Path)
 }
 function Get-ConfigString($Config, [string]$Name, [string]$Default = "") {
     if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
@@ -220,8 +227,25 @@ if ($config.ServiceManager -ne "winsw") {
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$winswCandidate = Join-Path $repoRoot $WinSWPath
+$ensureWinswArgs = @{
+    ConfigPath = $ConfigPath
+    WinSWPath = $WinSWPath
+}
+if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $ensureWinswArgs.DownloadUrl = $WinSWDownloadUrl }
+if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $ensureWinswArgs.ExpectedSha256 = $WinSWDownloadSha256 }
+if ($SkipWinSWDownload) { $ensureWinswArgs.SkipDownload = $true }
+if ($WhatIfPreference) {
+    & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @ensureWinswArgs -WhatIf
+} else {
+    & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @ensureWinswArgs
+}
+
+$winswCandidate = Resolve-RepoPath -Path $WinSWPath -BasePath $repoRoot
 if (-not (Test-Path $winswCandidate)) {
+    if ($WhatIfPreference) {
+        Write-Warning "WinSW executable is not present yet; -WhatIf skipped the download."
+        return
+    }
     throw "WinSW executable not found at '$winswCandidate'. Download WinSW separately and place it there, or pass -WinSWPath. No binaries are bundled in this repository."
 }
 

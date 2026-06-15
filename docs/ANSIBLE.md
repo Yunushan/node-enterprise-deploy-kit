@@ -32,6 +32,9 @@ Important controls:
 | `node_deploy_skip_reverse_proxy` | Leave IIS/Nginx/Apache config unchanged |
 | `node_deploy_skip_health_check` | Leave scheduled health checks unchanged |
 | `node_deploy_app_runtime` | `node` service deployment or `tomcat` WAR deployment |
+| `node_deploy_windows_auto_download_winsw` | Download pinned WinSW automatically on the Windows target when no source exe is copied |
+| `node_deploy_windows_winsw_download_url` | HTTPS URL for the pinned WinSW executable |
+| `node_deploy_windows_winsw_download_sha256` | Optional SHA256 digest for WinSW verification |
 | `node_deploy_windows_winsw_source` | Controller-side WinSW executable path for WinSW deployments |
 | `node_deploy_windows_service_account` | Windows service account, such as `NetworkService`, `LocalService`, a dedicated account, or a gMSA |
 | `node_deploy_windows_service_account_password` | Optional password for non-gMSA service accounts; prefer a gMSA |
@@ -77,8 +80,9 @@ ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml
 ```
 
 Windows targets render `app.config.json`, copy the Windows scripts/templates,
-copy the trusted WinSW executable when needed, optionally import a remote `.zip`
-package, and run `deploy.ps1`.
+copy a trusted WinSW executable when `node_deploy_windows_winsw_source` is set,
+or let the target download the pinned WinSW release when auto-download is
+enabled, optionally import a remote `.zip` package, and run `deploy.ps1`.
 
 Unix-like targets render the deployment env file, copy `deploy.sh`, scripts,
 and templates, optionally install OS dependencies, optionally import a remote
@@ -88,7 +92,9 @@ service manager and package tooling are available on the remote system.
 
 ## Safety Notes
 
-Set `node_deploy_windows_winsw_source` to a trusted local artifact path; this
+For the strictest offline or internal-artifact workflow, set
+`node_deploy_windows_auto_download_winsw: false` and set
+`node_deploy_windows_winsw_source` to a trusted local artifact path. This
 repository does not bundle service-wrapper executables.
 
 Install `ansible/requirements.yml` on control nodes that run the playbook or

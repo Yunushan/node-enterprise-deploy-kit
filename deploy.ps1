@@ -13,6 +13,10 @@ param(
     [switch] $AllowPortInUse,
     [string] $PackagePath = "",
     [switch] $SkipPackageImport,
+    [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
+    [string] $WinSWDownloadUrl = "",
+    [string] $WinSWDownloadSha256 = "",
+    [switch] $SkipWinSWDownload,
     [switch] $SkipAppPreparation,
     [switch] $SkipInstall,
     [switch] $SkipBuild
@@ -29,6 +33,22 @@ if (-not (Test-Path $ConfigPath)) {
     throw "Config not found: $ConfigPath. Copy config/windows/app.config.example.json first."
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+
+if ([string]$config.ServiceManager -eq "winsw") {
+    $winswArgs = @{
+        ConfigPath = $ConfigPath
+        WinSWPath = $WinSWPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $winswArgs.DownloadUrl = $WinSWDownloadUrl }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $winswArgs.ExpectedSha256 = $WinSWDownloadSha256 }
+    if ($SkipWinSWDownload) { $winswArgs.SkipDownload = $true }
+
+    if ($WhatIfPreference) {
+        & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @winswArgs -WhatIf
+    } else {
+        & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @winswArgs
+    }
+}
 
 if (-not $SkipPackageImport) {
     $effectivePackagePath = $PackagePath
@@ -51,10 +71,14 @@ if (-not $SkipPackageImport) {
 if (-not $SkipPreflight) {
     $preflightArgs = @{
         ConfigPath = $ConfigPath
+        WinSWPath = $WinSWPath
     }
     if ($SkipReverseProxy) { $preflightArgs.SkipReverseProxy = $true }
     if ($SkipHealthCheck) { $preflightArgs.SkipHealthCheck = $true }
     if ($AllowPortInUse) { $preflightArgs.AllowPortInUse = $true }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $preflightArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $preflightArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
+    if ($SkipWinSWDownload) { $preflightArgs.SkipWinSWDownload = $true }
     & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
 }
 
@@ -68,7 +92,16 @@ if (-not $SkipAppPreparation) {
 }
 
 switch ($config.ServiceManager) {
-    "winsw" { & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") -ConfigPath $ConfigPath }
+    "winsw" {
+        $serviceArgs = @{
+            ConfigPath = $ConfigPath
+            WinSWPath = $WinSWPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $serviceArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
+        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $serviceArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
+        if ($SkipWinSWDownload) { $serviceArgs.SkipWinSWDownload = $true }
+        & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") @serviceArgs
+    }
     "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }
     "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }
     default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }

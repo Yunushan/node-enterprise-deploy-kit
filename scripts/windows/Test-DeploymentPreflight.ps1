@@ -9,12 +9,16 @@
 param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
     [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
+    [string] $WinSWDownloadUrl = "",
+    [string] $WinSWDownloadSha256 = "",
+    [switch] $SkipWinSWDownload,
     [switch] $SkipReverseProxy,
     [switch] $SkipHealthCheck,
     [switch] $AllowPortInUse
 )
 
 $ErrorActionPreference = "Stop"
+$DefaultWinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -150,6 +154,19 @@ function Test-UserProfilePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     return $Path -match '^[A-Za-z]:\\Users\\[^\\]+\\(Desktop|Downloads|Documents)(\\|$)'
 }
+function Test-ValidSha256([string]$Hash) {
+    if ([string]::IsNullOrWhiteSpace($Hash)) { return $true }
+    return $Hash -match '^[A-Fa-f0-9]{64}$'
+}
+function Test-HttpsUri([string]$Url) {
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+    try {
+        $uri = [Uri]$Url
+        return $uri.Scheme -eq "https"
+    } catch {
+        return $false
+    }
+}
 
 @(
     "AppName",
@@ -253,8 +270,41 @@ $serviceManager = ([string]$config.ServiceManager).ToLowerInvariant()
 switch ($serviceManager) {
     "winsw" {
         $winswCandidate = Resolve-ToolPath $WinSWPath
+        $winswAutoDownload = $true
+        try {
+            $winswAutoDownload = Get-ConfigBool $config "AutoDownloadWinSW" $true
+        } catch {
+            Add-Error $_.Exception.Message
+        }
+        if ($SkipWinSWDownload) {
+            $winswAutoDownload = $false
+        }
+
+        $effectiveWinSWDownloadUrl = Get-ConfigString $config "WinSWDownloadUrl" $DefaultWinSWDownloadUrl
+        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) {
+            $effectiveWinSWDownloadUrl = $WinSWDownloadUrl
+        }
+        $effectiveWinSWDownloadSha256 = Get-ConfigString $config "WinSWDownloadSha256" ""
+        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) {
+            $effectiveWinSWDownloadSha256 = $WinSWDownloadSha256
+        }
+        if (-not (Test-ValidSha256 $effectiveWinSWDownloadSha256)) {
+            Add-Error "WinSWDownloadSha256 must be a 64-character SHA256 hex digest."
+        }
+        if ($winswAutoDownload -and -not (Test-HttpsUri $effectiveWinSWDownloadUrl)) {
+            Add-Error "WinSWDownloadUrl must be a valid https URL."
+        }
         if (-not (Test-Path $winswCandidate)) {
-            Add-Error "WinSW executable not found: $winswCandidate"
+            if ($winswAutoDownload) {
+                Add-Warning "WinSW executable not found locally: $winswCandidate. Deployment will download the configured pinned WinSW release before service install."
+            } else {
+                Add-Error "WinSW executable not found: $winswCandidate"
+            }
+        } elseif (-not [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
+            $actualHash = (Get-FileHash -LiteralPath $winswCandidate -Algorithm SHA256).Hash
+            if ($actualHash -ine $effectiveWinSWDownloadSha256) {
+                Add-Error "Existing WinSW executable failed SHA256 verification: $winswCandidate"
+            }
         }
         $serviceAccount = Get-ConfigString $config "ServiceAccount" "LocalSystem"
         $serviceAccountCredential = Get-ConfigString $config "ServiceAccountPassword" ""

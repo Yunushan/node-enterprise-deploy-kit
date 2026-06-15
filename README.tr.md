@@ -78,6 +78,13 @@ python .\scripts\dev\check-no-secrets.py
 
 Windows tarafında önerilen model, uygulamayı WinSW tabanlı Windows servisi olarak çalıştırmak ve dış trafiği IIS üzerinden yönlendirmektir. Apache, HAProxy ve Traefik installer scriptleri bu kitte Linux/Unix tarafı içindir; Windows'ta bu proxy'ler kullanılacaksa proxy kurulumu ayrıca yönetilmelidir.
 
+WinSW binary dosyası repoya gömülü değildir. Varsayılan Windows konfigürasyonunda
+`AutoDownloadWinSW` açıktır; `tools\winsw\winsw-x64.exe` yoksa installer resmi
+WinSW GitHub release adresinden pinlenmiş kararlı sürümü indirir. Sunucu
+internete kapalıysa veya kurum içi onaylı artifact kullanmanız gerekiyorsa
+`AutoDownloadWinSW` değerini `false` yapıp dosyayı manuel olarak
+`tools\winsw\winsw-x64.exe` konumuna koyun.
+
 1. Örnek konfigürasyonu kopyalayın:
 
 ```powershell

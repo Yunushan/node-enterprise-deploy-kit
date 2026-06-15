@@ -38,12 +38,13 @@
     src: "../../../../deploy.ps1"
     dest: "{{ node_deploy_windows_service_dir }}\\deploy.ps1"
 
-- name: Require WinSW source for WinSW deployments
+- name: Require WinSW source when auto-download is disabled
   ansible.builtin.fail:
-    msg: "Set node_deploy_windows_winsw_source to a controller-side WinSW executable from your trusted artifact source."
+    msg: "Set node_deploy_windows_winsw_source to a controller-side WinSW executable or enable node_deploy_windows_auto_download_winsw."
   when:
     - node_deploy_windows_service_manager == 'winsw'
     - node_deploy_windows_winsw_source | default('') | length == 0
+    - not (node_deploy_windows_auto_download_winsw | default(true) | bool)
 
 - name: Copy WinSW executable
   ansible.windows.win_copy:
