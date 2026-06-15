@@ -107,6 +107,23 @@ bash deploy.sh config/linux/app.env
 the service, applies the selected reverse proxy, and installs the systemd health
 timer when `SERVICE_MANAGER="systemd"`.
 
+To deploy a built archive before service setup, set `PACKAGE_PATH` in
+`config/linux/app.env`:
+
+```bash
+PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
+PACKAGE_EXPECTED_FILES="server.js"
+PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
+bash deploy.sh config/linux/app.env
+```
+
+Linux package import supports `.tar.gz`, `.tgz`, `.tar`, and `.zip`. It
+validates archive member paths before extraction, extracts to a temporary
+directory, checks `PACKAGE_EXPECTED_FILES`, stops the existing service when
+present, backs up `APP_DIR`, then imports the new contents. `.rar` and `.7z`
+are intentionally unsupported in this first implementation because they require
+external tooling.
+
 Managed file updates create timestamped backups in `BACKUP_DIR` before
 replacing existing env files, service units/init scripts, reverse proxy configs,
 or health-check files. If `BACKUP_DIR` is not set, the scripts use

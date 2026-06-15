@@ -74,6 +74,8 @@ $requiredFiles = @(
   "scripts/dev/Test-DocsConsistency.ps1",
   "scripts/dev/Test-ReleasePackage.ps1",
   "scripts/dev/New-ReleasePackage.ps1",
+  "scripts/windows/Import-AppPackage.ps1",
+  "scripts/linux/import-app-package.sh",
   "scripts/windows/Restore-ManagedBackup.ps1",
   "ansible.cfg",
   "ansible/requirements.yml",

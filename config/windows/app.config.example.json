@@ -6,6 +6,11 @@
   "ServiceManager": "winsw",
   "ReverseProxy": "iis",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
+  "PackagePath": "",
+  "PackageExpectedFiles": [
+    "server.js"
+  ],
+  "PackageStripSingleTopLevelDirectory": true,
   "StartCommand": "server.js",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
   "NodeArguments": "",

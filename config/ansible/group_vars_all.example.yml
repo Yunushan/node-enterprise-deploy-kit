@@ -6,6 +6,12 @@ node_deploy_mode: reverse_proxy
 node_deploy_app_runtime: node
 node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
 node_deploy_app_dir_linux: /opt/example-node-app
+node_deploy_package_path_windows: ""
+node_deploy_package_path_linux: ""
+node_deploy_package_expected_files:
+  - server.js
+node_deploy_package_strip_single_top_level_directory: true
+node_deploy_skip_package_import: false
 node_deploy_start_script: server.js
 node_deploy_port: 3000
 node_deploy_bind_address: 127.0.0.1

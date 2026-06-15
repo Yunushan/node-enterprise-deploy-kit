@@ -13,6 +13,7 @@ REVERSE_PROXY_NORMALIZED="$(normalize_name "${REVERSE_PROXY:-none}")"
 
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
+SKIP_PACKAGE_IMPORT="${SKIP_PACKAGE_IMPORT:-false}"
 SKIP_REVERSE_PROXY="${SKIP_REVERSE_PROXY:-false}"
 SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
 
@@ -31,6 +32,14 @@ run_root() {
     sudo bash "$@"
   fi
 }
+
+if ! is_true "$SKIP_PACKAGE_IMPORT" && [[ -n "${PACKAGE_PATH:-}" ]]; then
+  if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
+    echo "PACKAGE_PATH imports are for APP_RUNTIME=node. Use TOMCAT_WAR_FILE for Tomcat deployments." >&2
+    exit 1
+  fi
+  run_root "$REPO_ROOT/scripts/linux/import-app-package.sh" "$CONFIG_FILE"
+fi
 
 case "$APP_RUNTIME_NORMALIZED" in
   node)

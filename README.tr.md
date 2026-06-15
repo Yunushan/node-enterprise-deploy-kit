@@ -198,6 +198,18 @@ bash scripts/linux/test-deployment-preflight.sh config/linux/app.env
 bash deploy.sh config/linux/app.env
 ```
 
+Hazır build artifact kullanıyorsanız önce paketi import edebilirsiniz:
+
+```bash
+PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
+PACKAGE_EXPECTED_FILES="server.js"
+bash deploy.sh config/linux/app.env
+```
+
+Windows tarafında import `.zip` destekler. Linux/Unix tarafında `.zip`,
+`.tar.gz`, `.tgz` ve `.tar` desteklenir. `.rar` ve `.7z` bu ilk güvenli import
+akışında bilinçli olarak desteklenmez; ek araç ve ek güvenlik kontrolü ister.
+
 5. Servisi ve logları kontrol edin:
 
 ```bash

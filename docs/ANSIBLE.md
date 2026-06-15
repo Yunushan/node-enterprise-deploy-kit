@@ -21,6 +21,11 @@ Important controls:
 | Variable | Purpose |
 |---|---|
 | `node_deploy_skip_preflight` | Skip target preflight checks |
+| `node_deploy_package_path_windows` | Optional remote Windows `.zip` package to import before service setup |
+| `node_deploy_package_path_linux` | Optional remote Linux `.zip`, `.tar.gz`, `.tgz`, or `.tar` package to import before service setup |
+| `node_deploy_package_expected_files` | Relative files required after package extraction |
+| `node_deploy_package_strip_single_top_level_directory` | Strip a single wrapping archive directory |
+| `node_deploy_skip_package_import` | Skip package import even when a package path is configured |
 | `node_deploy_allow_port_in_use` | Allow intentional updates while the app port is already listening |
 | `node_deploy_skip_install` | Skip dependency install command |
 | `node_deploy_skip_build` | Skip build command |
@@ -72,10 +77,12 @@ ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml
 ```
 
 Windows targets render `app.config.json`, copy the Windows scripts/templates,
-copy the trusted WinSW executable when needed, and run `deploy.ps1`.
+copy the trusted WinSW executable when needed, optionally import a remote `.zip`
+package, and run `deploy.ps1`.
 
 Unix-like targets render the deployment env file, copy `deploy.sh`, scripts,
-and templates, optionally install OS dependencies, then run `deploy.sh`. The
+and templates, optionally install OS dependencies, optionally import a remote
+archive package, then run `deploy.sh`. The
 same role can target mainstream Linux, BSD, and macOS hosts when the selected
 service manager and package tooling are available on the remote system.
 

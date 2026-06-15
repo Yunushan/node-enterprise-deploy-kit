@@ -177,7 +177,11 @@ if ($config.NodeExe -and -not [System.IO.Path]::IsPathRooted([string]$config.Nod
 }
 
 if ($config.AppDirectory -and -not (Test-Path $config.AppDirectory)) {
-    Add-Error "AppDirectory not found: $($config.AppDirectory)"
+    if ($config.PSObject.Properties["PackagePath"] -and -not [string]::IsNullOrWhiteSpace([string]$config.PackagePath)) {
+        Add-Warning "AppDirectory does not exist yet, but PackagePath is configured. Package import should create it before app preparation."
+    } else {
+        Add-Error "AppDirectory not found: $($config.AppDirectory)"
+    }
 }
 foreach ($pathCheck in @("AppDirectory", "ServiceDirectory", "LogDirectory", "BackupDirectory")) {
     if ($config.PSObject.Properties[$pathCheck] -and (Test-UserProfilePath ([string]$config.$pathCheck))) {
@@ -220,6 +224,24 @@ try {
     }
 } catch {
     Add-Error "HealthUrl is not a valid URI: $($config.HealthUrl)"
+}
+
+if ($config.PSObject.Properties["PackagePath"] -and -not [string]::IsNullOrWhiteSpace([string]$config.PackagePath)) {
+    $packagePath = [string]$config.PackagePath
+    if ([System.IO.Path]::GetExtension($packagePath).ToLowerInvariant() -ne ".zip") {
+        Add-Error "PackagePath supports .zip only on Windows. Use .zip; .rar and .7z are intentionally unsupported."
+    }
+    if ($config.PSObject.Properties["PackageExpectedFiles"]) {
+        $expectedValues = @()
+        if ($config.PackageExpectedFiles -is [array]) {
+            $expectedValues = @($config.PackageExpectedFiles)
+        } else {
+            $expectedValues = @(([string]$config.PackageExpectedFiles) -split '[,;]')
+        }
+        if (@($expectedValues | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
+            Add-Warning "PackageExpectedFiles is empty. The package importer will fall back to StartCommand validation."
+        }
+    }
 }
 
 $sensitiveEnvironmentNames = @(Get-SensitiveEnvironmentNames $config)

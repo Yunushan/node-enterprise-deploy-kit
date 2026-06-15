@@ -136,7 +136,19 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .\install.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer runs a safe preflight check, then runs configured `InstallCommand` and `BuildCommand`, then installs/updates the service, reverse proxy, and health check.
+This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer can import a `.zip` package first, then runs a safe preflight check, configured `InstallCommand` and `BuildCommand`, and installs/updates the service, reverse proxy, and health check.
+
+For built artifacts, import a package before service setup:
+
+```powershell
+.\install.ps1 -ConfigPath .\config\windows\app.config.json `
+  -PackagePath C:\deploy\example-node-app.zip `
+  -SkipInstall -SkipBuild
+```
+
+Windows package import supports `.zip`. Linux package import supports `.zip`,
+`.tar.gz`, `.tgz`, and `.tar`. `.rar` and `.7z` are intentionally not supported
+by the built-in import flow because they require external tools.
 
 For IIS deployments, install IIS URL Rewrite and Application Request Routing
 first. The IIS installer can enable ARR proxy mode, allow the URL Rewrite
@@ -441,6 +453,9 @@ APP_DISPLAY_NAME="Example Node App"
 APP_DIR="/opt/example-node-app"
 APP_RUNTIME="node"
 SERVICE_MANAGER="systemd"
+PACKAGE_PATH=""
+PACKAGE_EXPECTED_FILES="server.js"
+PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
 NODE_BIN="/usr/bin/node"
 START_SCRIPT="server.js"
 APP_PORT="3000"

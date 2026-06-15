@@ -25,6 +25,7 @@ APACHE_PACKAGE="${APACHE_PACKAGE:-}"
 HAPROXY_PACKAGE="${HAPROXY_PACKAGE:-haproxy}"
 TRAEFIK_PACKAGE="${TRAEFIK_PACKAGE:-traefik}"
 TOMCAT_PACKAGE="${TOMCAT_PACKAGE:-}"
+UNZIP_PACKAGE="${UNZIP_PACKAGE:-unzip}"
 
 case "$PLATFORM_FAMILY" in
   debian)
@@ -82,36 +83,50 @@ add_runtime_package() {
   esac
 }
 
+add_package_import_package() {
+  case "${PACKAGE_PATH:-}" in
+    *.zip)
+      packages+=("$UNZIP_PACKAGE")
+      ;;
+  esac
+}
+
 if [[ "$PLATFORM_FAMILY" == "debian" ]]; then
   apt-get update
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   apt-get install -y "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "rhel" ]]; then
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   if command -v dnf >/dev/null 2>&1; then dnf install -y "${packages[@]}"; else yum install -y "${packages[@]}"; fi
 elif [[ "$PLATFORM_FAMILY" == "alpine" ]]; then
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   apk add --no-cache "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "freebsd" ]]; then
   packages=(curl ca_root_nss)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   pkg install -y "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "openbsd" ]]; then
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   pkg_add "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "netbsd" ]]; then
   packages=(curl mozilla-rootcerts)
   add_reverse_proxy_package
   add_runtime_package
+  add_package_import_package
   if command -v pkgin >/dev/null 2>&1; then
     pkgin -y install "${packages[@]}"
   else
@@ -124,6 +139,7 @@ elif [[ "$PLATFORM_FAMILY" == "macos" ]]; then
     packages=(curl ca-certificates)
     add_reverse_proxy_package
     add_runtime_package
+    add_package_import_package
     brew install "${packages[@]}"
   fi
 else

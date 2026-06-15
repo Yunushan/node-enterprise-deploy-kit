@@ -144,6 +144,11 @@ function Test-WindowsExampleConfig {
   if (-not $config.PSObject.Properties["ServiceAccountPassword"]) {
     throw "config/windows/app.config.example.json is missing ServiceAccountPassword."
   }
+  foreach ($name in @("PackagePath", "PackageExpectedFiles", "PackageStripSingleTopLevelDirectory")) {
+    if (-not $config.PSObject.Properties[$name]) {
+      throw "config/windows/app.config.example.json is missing $name."
+    }
+  }
 
   Assert-Port ([string]$config.Port) "Windows Port"
   Assert-Port ([string]$config.PublicPort) "Windows PublicPort"
@@ -159,6 +164,7 @@ function Test-WindowsExampleConfig {
   foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport")) {
     Assert-BoolString ([string]$config.$name) $name
   }
+  Assert-BoolString ([string]$config.PackageStripSingleTopLevelDirectory) "PackageStripSingleTopLevelDirectory"
   $iisHealthProxyPath = ([string]$config.IisHealthProxyPath).Trim() -replace "\\", "/"
   $iisHealthProxyPath = $iisHealthProxyPath.Trim("/")
   if ([string]::IsNullOrWhiteSpace($iisHealthProxyPath) -or $iisHealthProxyPath -match '(^|/)\.\.($|/)' -or $iisHealthProxyPath -notmatch '^[A-Za-z0-9._~/-]+$') {
@@ -215,6 +221,9 @@ function Test-LinuxExampleConfig {
     "SERVICE_MANAGER",
     "REVERSE_PROXY",
     "APP_DIR",
+    "PACKAGE_EXPECTED_FILES",
+    "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR",
+    "SKIP_PACKAGE_IMPORT",
     "NODE_BIN",
     "START_SCRIPT",
     "APP_PORT",
@@ -240,7 +249,10 @@ function Test-LinuxExampleConfig {
   foreach ($name in @("HEALTHCHECK_INTERVAL", "HEALTHCHECK_FAILURE_THRESHOLD", "HEALTHCHECK_RESTART_COOLDOWN", "HEALTHCHECK_TIMEOUT", "FAILURE_RESTART_DELAY", "LOG_RETENTION_DAYS", "BACKUP_RETENTION_DAYS", "DIAGNOSTIC_RETENTION_DAYS")) {
     Assert-IntegerAtLeast $env[$name] $name
   }
-  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
+  if (-not $env.ContainsKey("PACKAGE_PATH")) {
+    throw "config/linux/app.env.example is missing PACKAGE_PATH."
+  }
+  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
   }
   if ($env.FORWARDED_PROTO -notin @("http", "https")) {
@@ -296,6 +308,11 @@ function Test-AnsibleDefaults {
     "node_deploy_description",
     "node_deploy_mode",
     "node_deploy_app_runtime",
+    "node_deploy_package_path_windows",
+    "node_deploy_package_path_linux",
+    "node_deploy_package_expected_files",
+    "node_deploy_package_strip_single_top_level_directory",
+    "node_deploy_skip_package_import",
     "node_deploy_skip_preflight",
     "node_deploy_allow_port_in_use",
     "node_deploy_skip_install",

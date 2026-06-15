@@ -11,6 +11,7 @@ shift || true
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
+SKIP_PACKAGE_IMPORT="${SKIP_PACKAGE_IMPORT:-false}"
 SKIP_REVERSE_PROXY="${SKIP_REVERSE_PROXY:-false}"
 SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
 
@@ -73,6 +74,18 @@ is_loopback_host() {
 is_sensitive_key_name() {
   [[ "${1:-}" =~ ([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Cc][Oo][Nn][Nn][Ee][Cc][Tt][Ii][Oo][Nn][Ss][Tt][Rr][Ii][Nn][Gg]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]|[Jj][Ww][Tt]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]) ]]
 }
+safe_relative_path() {
+  local path="${1//\\//}"
+  [[ -n "$path" ]] || return 1
+  [[ "$path" != /* ]] || return 1
+  IFS='/' read -r -a parts <<< "$path"
+  local part
+  for part in "${parts[@]}"; do
+    [[ -z "$part" || "$part" == "." ]] && continue
+    [[ "$part" != ".." ]] || return 1
+  done
+  return 0
+}
 is_user_runtime_path() {
   [[ "${1:-}" =~ ^/home/[^/]+/(Desktop|Downloads|Documents)(/|$) || "${1:-}" =~ ^/Users/[^/]+/(Desktop|Downloads|Documents)(/|$) ]]
 }
@@ -110,7 +123,11 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && "$NODE_BIN" !
 fi
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && ! -d "$APP_DIR" ]]; then
-  add_error "APP_DIR not found: $APP_DIR"
+  if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
+    add_warning "APP_DIR does not exist yet, but PACKAGE_PATH is configured. Package import should create it before service install."
+  else
+    add_error "APP_DIR not found: $APP_DIR"
+  fi
 fi
 for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR HEALTHCHECK_STATE_DIR; do
   if is_user_runtime_path "${!path_name:-}"; then
@@ -124,6 +141,33 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && -d "$APP_DIR" 
   elif [[ "$START_SCRIPT" != *" "* ]]; then
     [[ -f "$APP_DIR/$START_SCRIPT" ]] || add_error "START_SCRIPT file not found under APP_DIR: $APP_DIR/$START_SCRIPT"
   fi
+fi
+
+if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
+  if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
+    add_error "PACKAGE_PATH imports are for APP_RUNTIME=node. Use TOMCAT_WAR_FILE for Tomcat deployments."
+  fi
+  case "$PACKAGE_PATH" in
+    *.zip|*.tar|*.tar.gz|*.tgz) ;;
+    *.rar|*.7z) add_error "PACKAGE_PATH format is intentionally unsupported: use .zip, .tar.gz, .tgz, or .tar. .rar/.7z need external tooling." ;;
+    *) add_error "Unsupported PACKAGE_PATH format. Use .zip, .tar.gz, .tgz, or .tar." ;;
+  esac
+  if [[ "$PACKAGE_PATH" = /* ]]; then
+    package_candidate="$PACKAGE_PATH"
+  else
+    package_candidate="$(dirname "$CONFIG_FILE")/$PACKAGE_PATH"
+  fi
+  [[ -f "$package_candidate" ]] || add_warning "PACKAGE_PATH does not exist yet on this host: $package_candidate"
+  case "${PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR:-true}" in
+    true|false|TRUE|FALSE|True|False|1|0|yes|no|YES|NO|Yes|No) ;;
+    *) add_warning "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR should be true or false." ;;
+  esac
+  while IFS= read -r expected_file; do
+    [[ -z "$expected_file" ]] && continue
+    if ! safe_relative_path "$expected_file"; then
+      add_error "PACKAGE_EXPECTED_FILES contains an unsafe relative path: $expected_file"
+    fi
+  done < <(runtime_env_key_list "${PACKAGE_EXPECTED_FILES:-${START_SCRIPT:-server.js}}")
 fi
 
 if ! is_integer "${APP_PORT:-}" || [[ "${APP_PORT:-0}" -lt 1 || "${APP_PORT:-0}" -gt 65535 ]]; then

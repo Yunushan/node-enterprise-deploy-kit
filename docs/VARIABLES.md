@@ -8,6 +8,10 @@
 | Display name | `DisplayName` | `APP_DISPLAY_NAME` | Human-friendly service name |
 | App runtime | n/a | `APP_RUNTIME` | `node` for Node.js service mode, `tomcat` for WAR deployment mode |
 | App directory | `AppDirectory` | `APP_DIR` | Application working directory |
+| Package path | `PackagePath` | `PACKAGE_PATH` | Optional deployment archive to import before install/build/service setup |
+| Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files that must exist after extraction, usually `server.js` |
+| Strip single top directory | `PackageStripSingleTopLevelDirectory` | `PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR` | Use package contents when the archive has one wrapping directory |
+| Skip package import | script flag | `SKIP_PACKAGE_IMPORT` | Leave `AppDirectory`/`APP_DIR` unchanged even when package path is configured |
 | Start script | `StartCommand` | `START_SCRIPT` | JS entry point, usually `server.js` |
 | Node binary | `NodeExe` | `NODE_BIN` | Node executable path |
 | Port | `Port` | `APP_PORT` | Local Node.js port |

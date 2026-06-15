@@ -15,6 +15,8 @@ param(
     [switch] $SkipHealthCheck,
     [switch] $SkipPreflight,
     [switch] $AllowPortInUse,
+    [string] $PackagePath = "",
+    [switch] $SkipPackageImport,
     [switch] $SkipAppPreparation,
     [switch] $SkipInstall,
     [switch] $SkipBuild
@@ -48,6 +50,8 @@ if ($SkipReverseProxy) { $deployArgs.SkipReverseProxy = $true }
 if ($SkipHealthCheck) { $deployArgs.SkipHealthCheck = $true }
 if ($SkipPreflight) { $deployArgs.SkipPreflight = $true }
 if ($AllowPortInUse) { $deployArgs.AllowPortInUse = $true }
+if (-not [string]::IsNullOrWhiteSpace($PackagePath)) { $deployArgs.PackagePath = $PackagePath }
+if ($SkipPackageImport) { $deployArgs.SkipPackageImport = $true }
 if ($SkipAppPreparation) { $deployArgs.SkipAppPreparation = $true }
 if ($SkipInstall) { $deployArgs.SkipInstall = $true }
 if ($SkipBuild) { $deployArgs.SkipBuild = $true }

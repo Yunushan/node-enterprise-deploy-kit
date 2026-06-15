@@ -78,8 +78,24 @@ operator can read the result.
 The default install flow is:
 
 ```text
-preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
+optional package import -> preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
 ```
+
+To deploy a built `.zip` artifact, set `PackagePath` in config or pass
+`-PackagePath` to the wrapper:
+
+```powershell
+.\install.ps1 -ConfigPath .\config\windows\app.config.json `
+  -PackagePath C:\deploy\example-node-app.zip `
+  -SkipInstall -SkipBuild
+```
+
+Windows package import supports `.zip` with built-in .NET extraction. It
+validates archive paths before extraction, extracts to a temporary directory,
+checks `PackageExpectedFiles`, stops the service if it exists, backs up the
+current `AppDirectory`, then imports the new package contents. `.rar` and `.7z`
+are intentionally unsupported because they require external tooling and a
+larger security surface.
 
 The WinSW installer writes safe runtime environment defaults into the service
 XML when they are not already set in `Environment`: `NODE_ENV`, `PORT`,
@@ -126,6 +142,7 @@ Use these switches when needed:
 
 ```powershell
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipInstall -SkipBuild
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -PackagePath C:\deploy\app.zip -SkipInstall -SkipBuild
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipReverseProxy -SkipHealthCheck
 ```

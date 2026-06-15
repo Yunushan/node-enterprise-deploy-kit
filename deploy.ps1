@@ -11,6 +11,8 @@ param(
     [switch] $SkipHealthCheck,
     [switch] $SkipPreflight,
     [switch] $AllowPortInUse,
+    [string] $PackagePath = "",
+    [switch] $SkipPackageImport,
     [switch] $SkipAppPreparation,
     [switch] $SkipInstall,
     [switch] $SkipBuild
@@ -27,6 +29,24 @@ if (-not (Test-Path $ConfigPath)) {
     throw "Config not found: $ConfigPath. Copy config/windows/app.config.example.json first."
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+
+if (-not $SkipPackageImport) {
+    $effectivePackagePath = $PackagePath
+    if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
+        $effectivePackagePath = [string]$config.PackagePath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
+        $packageArgs = @{
+            ConfigPath = $ConfigPath
+            PackagePath = $effectivePackagePath
+        }
+        if ($WhatIfPreference) {
+            & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs -WhatIf
+        } else {
+            & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs
+        }
+    }
+}
 
 if (-not $SkipPreflight) {
     $preflightArgs = @{

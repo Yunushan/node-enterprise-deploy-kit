@@ -59,6 +59,7 @@
     -ConfigPath "{{ node_deploy_windows_service_dir }}\\app.config.json"
     {% if node_deploy_skip_preflight | default(false) | bool %}-SkipPreflight{% endif %}
     {% if node_deploy_allow_port_in_use | default(false) | bool %}-AllowPortInUse{% endif %}
+    {% if node_deploy_skip_package_import | default(false) | bool %}-SkipPackageImport{% endif %}
     {% if node_deploy_skip_reverse_proxy | default(false) | bool %}-SkipReverseProxy{% endif %}
     {% if (node_deploy_skip_health_check | default(false) | bool) or not (node_deploy_healthcheck_enabled | default(true) | bool) %}-SkipHealthCheck{% endif %}
     {% if node_deploy_skip_install | default(false) | bool %}-SkipInstall{% endif %}
