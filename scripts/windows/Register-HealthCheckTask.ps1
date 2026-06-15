@@ -33,12 +33,13 @@ $taskName = "$($config.AppName)-HealthCheck"
 $backupDirectory = Get-BackupDirectory $config
 $interval = [int]$config.HealthCheckIntervalMinutes
 if ($interval -lt 1) { $interval = 1 }
+$repetitionDuration = New-TimeSpan -Days 3650
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $interval) -RepetitionDuration ([TimeSpan]::MaxValue)
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $interval) -RepetitionDuration $repetitionDuration
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 if ($PSCmdlet.ShouldProcess($taskName, "Register health check scheduled task")) {
     Backup-ScheduledTaskIfExists -TaskName $taskName -BackupDirectory $backupDirectory
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    Write-Host "Registered health check task: $taskName" -ForegroundColor Green
 }
-Write-Host "Registered health check task: $taskName" -ForegroundColor Green
