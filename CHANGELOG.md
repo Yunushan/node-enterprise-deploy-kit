@@ -29,6 +29,7 @@
 - Added safe application package import before deployment: `.zip` on Windows and `.zip`, `.tar.gz`, `.tgz`, or `.tar` on Linux/Unix.
 - Added automatic pinned WinSW download for Windows service deployments when `tools\winsw\winsw-x64.exe` is missing.
 - Fixed Windows health-check scheduled task registration by avoiding Task Scheduler's invalid maximum repetition duration.
+- Added a Windows latest-release deploy helper for RDP/VPN workflows that selects the newest timestamped release folder without moving the current live folder.
 
 ## v1.0.0
 

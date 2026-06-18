@@ -217,6 +217,19 @@ Windows tarafında import `.zip` destekler. Linux/Unix tarafında `.zip`,
 `.tar.gz`, `.tgz` ve `.tar` desteklenir. `.rar` ve `.7z` bu ilk güvenli import
 akışında bilinçli olarak desteklenmez; ek araç ve ek güvenlik kontrolü ister.
 
+Canlı sunucuda her release yeni bir timestamp'li klasöre açılıyorsa mevcut
+yayın klasörünü taşımayın. En yeni klasörü otomatik seçmek için:
+
+```powershell
+.\scripts\windows\Deploy-LatestRelease.ps1 `
+  -ConfigPath .\config\windows\app.config.json `
+  -ReleaseRoot C:\inetpub\wwwroot `
+  -ReleasePattern "example-node-app-IIS-deploy-*" `
+  -HealthPath "/" `
+  -TakeOverPublicPortBinding `
+  -SkipWinSWDownload
+```
+
 5. Servisi ve logları kontrol edin:
 
 ```bash

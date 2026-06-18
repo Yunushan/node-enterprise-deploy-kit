@@ -166,6 +166,18 @@ For artifact-only deployments where dependencies are already installed and the a
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipInstall -SkipBuild
 ```
 
+For live servers where every release is extracted to a new timestamped folder,
+use the latest-release helper so the current live folder is not moved:
+
+```powershell
+.\scripts\windows\Deploy-LatestRelease.ps1 `
+  -ConfigPath .\config\windows\app.config.json `
+  -ReleaseRoot C:\inetpub\wwwroot `
+  -ReleasePattern "example-node-app-IIS-deploy-*" `
+  -HealthPath "/" `
+  -SkipWinSWDownload
+```
+
 If preflight reports a known, intentional listener on the configured port that is not the current service, use:
 
 ```powershell

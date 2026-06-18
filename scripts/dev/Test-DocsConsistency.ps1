@@ -115,6 +115,7 @@ $requiredFiles = @(
   "docs/assets/logo.svg",
   "rollback.ps1",
   "scripts/windows/Ensure-WinSW.ps1",
+  "scripts/windows/Deploy-LatestRelease.ps1",
   "scripts/windows/Import-AppPackage.ps1",
   "scripts/linux/import-app-package.sh",
   "scripts/dev/Test-ReleasePackage.ps1",

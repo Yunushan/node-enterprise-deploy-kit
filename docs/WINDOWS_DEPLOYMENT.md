@@ -101,6 +101,28 @@ current `AppDirectory`, then imports the new package contents. `.rar` and `.7z`
 are intentionally unsupported because they require external tooling and a
 larger security surface.
 
+For live RDP/VPN operations where each release is already extracted to a new
+timestamped folder, use the latest-release helper instead of moving the current
+live folder:
+
+```powershell
+.\scripts\windows\Deploy-LatestRelease.ps1 `
+  -ConfigPath .\config\windows\app.config.json `
+  -ReleaseRoot C:\inetpub\wwwroot `
+  -ReleasePattern "example-node-app-IIS-deploy-*" `
+  -HealthPath "/" `
+  -TakeOverPublicPortBinding `
+  -SkipWinSWDownload
+```
+
+This creates a generated runtime config that points `AppDirectory` and
+`IisSitePath` to the newest matching release folder, runs the normal Windows
+deployment flow with package import/install/build disabled, registers health
+checks, and runs `status.ps1`. The previous live folder is left in place. If
+another IIS site already owns the configured public port, the helper fails by
+default; `-TakeOverPublicPortBinding` removes the conflicting binding only when
+you intentionally want the configured site to take over that port.
+
 The WinSW installer writes safe runtime environment defaults into the service
 XML when they are not already set in `Environment`: `NODE_ENV`, `PORT`,
 `APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME`. This keeps the
