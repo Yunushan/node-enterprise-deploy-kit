@@ -45,10 +45,17 @@ function ConvertTo-NssmEnvironmentArguments($EnvironmentMap) {
     }
     return @($entries)
 }
+function Resolve-RepoPath([string]$Path, [string]$BasePath) {
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
+    return (Join-Path $BasePath $Path)
+}
 Assert-Admin
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+if ($config.ServiceManager -ne "nssm") {
+    throw "This installer supports ServiceManager='nssm'. For WinSW/PM2, use the dedicated scripts."
+}
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$nssm = Join-Path $repoRoot $NssmPath
+$nssm = Resolve-RepoPath -Path $NssmPath -BasePath $repoRoot
 if (-not (Test-Path $nssm)) { throw "NSSM not found at $nssm. Place nssm.exe there or pass -NssmPath." }
 
 New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null

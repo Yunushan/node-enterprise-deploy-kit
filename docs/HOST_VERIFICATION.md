@@ -51,9 +51,42 @@ sudo bash scripts/linux/status-node-app.sh \
 
 The evidence JSON contains safe operational metadata only: app name, service
 name, verdict, finding counts, sanitized health URL, deployment/build identity,
-path basenames, platform metadata, and redacted finding messages. It does not
-include runtime environment values, raw host identity, full filesystem paths,
-raw logs, or HTTP response bodies.
+path basenames, platform metadata, normalized `supportTargetId`, live collector
+metadata in `evidenceCollection`, explicit `synthetic: false`, `mock: false`,
+and `sample: false` provenance markers, and redacted finding messages. It does
+not include runtime environment values, raw host identity, full filesystem
+paths, raw logs, or HTTP response bodies.
+
+### Self-Hosted Runner Collection
+
+The manual `host-evidence` GitHub Actions workflow can collect evidence from an
+already deployed Windows, Linux, or macOS self-hosted runner and upload the safe
+`status.json` as a workflow artifact. Use runner labels that point at the real
+target host, set `platform` to `windows` or `unix`, and set `config_path` to the
+deployed app config on that runner.
+
+The workflow validates `runner_labels` and expected collection dimensions before
+collection. Labels must be a JSON array containing `self-hosted` and the exact
+`expected_target_id` label. GitHub-hosted labels such as `ubuntu-latest`,
+`windows-latest`, and `macos-latest` are rejected because they cannot prove
+real-host support.
+
+For matrix-level support claims, set all expected collection dimensions:
+`expected_target_id`, `expected_nextjs_mode`, `expected_service_manager`, and
+`expected_reverse_proxy`. The validation job passes those values to
+`Test-HostEvidence.ps1` and rejects evidence that was collected from the wrong
+target, Next.js mode, service manager, or reverse-proxy mode. Use
+`expected_reverse_proxy=none` for service-only entries; the validator treats
+that as an explicit service-only claim instead of a missing proxy check. The
+workflow allow-lists expected Next.js modes, service managers, and reverse
+proxies to the support-matrix vocabulary, validates the exact target row in
+`config/support-matrix.example.json`, and rejects platform/category mismatches
+before evidence collection starts.
+
+The workflow is `workflow_dispatch` only. It is for release evidence collection
+from real hosts, not for replacing the normal push/PR CI checks. BSD evidence
+should still be collected with the local command above unless you operate a
+compatible self-hosted runner environment.
 
 ## Validate Evidence
 
@@ -66,6 +99,114 @@ Validate the collected files from a workstation:
   -RequireNextJs `
   -RequireReverseProxy `
   -RequireDeploymentIdentity
+```
+
+Use [Support Matrix](SUPPORT_MATRIX.md) for exact target IDs such as
+`windows-10`, `windows-11`, `windows-server-2022`, `ubuntu`, `rhel`, `alpine`,
+and `macos`.
+
+Before collecting release evidence, generate the checklist from the current
+support matrix:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\support-evidence-plan.md `
+  -Format Markdown
+```
+
+Each generated plan entry includes the local collection command for that
+target/mode/service/proxy row. Windows, Linux, and macOS entries also include
+`workflowInputs` for the manual `host-evidence` workflow, including
+`runner_labels`, `platform`, `config_path`, `evidence_name`, and the expected
+target/mode/service/proxy values. BSD entries are local-command-only unless you
+operate a compatible runner environment.
+
+To generate reviewable GitHub CLI dispatch commands from the same matrix for
+workflow-capable targets:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\host-evidence-dispatch.md `
+  -Format DispatchMarkdown
+```
+
+For a guarded PowerShell dispatcher, generate a script and review the printed
+commands first. The generated script only dispatches workflows when run with
+`-Run`.
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\Invoke-HostEvidenceDispatch.ps1 `
+  -Format DispatchPowerShell
+.\evidence\Invoke-HostEvidenceDispatch.ps1
+```
+
+After collecting evidence, audit the folder against the full matrix to see
+which expected host/service/proxy combinations are still missing:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -EvidencePath .\evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+Create a private evidence bundle for the release record after validation:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceBundle.ps1 `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -ValidateSupportClaim `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies `
+  -RequireCoverageComplete `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+The bundle contains the safe evidence JSON files plus
+`support-evidence-manifest.json`, which records SHA256, size, target ID,
+Next.js mode, service manager, reverse proxy, deployment ID, build ID, and
+package SHA256 for each evidence file. It also records the status collector,
+collector version, live-host flag, and explicit synthetic/mock/sample flags so
+archived evidence cannot silently lose provenance.
+
+Verify a saved bundle before using it in a support review:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceBundle.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip
+```
+
+Run the release readiness gate before using a full-matrix bundle for a release
+support claim:
+
+```powershell
+.\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+The verifier recalculates every evidence file hash, checks manifest byte sizes,
+proves manifest fields still match the JSON content, verifies live collector
+provenance, requires explicit non-synthetic/non-mock/non-sample evidence
+markers, and rejects unlisted evidence files inside the bundle.
+
+For release signoff, prefer the support-claim gate because it derives the
+required evidence aliases from the support matrix:
+
+```powershell
+.\scripts\dev\Test-SupportClaim.ps1 `
+  -EvidencePath .\evidence `
+  -TargetId windows-11,windows-server-2022,ubuntu,macos `
+  -MaxEvidenceAgeDays 30 `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies
 ```
 
 For a stricter support claim across the expanded matrix:
@@ -93,6 +234,9 @@ Evidence is acceptable when:
 - The JSON parses successfully.
 - The verdict is `Healthy` or an accepted `Warning`.
 - `critical` / `Critical` is `0`.
+- `supportTargetId` / `SupportTargetId` is present and matches the support
+  matrix target being claimed, such as `windows-server-2022`, `ubuntu`,
+  `macos`, or `freebsd`.
 - The platform metadata matches the target being claimed.
 - The app had enough uptime for the verification window.
 - Service process uptime is present. When a minimum uptime window was requested
@@ -133,6 +277,8 @@ Evidence is not enough when:
 
 - It comes from only local CI or WSL while claiming real Windows Server, macOS,
   or BSD support.
+- It does not include normalized `supportTargetId` metadata for the matrix
+  target being claimed.
 - The service or port checks were skipped for a production support claim.
 - The service is currently active but not enabled to start after reboot.
 - Service process uptime is missing, unknown, or below the requested minimum
@@ -174,7 +320,8 @@ Use this gate before saying a release is proven on a host family:
 4. Run status evidence immediately after reboot.
 5. Run status evidence again after the required uptime window.
 6. Validate the evidence folder with `Test-HostEvidence.ps1`.
-7. Keep the JSON files with the private release record.
+7. Run `Test-SupportEvidenceCoverage.ps1` to find any missing matrix entries.
+8. Keep the JSON files with the private release record.
 
 This kit can provide templates and validators for many platforms. A platform is
 only proven for a given release after the real-host evidence exists and passes

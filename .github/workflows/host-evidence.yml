@@ -1,0 +1,339 @@
+name: host-evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'JSON array of self-hosted runner labels, for example ["self-hosted","windows-server-2022"]'
+        required: true
+        default: '["self-hosted"]'
+      platform:
+        description: Evidence collection command family
+        required: true
+        type: choice
+        options:
+          - windows
+          - unix
+      config_path:
+        description: Path to the deployed app config on the runner workspace
+        required: true
+        default: config/windows/app.config.json
+      evidence_name:
+        description: Artifact-safe evidence name such as windows-server-2022-winsw-iis
+        required: true
+        default: host-evidence
+      expected_target_id:
+        description: Expected support matrix target ID, for example windows-server-2022 or ubuntu
+        required: true
+      expected_nextjs_mode:
+        description: Expected Next.js mode, standalone or next-start
+        required: true
+        type: choice
+        options:
+          - standalone
+          - next-start
+      expected_service_manager:
+        description: Expected service manager, for example winsw, nssm, systemd, systemv, openrc, launchd, or bsdrc
+        required: true
+        type: choice
+        options:
+          - winsw
+          - nssm
+          - pm2
+          - systemd
+          - systemv
+          - openrc
+          - launchd
+          - bsdrc
+      expected_reverse_proxy:
+        description: Expected reverse proxy, for example iis, nginx, apache, haproxy, traefik, or none
+        required: true
+        type: choice
+        options:
+          - iis
+          - nginx
+          - apache
+          - haproxy
+          - traefik
+          - none
+      minimum_uptime_hours:
+        description: Minimum service uptime required by status evidence
+        required: true
+        default: "72"
+      require_reverse_proxy:
+        description: Require reverse-proxy evidence during artifact validation
+        required: true
+        type: boolean
+        default: true
+      fail_on_warnings:
+        description: Fail status/validation when warnings are present
+        required: true
+        type: boolean
+        default: false
+      upload_retention_days:
+        description: Artifact retention days
+        required: true
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-dispatch:
+    name: validate dispatch inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate self-hosted runner labels
+        shell: pwsh
+        env:
+          EXPECTED_NEXTJS_MODE: ${{ inputs.expected_nextjs_mode }}
+          EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+          EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+          EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+          PLATFORM: ${{ inputs.platform }}
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Get-NormalizedArray {
+            param($Values)
+            @($Values | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+          }
+
+          $expectedDimensions = [ordered]@{
+            expected_target_id = $env:EXPECTED_TARGET_ID
+            expected_nextjs_mode = $env:EXPECTED_NEXTJS_MODE
+            expected_service_manager = $env:EXPECTED_SERVICE_MANAGER
+            expected_reverse_proxy = $env:EXPECTED_REVERSE_PROXY
+          }
+          foreach ($name in $expectedDimensions.Keys) {
+            $value = [string]$expectedDimensions[$name]
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "expected_target_id, expected_nextjs_mode, expected_service_manager, and expected_reverse_proxy are required for real host evidence collection."
+            }
+            if ($value -notmatch '^[A-Za-z0-9._-]+$') {
+              throw "expected target, mode, service manager, and reverse proxy values must contain only letters, numbers, dot, underscore, or dash."
+            }
+          }
+          $expectedNextJsMode = $env:EXPECTED_NEXTJS_MODE.Trim().ToLowerInvariant()
+          $expectedServiceManager = $env:EXPECTED_SERVICE_MANAGER.Trim().ToLowerInvariant()
+          $expectedReverseProxy = $env:EXPECTED_REVERSE_PROXY.Trim().ToLowerInvariant()
+          $expectedTarget = $env:EXPECTED_TARGET_ID.Trim().ToLowerInvariant()
+          if ($expectedNextJsMode -notin @("standalone", "next-start")) {
+            throw "expected_nextjs_mode must be standalone or next-start."
+          }
+          if ($expectedServiceManager -notin @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
+            throw "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, launchd, or bsdrc."
+          }
+          if ($expectedReverseProxy -notin @("iis", "nginx", "apache", "haproxy", "traefik", "none")) {
+            throw "expected_reverse_proxy must be one of iis, nginx, apache, haproxy, traefik, or none."
+          }
+          $matrix = Get-Content -LiteralPath "config/support-matrix.example.json" -Raw | ConvertFrom-Json
+          $target = @($matrix.targets | Where-Object { ([string]$_.id).Trim().ToLowerInvariant() -eq $expectedTarget } | Select-Object -First 1)
+          if ($target.Count -ne 1) {
+            throw "expected_target_id must match a support matrix target id."
+          }
+          $target = $target[0]
+          $targetModes = @(Get-NormalizedArray $target.nextjsModes)
+          if ($targetModes -notcontains $expectedNextJsMode) {
+            throw "expected_nextjs_mode '$expectedNextJsMode' is not declared for support matrix target '$expectedTarget'."
+          }
+          $targetServiceManagers = @((Get-NormalizedArray $target.serviceManagers) + (Get-NormalizedArray $target.fallbackManagers) | Sort-Object -Unique)
+          if ($targetServiceManagers -notcontains $expectedServiceManager) {
+            throw "expected_service_manager '$expectedServiceManager' is not declared for support matrix target '$expectedTarget'."
+          }
+          $targetReverseProxies = @(Get-NormalizedArray $target.reverseProxies)
+          if ($targetReverseProxies -notcontains $expectedReverseProxy) {
+            throw "expected_reverse_proxy '$expectedReverseProxy' is not declared for support matrix target '$expectedTarget'."
+          }
+          $targetCategory = ([string]$target.category).Trim().ToLowerInvariant()
+          $expectedPlatform = if ($targetCategory -in @("windows-client", "windows-server")) { "windows" } else { "unix" }
+          if ($env:PLATFORM.Trim().ToLowerInvariant() -ne $expectedPlatform) {
+            throw "platform must be '$expectedPlatform' for support matrix target '$expectedTarget'."
+          }
+          $rawLabels = $env:RUNNER_LABELS.Trim()
+          if (-not $rawLabels.StartsWith("[")) {
+            throw "runner_labels must be a JSON array containing self-hosted and the expected target label."
+          }
+          try {
+            $labels = @($rawLabels | ConvertFrom-Json)
+          } catch {
+            throw "runner_labels must be a valid JSON array containing self-hosted and the expected target label."
+          }
+          if ($labels.Count -eq 0) {
+            throw "runner_labels must include self-hosted and the expected target label."
+          }
+          $normalizedLabels = @()
+          foreach ($label in $labels) {
+            $labelText = ([string]$label).Trim()
+            if ($labelText -notmatch '^[A-Za-z0-9._-]+$') {
+              throw "runner_labels values must contain only letters, numbers, dot, underscore, or dash."
+            }
+            $normalizedLabels += $labelText.ToLowerInvariant()
+          }
+          foreach ($hostedLabel in @("ubuntu-latest", "windows-latest", "macos-latest")) {
+            if ($normalizedLabels -contains $hostedLabel) {
+              throw "runner_labels must not use GitHub-hosted runner labels for real host evidence."
+            }
+          }
+          if ($normalizedLabels -notcontains "self-hosted") {
+            throw "runner_labels must include self-hosted for real host evidence collection."
+          }
+          if ($env:EXPECTED_TARGET_ID) {
+            $expectedTarget = $env:EXPECTED_TARGET_ID.Trim().ToLowerInvariant()
+            if ($normalizedLabels -notcontains $expectedTarget) {
+              throw "runner_labels must include the expected target label '$expectedTarget' for real host evidence collection."
+            }
+          }
+
+  collect:
+    name: collect host evidence
+    needs: validate-dispatch
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 30
+    env:
+      CONFIG_PATH: ${{ inputs.config_path }}
+      EVIDENCE_NAME: ${{ inputs.evidence_name }}
+      EXPECTED_NEXTJS_MODE: ${{ inputs.expected_nextjs_mode }}
+      EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+      EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+      EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+      FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
+      MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate inputs for Windows collection
+        if: ${{ inputs.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:EVIDENCE_NAME -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "evidence_name must contain only letters, numbers, dot, underscore, or dash."
+          }
+          if ($env:MINIMUM_UPTIME_HOURS -notmatch '^\d+$') {
+            throw "minimum_uptime_hours must be a non-negative integer."
+          }
+          foreach ($value in @($env:EXPECTED_TARGET_ID, $env:EXPECTED_NEXTJS_MODE, $env:EXPECTED_SERVICE_MANAGER, $env:EXPECTED_REVERSE_PROXY)) {
+            if ($value -and $value -notmatch '^[A-Za-z0-9._-]+$') {
+              throw "expected target, mode, service manager, and reverse proxy values must contain only letters, numbers, dot, underscore, or dash."
+            }
+          }
+          New-Item -ItemType Directory -Force -Path (Join-Path "evidence" $env:EVIDENCE_NAME) | Out-Null
+
+      - name: Validate inputs for Unix collection
+        if: ${{ inputs.platform == 'unix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVIDENCE_NAME" in
+            *[!A-Za-z0-9._-]*|'') echo "evidence_name must contain only letters, numbers, dot, underscore, or dash." >&2; exit 1 ;;
+          esac
+          case "$MINIMUM_UPTIME_HOURS" in
+            ''|*[!0-9]*) echo "minimum_uptime_hours must be a non-negative integer." >&2; exit 1 ;;
+          esac
+          for value in "$EXPECTED_TARGET_ID" "$EXPECTED_NEXTJS_MODE" "$EXPECTED_SERVICE_MANAGER" "$EXPECTED_REVERSE_PROXY"; do
+            case "$value" in
+              *[!A-Za-z0-9._-]*) echo "expected target, mode, service manager, and reverse proxy values must contain only letters, numbers, dot, underscore, or dash." >&2; exit 1 ;;
+            esac
+          done
+          mkdir -p "evidence/$EVIDENCE_NAME"
+
+      - name: Collect Windows status evidence
+        if: ${{ inputs.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $statusArgs = @(
+            "-ConfigPath", $env:CONFIG_PATH,
+            "-MinimumUptimeHours", $env:MINIMUM_UPTIME_HOURS,
+            "-JsonPath", (Join-Path (Join-Path "evidence" $env:EVIDENCE_NAME) "status.json"),
+            "-FailOnCritical"
+          )
+          if ($env:FAIL_ON_WARNINGS -eq "true") {
+            $statusArgs += "-FailOnWarnings"
+          }
+          & ./status.ps1 @statusArgs
+
+      - name: Collect Unix status evidence
+        if: ${{ inputs.platform == 'unix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$FAIL_ON_WARNINGS" == "true" ]]; then
+            extra+=(--fail-on-warnings)
+          fi
+          sudo bash scripts/linux/status-node-app.sh \
+            "$CONFIG_PATH" \
+            --minimum-uptime-hours "$MINIMUM_UPTIME_HOURS" \
+            --json-output "evidence/$EVIDENCE_NAME/status.json" \
+            --fail-on-critical \
+            "${extra[@]}"
+
+      - name: Upload safe status evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.evidence_name }}
+          path: evidence/${{ inputs.evidence_name }}/status.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.upload_retention_days }}
+
+  validate:
+    name: validate uploaded evidence
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download collected evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.evidence_name }}
+          path: evidence/${{ inputs.evidence_name }}
+
+      - name: Validate collected evidence
+        shell: pwsh
+        env:
+          EVIDENCE_NAME: ${{ inputs.evidence_name }}
+          EXPECTED_NEXTJS_MODE: ${{ inputs.expected_nextjs_mode }}
+          EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+          EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+          EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+          FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
+          REQUIRE_REVERSE_PROXY: ${{ inputs.require_reverse_proxy }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $validationArgs = @(
+            "-EvidencePath", (Join-Path "evidence" $env:EVIDENCE_NAME),
+            "-RequireNextJs",
+            "-RequireDeploymentIdentity",
+            "-MaxEvidenceAgeDays", "1"
+          )
+          $requireReverseProxy = ($env:REQUIRE_REVERSE_PROXY -eq "true")
+          if ($env:EXPECTED_TARGET_ID) {
+            $validationArgs += @("-ExpectedTargetId", $env:EXPECTED_TARGET_ID)
+          }
+          if ($env:EXPECTED_NEXTJS_MODE) {
+            $validationArgs += @("-ExpectedNextJsMode", $env:EXPECTED_NEXTJS_MODE)
+          }
+          if ($env:EXPECTED_SERVICE_MANAGER) {
+            $validationArgs += @("-ExpectedServiceManager", $env:EXPECTED_SERVICE_MANAGER)
+          }
+          if ($env:EXPECTED_REVERSE_PROXY) {
+            $validationArgs += @("-ExpectedReverseProxy", $env:EXPECTED_REVERSE_PROXY)
+            $requireReverseProxy = $true
+            if ($env:EXPECTED_REVERSE_PROXY -eq "none") {
+              $validationArgs += "-AllowReverseProxyNone"
+            }
+          }
+          if ($requireReverseProxy) {
+            $validationArgs += "-RequireReverseProxy"
+          }
+          if ($env:FAIL_ON_WARNINGS -eq "true") {
+            $validationArgs += "-FailOnWarnings"
+          }
+          & ./scripts/dev/Test-HostEvidence.ps1 @validationArgs

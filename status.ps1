@@ -213,6 +213,24 @@ function Get-ConfigBool($Config, [string]$Name, [bool]$Default) {
 function Normalize-Name([string]$Value) {
     return $Value.ToLowerInvariant().Replace("_", "-")
 }
+function Get-WindowsSupportTargetId {
+    param([string]$OsCaption)
+
+    if ($OsCaption -match 'Windows Server') {
+        if ($OsCaption -match '2012\s+R2') { return "windows-server-2012-r2" }
+        foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
+            if ($OsCaption -match $year) { return "windows-server-$year" }
+        }
+        return "windows-server"
+    }
+    if ($OsCaption -match 'Windows\s+10' -and $OsCaption -notmatch 'Windows Server') {
+        return "windows-10"
+    }
+    if ($OsCaption -match 'Windows\s+11' -and $OsCaption -notmatch 'Windows Server') {
+        return "windows-11"
+    }
+    return "windows"
+}
 function Test-SafeRelativePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $normalized = $Path.Replace("\", "/")
@@ -796,8 +814,10 @@ if ($HealthTimeoutSeconds -lt 1) {
 
 Write-Host "Host uptime" -ForegroundColor Yellow
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+$supportTargetId = Get-WindowsSupportTargetId -OsCaption $(if ($os) { [string]$os.Caption } else { "" })
 $platformEvidence = [pscustomobject]@{
     Family = "windows"
+    SupportTargetId = $supportTargetId
     OsCaption = if ($os) { [string]$os.Caption } else { "" }
     OsVersion = if ($os) { [string]$os.Version } else { "" }
     OsBuildNumber = if ($os) { [string]$os.BuildNumber } else { "" }
@@ -1172,6 +1192,16 @@ $safeFindings = @($sortedFindings | ForEach-Object {
 })
 $statusEvidence = [pscustomobject]@{
     EvidenceSchemaVersion = 1
+    EvidenceCollection = [pscustomobject]@{
+        Source = "node-enterprise-deploy-kit/status.ps1"
+        Collector = "status.ps1"
+        CollectorVersion = 1
+        LiveHost = $true
+        Synthetic = $false
+        Mock = $false
+        Sample = $false
+    }
+    SupportTargetId = $supportTargetId
     GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     AppName = $serviceName
     ConfigFileName = Get-SafePathLeaf $ConfigPath

@@ -9,7 +9,6 @@ load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"
-REVERSE_PROXY_NORMALIZED="$(normalize_name "${REVERSE_PROXY:-none}")"
 
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
@@ -55,26 +54,7 @@ case "$APP_RUNTIME_NORMALIZED" in
 esac
 
 if ! is_true "$SKIP_REVERSE_PROXY"; then
-  case "$REVERSE_PROXY_NORMALIZED" in
-    nginx)
-      run_root "$REPO_ROOT/scripts/linux/install-nginx-reverse-proxy.sh" "$CONFIG_FILE"
-      ;;
-    apache|httpd)
-      run_root "$REPO_ROOT/scripts/linux/install-apache-reverse-proxy.sh" "$CONFIG_FILE"
-      ;;
-    haproxy)
-      run_root "$REPO_ROOT/scripts/linux/install-haproxy-reverse-proxy.sh" "$CONFIG_FILE"
-      ;;
-    traefik)
-      run_root "$REPO_ROOT/scripts/linux/install-traefik-reverse-proxy.sh" "$CONFIG_FILE"
-      ;;
-    none|"")
-      ;;
-    *)
-      echo "Unsupported REVERSE_PROXY: $REVERSE_PROXY. Use nginx, apache, haproxy, traefik, or none." >&2
-      exit 1
-      ;;
-  esac
+  bash "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$CONFIG_FILE"
 fi
 
 if is_true "$SKIP_HEALTH_CHECK"; then

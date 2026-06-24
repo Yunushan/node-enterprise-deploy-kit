@@ -8,7 +8,7 @@ jobs:
   basic-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install CI tooling
         shell: bash
         run: |
@@ -33,7 +33,7 @@ jobs:
   windows-checks:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Windows repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax
@@ -60,7 +60,7 @@ jobs:
           - openbsd
           - netbsd
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Platform family mapping
         shell: bash
         run: bash scripts/dev/test-platform-matrix.sh --case "${{ matrix.platform }}"
@@ -68,7 +68,7 @@ jobs:
   macos-checks:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: macOS Unix/Next.js verification
         shell: bash
         run: |

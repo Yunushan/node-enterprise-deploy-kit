@@ -246,6 +246,42 @@ function Test-HostEvidenceSelfTest {
   & (Join-Path $ScriptDir "Test-HostEvidence.ps1") -SelfTest -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
 }
 
+function Test-SupportMatrix {
+  & (Join-Path $ScriptDir "Test-SupportMatrix.ps1")
+}
+
+function Test-WindowsServiceManagers {
+  & (Join-Path $ScriptDir "Test-WindowsServiceManagers.ps1")
+}
+
+function Test-HostEvidenceWorkflow {
+  & (Join-Path $ScriptDir "Test-HostEvidenceWorkflow.ps1")
+}
+
+function Test-SupportClaimSelfTest {
+  & (Join-Path $ScriptDir "Test-SupportClaim.ps1") -SelfTest
+}
+
+function Test-SupportEvidencePlanSelfTest {
+  & (Join-Path $ScriptDir "New-SupportEvidencePlan.ps1") -SelfTest
+}
+
+function Test-SupportEvidenceBundleSelfTest {
+  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -SelfTest
+}
+
+function Test-SupportEvidenceBundleVerifierSelfTest {
+  & (Join-Path $ScriptDir "Test-SupportEvidenceBundle.ps1") -SelfTest
+}
+
+function Test-SupportEvidenceCoverageSelfTest {
+  & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") -SelfTest
+}
+
+function Test-ReleaseSupportReadinessSelfTest {
+  & (Join-Path $ScriptDir "Test-ReleaseSupportReadiness.ps1") -SelfTest
+}
+
 function Test-DocsConsistency {
   & (Join-Path $ScriptDir "Test-DocsConsistency.ps1")
 }
@@ -260,6 +296,15 @@ Test-NextJsSupport
 Test-NextJsRuntimeSmoke
 Test-ReleasePackageHygiene
 Test-HostEvidenceSelfTest
+Test-SupportMatrix
+Test-WindowsServiceManagers
+Test-HostEvidenceWorkflow
+Test-SupportClaimSelfTest
+Test-SupportEvidencePlanSelfTest
+Test-SupportEvidenceBundleSelfTest
+Test-SupportEvidenceBundleVerifierSelfTest
+Test-SupportEvidenceCoverageSelfTest
+Test-ReleaseSupportReadinessSelfTest
 Test-DocsConsistency
 Test-NoObviousSecrets
 Test-GitDiffCheck

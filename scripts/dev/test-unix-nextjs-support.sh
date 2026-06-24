@@ -109,7 +109,7 @@ expect_failure() {
 
 assert_contains() {
   local path="$1" expected="$2"
-  if ! grep -Fq "$expected" "$path"; then
+  if ! grep -Fq -- "$expected" "$path"; then
     echo "$path is missing expected text: $expected" >&2
     printf '%s\n' "--- $path ---" >&2
     cat "$path" >&2
@@ -119,8 +119,18 @@ assert_contains() {
 
 assert_not_contains() {
   local path="$1" unexpected="$2"
-  if grep -Fq "$unexpected" "$path"; then
+  if grep -Fq -- "$unexpected" "$path"; then
     echo "$path contains unexpected text: $unexpected" >&2
+    printf '%s\n' "--- $path ---" >&2
+    cat "$path" >&2
+    exit 1
+  fi
+}
+
+assert_no_template_tokens() {
+  local path="$1"
+  if grep -Eq '\{\{[A-Za-z0-9_]+\}\}' "$path"; then
+    echo "$path contains unresolved template tokens." >&2
     printf '%s\n' "--- $path ---" >&2
     cat "$path" >&2
     exit 1
@@ -143,6 +153,26 @@ render_node_service_template() {
     FAILURE_RESTART_DELAY "60" \
     LOG_DIR "$TEST_ROOT/rendered/logs" \
     RUNNER_SCRIPT "$TEST_ROOT/rendered/example-next-smoke-runner.sh"
+}
+
+render_reverse_proxy_template() {
+  local template="$1" output="$2"
+  BACKUP_DIR="$TEST_ROOT/backups" render_template_file "$template" "$output" \
+    APP_NAME "example-next-smoke" \
+    PUBLIC_HOSTNAME "app.example.test" \
+    PROXY_LISTEN_PORT "39981" \
+    APP_PORT "39210" \
+    HEALTH_URL "http://127.0.0.1:39210/health" \
+    LOG_DIR "$TEST_ROOT/rendered-proxy/logs" \
+    FORWARDED_PROTO "https" \
+    FORWARDED_PORT "443" \
+    HAPROXY_BIND "*:39981" \
+    HAPROXY_FRONTEND_NAME "example_next_smoke_fe" \
+    HAPROXY_BACKEND_NAME "example_next_smoke_be" \
+    HEALTHCHECK_PATH "/health" \
+    TRAEFIK_ENTRYPOINT "websecure" \
+    TRAEFIK_ROUTER_NAME "example-next-smoke-router" \
+    TRAEFIK_SERVICE_NAME "example-next-smoke-service"
 }
 
 test_env_assignment_quoting() {
@@ -188,6 +218,56 @@ test_service_template_rendering() {
   expect_success "rendered sysv syntax" /bin/sh -n "$rendered/example-next-smoke.sysv"
   expect_success "rendered openrc syntax" /bin/sh -n "$rendered/example-next-smoke.openrc"
   expect_success "rendered bsdrc syntax" /bin/sh -n "$rendered/example-next-smoke.bsdrc"
+}
+
+test_reverse_proxy_template_rendering() {
+  local rendered="$TEST_ROOT/rendered-proxy"
+  mkdir -p "$rendered"
+
+  render_reverse_proxy_template "$REPO_ROOT/templates/linux/nginx-site.conf.tpl" "$rendered/example-next-smoke.nginx.conf"
+  render_reverse_proxy_template "$REPO_ROOT/templates/linux/apache-vhost.conf.tpl" "$rendered/example-next-smoke.apache.conf"
+  render_reverse_proxy_template "$REPO_ROOT/templates/linux/haproxy.cfg.tpl" "$rendered/example-next-smoke.haproxy.cfg"
+  render_reverse_proxy_template "$REPO_ROOT/templates/linux/traefik-dynamic.yml.tpl" "$rendered/example-next-smoke.traefik.yml"
+
+  assert_no_template_tokens "$rendered/example-next-smoke.nginx.conf"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "listen 39981;"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "server_name app.example.test;"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "proxy_pass http://127.0.0.1:39210;"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "proxy_set_header X-Forwarded-Proto https;"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "proxy_set_header X-Forwarded-Port 443;"
+  assert_contains "$rendered/example-next-smoke.nginx.conf" 'proxy_set_header Upgrade $http_upgrade;'
+  assert_contains "$rendered/example-next-smoke.nginx.conf" "proxy_pass http://127.0.0.1:39210/health;"
+
+  assert_no_template_tokens "$rendered/example-next-smoke.apache.conf"
+  assert_contains "$rendered/example-next-smoke.apache.conf" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
+  assert_contains "$rendered/example-next-smoke.apache.conf" "<VirtualHost *:39981>"
+  assert_contains "$rendered/example-next-smoke.apache.conf" "ServerName app.example.test"
+  assert_contains "$rendered/example-next-smoke.apache.conf" "RequestHeader set X-Forwarded-Proto \"https\""
+  assert_contains "$rendered/example-next-smoke.apache.conf" "RequestHeader set X-Forwarded-Port \"443\""
+  assert_contains "$rendered/example-next-smoke.apache.conf" 'RewriteRule /(.*) ws://127.0.0.1:39210/$1 [P,L]'
+  assert_contains "$rendered/example-next-smoke.apache.conf" "ProxyPass /health-proxy http://127.0.0.1:39210/health"
+  assert_contains "$rendered/example-next-smoke.apache.conf" "ProxyPass / http://127.0.0.1:39210/"
+
+  assert_no_template_tokens "$rendered/example-next-smoke.haproxy.cfg"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "frontend example_next_smoke_fe"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "bind *:39981"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "http-request set-header X-Forwarded-Proto https"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "http-request set-header X-Forwarded-Port 443"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "backend example_next_smoke_be"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "option httpchk GET /health"
+  assert_contains "$rendered/example-next-smoke.haproxy.cfg" "server example-next-smoke 127.0.0.1:39210 check"
+
+  assert_no_template_tokens "$rendered/example-next-smoke.traefik.yml"
+  assert_contains "$rendered/example-next-smoke.traefik.yml" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
+  assert_contains "$rendered/example-next-smoke.traefik.yml" "example-next-smoke-router:"
+  assert_contains "$rendered/example-next-smoke.traefik.yml" 'rule: "Host(`app.example.test`)"'
+  assert_contains "$rendered/example-next-smoke.traefik.yml" '- "websecure"'
+  assert_contains "$rendered/example-next-smoke.traefik.yml" 'service: "example-next-smoke-service"'
+  assert_contains "$rendered/example-next-smoke.traefik.yml" "loadBalancer:"
+  assert_contains "$rendered/example-next-smoke.traefik.yml" 'path: "/health"'
+  assert_contains "$rendered/example-next-smoke.traefik.yml" '- url: "http://127.0.0.1:39210"'
 }
 
 test_node_runtime_smoke() {
@@ -319,6 +399,7 @@ echo "==> Unix Next.js support"
 
 test_env_assignment_quoting
 test_service_template_rendering
+test_reverse_proxy_template_rendering
 test_node_runtime_smoke
 
 OK_ROOT="$TEST_ROOT/standalone-ok"
@@ -330,6 +411,7 @@ expect_success "standalone runtime layout" bash "$REPO_ROOT/scripts/linux/test-n
 STATUS_JSON="$OK_ROOT/status.json"
 expect_success "standalone safe status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$OK_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$STATUS_JSON" --fail-on-critical
 assert_contains "$STATUS_JSON" '"appName": "example-next-smoke"'
+assert_contains "$STATUS_JSON" '"supportTargetId": "'
 assert_contains "$STATUS_JSON" '"serviceEnabledStatus": "skipped"'
 assert_contains "$STATUS_JSON" '"port": {'
 assert_contains "$STATUS_JSON" '"checked": false'
@@ -362,38 +444,115 @@ assert_contains "$STATUS_JSON" '"status": "not-applicable"'
 assert_contains "$STATUS_JSON" '"verdict": "Warning"'
 assert_contains "$STATUS_JSON" '"critical": 0'
 
-PROXY_CONFIG_ROOT="$TEST_ROOT/proxy-config-ok"
-mkdir -p "$PROXY_CONFIG_ROOT/nginx-conf"
-new_standalone_layout "$PROXY_CONFIG_ROOT/app"
-write_env "$PROXY_CONFIG_ROOT/app.env" "$PROXY_CONFIG_ROOT" 39206 "standalone" "server.js" "launchd"
-write_file "$PROXY_CONFIG_ROOT/nginx-conf/example-next-smoke.conf" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
-cat >> "$PROXY_CONFIG_ROOT/app.env" <<EOF
-REVERSE_PROXY="nginx"
-NGINX_SITE_NAME="example-next-smoke"
-NGINX_CONFIG_DIR="$PROXY_CONFIG_ROOT/nginx-conf"
+test_reverse_proxy_config_status() {
+  local proxy="$1" config_dir_name="$2" config_file_name="$3" extra_env="$4"
+  local proxy_root="$TEST_ROOT/proxy-config-$proxy-ok"
+  mkdir -p "$proxy_root/$config_dir_name"
+  new_standalone_layout "$proxy_root/app"
+  write_env "$proxy_root/app.env" "$proxy_root" 39206 "standalone" "server.js" "launchd"
+  write_file "$proxy_root/$config_dir_name/$config_file_name" "# Managed by node-enterprise-deploy-kit for example-next-smoke."
+  cat >> "$proxy_root/app.env" <<EOF
+REVERSE_PROXY="$proxy"
 PROXY_LISTEN_PORT="39980"
+$extra_env
 EOF
-PROXY_STATUS_JSON="$PROXY_CONFIG_ROOT/status.json"
-expect_success "standalone reverse proxy config status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$PROXY_CONFIG_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$PROXY_STATUS_JSON" --fail-on-critical
-assert_contains "$PROXY_STATUS_JSON" '"port": {'
-assert_contains "$PROXY_STATUS_JSON" '"checked": false'
-assert_contains "$PROXY_STATUS_JSON" '"health": {'
-assert_contains "$PROXY_STATUS_JSON" '"status": "skipped"'
-assert_contains "$PROXY_STATUS_JSON" '"uptime": {'
-assert_contains "$PROXY_STATUS_JSON" '"serviceStartKnown": false'
-assert_contains "$PROXY_STATUS_JSON" '"healthMonitor": {'
-assert_contains "$PROXY_STATUS_JSON" '"scheduleType": "launchd-timer"'
-assert_contains "$PROXY_STATUS_JSON" '"schedulerChecked": true'
-assert_contains "$PROXY_STATUS_JSON" '"schedulerExists": false'
-assert_contains "$PROXY_STATUS_JSON" '"stateExists": false'
-assert_contains "$PROXY_STATUS_JSON" '"logExists": false'
-assert_contains "$PROXY_STATUS_JSON" '"config": {'
-assert_contains "$PROXY_STATUS_JSON" '"pathName": "example-next-smoke.conf"'
-assert_contains "$PROXY_STATUS_JSON" '"directoryName": "nginx-conf"'
-assert_contains "$PROXY_STATUS_JSON" '"exists": true'
-assert_contains "$PROXY_STATUS_JSON" '"managedMarkerFound": true'
-assert_contains "$PROXY_STATUS_JSON" '"expectedPort": "39980"'
-assert_not_contains "$PROXY_STATUS_JSON" "$PROXY_CONFIG_ROOT"
+  local status_json="$proxy_root/status.json"
+  expect_success "$proxy reverse proxy config status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$proxy_root/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$status_json" --fail-on-critical
+  assert_contains "$status_json" '"supportTargetId": "'
+  assert_contains "$status_json" '"port": {'
+  assert_contains "$status_json" '"checked": false'
+  assert_contains "$status_json" '"health": {'
+  assert_contains "$status_json" '"status": "skipped"'
+  assert_contains "$status_json" '"uptime": {'
+  assert_contains "$status_json" '"serviceStartKnown": false'
+  assert_contains "$status_json" '"healthMonitor": {'
+  assert_contains "$status_json" '"scheduleType": "launchd-timer"'
+  assert_contains "$status_json" '"schedulerChecked": true'
+  assert_contains "$status_json" '"schedulerExists": false'
+  assert_contains "$status_json" '"stateExists": false'
+  assert_contains "$status_json" '"logExists": false'
+  assert_contains "$status_json" '"reverseProxy": {'
+  assert_contains "$status_json" "\"mode\": \"$proxy\""
+  assert_contains "$status_json" '"config": {'
+  assert_contains "$status_json" "\"pathName\": \"$config_file_name\""
+  assert_contains "$status_json" "\"directoryName\": \"$config_dir_name\""
+  assert_contains "$status_json" '"exists": true'
+  assert_contains "$status_json" '"managedMarkerFound": true'
+  assert_contains "$status_json" '"expectedPort": "39980"'
+  assert_not_contains "$status_json" "$proxy_root"
+}
+
+test_reverse_proxy_config_status "nginx" "nginx-conf" "example-next-smoke.conf" "NGINX_SITE_NAME=\"example-next-smoke\"
+NGINX_CONFIG_DIR=\"$TEST_ROOT/proxy-config-nginx-ok/nginx-conf\""
+test_reverse_proxy_config_status "apache" "apache-conf" "example-next-smoke.conf" "APACHE_SITE_NAME=\"example-next-smoke\"
+APACHE_CONFIG_DIR=\"$TEST_ROOT/proxy-config-apache-ok/apache-conf\""
+test_reverse_proxy_config_status "haproxy" "haproxy-conf" "haproxy.cfg" "HAPROXY_CONFIG_FILE=\"$TEST_ROOT/proxy-config-haproxy-ok/haproxy-conf/haproxy.cfg\""
+test_reverse_proxy_config_status "traefik" "traefik-conf" "example-next-smoke.yml" "TRAEFIK_DYNAMIC_FILE=\"$TEST_ROOT/proxy-config-traefik-ok/traefik-conf/example-next-smoke.yml\""
+
+test_reverse_proxy_dispatcher() {
+  local proxy="$1" expected_installer="$2"
+  local proxy_root="$TEST_ROOT/reverse-proxy-dispatch-$proxy"
+  local output="$proxy_root/output.txt"
+  mkdir -p "$proxy_root"
+  new_standalone_layout "$proxy_root/app"
+  write_env "$proxy_root/app.env" "$proxy_root" 39211 "standalone" "server.js" "launchd"
+  cat >> "$proxy_root/app.env" <<EOF
+REVERSE_PROXY="$proxy"
+EOF
+  expect_success "$proxy reverse proxy dispatcher dry-run" bash "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$proxy_root/app.env" --dry-run > "$output"
+  assert_contains "$output" "$expected_installer"
+  assert_contains "$output" "$proxy_root/app.env"
+  assert_not_contains "$output" "sudo"
+}
+
+test_reverse_proxy_dispatcher "nginx" "install-nginx-reverse-proxy.sh"
+test_reverse_proxy_dispatcher "apache" "install-apache-reverse-proxy.sh"
+test_reverse_proxy_dispatcher "httpd" "install-apache-reverse-proxy.sh"
+test_reverse_proxy_dispatcher "haproxy" "install-haproxy-reverse-proxy.sh"
+test_reverse_proxy_dispatcher "traefik" "install-traefik-reverse-proxy.sh"
+
+DISPATCH_NONE_ROOT="$TEST_ROOT/reverse-proxy-dispatch-none"
+mkdir -p "$DISPATCH_NONE_ROOT"
+new_standalone_layout "$DISPATCH_NONE_ROOT/app"
+write_env "$DISPATCH_NONE_ROOT/app.env" "$DISPATCH_NONE_ROOT" 39212 "standalone" "server.js" "launchd"
+expect_success "none reverse proxy dispatcher" bash "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$DISPATCH_NONE_ROOT/app.env"
+
+DISPATCH_BAD_ROOT="$TEST_ROOT/reverse-proxy-dispatch-bad"
+mkdir -p "$DISPATCH_BAD_ROOT"
+new_standalone_layout "$DISPATCH_BAD_ROOT/app"
+write_env "$DISPATCH_BAD_ROOT/app.env" "$DISPATCH_BAD_ROOT" 39213 "standalone" "server.js" "launchd"
+cat >> "$DISPATCH_BAD_ROOT/app.env" <<'EOF'
+REVERSE_PROXY="caddy"
+EOF
+expect_failure "bad reverse proxy dispatcher" "Unsupported REVERSE_PROXY" bash "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$DISPATCH_BAD_ROOT/app.env" --dry-run
+
+test_static_service_manager_status() {
+  local manager="$1" port="$2" expected_schedule="$3"
+  local manager_root="$TEST_ROOT/service-manager-$manager-ok"
+  local status_json="$manager_root/status.json"
+  mkdir -p "$manager_root"
+  new_standalone_layout "$manager_root/app"
+  write_env "$manager_root/app.env" "$manager_root" "$port" "standalone" "server.js" "$manager"
+  expect_success "$manager static preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$manager_root/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+  expect_success "$manager runtime layout" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$manager_root/app.env"
+  expect_success "$manager safe status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$manager_root/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$status_json" --fail-on-critical
+  assert_contains "$status_json" "\"serviceManager\": \"$manager\""
+  assert_contains "$status_json" '"serviceActiveStatus": "skipped"'
+  assert_contains "$status_json" '"serviceEnabledStatus": "skipped"'
+  assert_contains "$status_json" '"healthMonitor": {'
+  assert_contains "$status_json" "\"scheduleType\": \"$expected_schedule\""
+  assert_contains "$status_json" '"schedulerChecked": true'
+  assert_contains "$status_json" '"nextJsRuntime": {'
+  assert_contains "$status_json" '"status": "ok"'
+  assert_contains "$status_json" '"mode": "standalone"'
+  assert_contains "$status_json" '"reverseProxy": {'
+  assert_contains "$status_json" '"status": "not-applicable"'
+  assert_not_contains "$status_json" "$manager_root"
+}
+
+test_static_service_manager_status "systemd" 39209 "systemd-timer"
+test_static_service_manager_status "systemv" 39207 "cron"
+test_static_service_manager_status "openrc" 39208 "cron"
 
 BAD_ROOT="$TEST_ROOT/standalone-missing-static"
 mkdir -p "$BAD_ROOT/app/.next" "$BAD_ROOT/app/node_modules"
@@ -483,10 +642,6 @@ new_next_project_layout "$BLOCKED_PROJECT"
 write_file "$BLOCKED_PROJECT/.next/standalone/.env.production" "SECRET_VALUE=placeholder"
 expect_failure "blocked package helper" "blocked private file" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$BLOCKED_PROJECT" --output-path "$TEST_ROOT/package/blocked.tar.gz"
 
-BSD_ROOT="$TEST_ROOT/bsdrc-ok"
-mkdir -p "$BSD_ROOT"
-new_standalone_layout "$BSD_ROOT/app"
-write_env "$BSD_ROOT/app.env" "$BSD_ROOT" 39203 "standalone" "server.js" "bsdrc"
-expect_success "bsdrc static preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$BSD_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+test_static_service_manager_status "bsdrc" 39203 "cron"
 
 echo "Unix Next.js support checks OK"

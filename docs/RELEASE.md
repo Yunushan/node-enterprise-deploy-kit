@@ -24,10 +24,18 @@ The verifier checks:
 - rendered XML validity for Windows templates
 - rendered shell syntax for Linux init templates with `bash`, plus POSIX `sh` checks for System V, OpenRC, and BSD rc templates when available
 - Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
-- Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, and launchd/bsdrc static preflight paths
+- Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/BSD rc static preflight/status evidence paths
 - Local Node.js runtime smoke coverage for the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract used by standalone Next.js services
 - release package hygiene and required release files
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
+- machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
+- support-claim gate self-test for strict Next.js mode, service-manager, and reverse-proxy evidence coverage
+- support evidence plan and workflow dispatch command generation from the machine-readable matrix
+- support evidence bundle generation with per-file SHA256 and collector provenance manifest
+- support evidence coverage auditing against strict, service-only, and fallback matrix entries
+- full-matrix release support readiness validation from a saved evidence bundle
+- normalized `supportTargetId` metadata in real host evidence for exact matrix target matching
+- manual self-hosted host evidence workflow guardrails
 - local docs links, README anchors, and documented entrypoint presence
 - obvious committed secret patterns
 - `git diff --check` whitespace problems
@@ -44,6 +52,114 @@ To run only the Next.js deployment checks:
 
 ```powershell
 .\scripts\dev\Test-NextJsSupport.ps1
+```
+
+To validate the declared support targets:
+
+```powershell
+.\scripts\dev\Test-SupportMatrix.ps1
+```
+
+To generate the real-host evidence collection checklist:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\support-evidence-plan.md `
+  -Format Markdown
+```
+
+The generated plan includes the local collection command for each
+target/mode/service/proxy combination. Windows, Linux, and macOS rows also
+include manual `host-evidence` workflow inputs so uploaded artifacts can be
+validated against the exact support matrix dimensions they are meant to prove.
+BSD rows are local-command-only unless you operate a compatible runner
+environment.
+
+To generate reviewable GitHub CLI dispatch commands for the manual
+`host-evidence` workflow on workflow-capable targets:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\host-evidence-dispatch.md `
+  -Format DispatchMarkdown
+```
+
+To generate a guarded dispatcher script, review its print-only output first,
+then run it with `-Run` only after the runner labels match your real hosts:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\Invoke-HostEvidenceDispatch.ps1 `
+  -Format DispatchPowerShell
+.\evidence\Invoke-HostEvidenceDispatch.ps1
+```
+
+To audit the evidence folder for missing matrix combinations:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -EvidencePath .\evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+To create a private release evidence bundle:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceBundle.ps1 `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -ValidateSupportClaim `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies `
+  -RequireCoverageComplete `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+To verify a saved evidence bundle before signoff:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceBundle.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip
+```
+
+To decide whether the saved full-matrix evidence bundle is ready for a release
+support claim:
+
+```powershell
+.\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+To collect evidence through GitHub Actions, manually run the `host-evidence`
+workflow against a self-hosted runner label for the deployed target host. The
+workflow uploads safe `status.json` evidence and validates it with
+`Test-HostEvidence.ps1` on a clean Ubuntu runner. Set the expected target,
+Next.js mode, service manager, and reverse proxy inputs from the support
+evidence plan or generated dispatch commands; mismatched evidence is rejected.
+The workflow refuses GitHub-hosted labels and requires `runner_labels` to include
+`self-hosted` plus the expected target label before evidence collection starts.
+Those expected target/mode/service/proxy inputs are required for dispatch.
+The workflow accepts only declared matrix values for expected Next.js mode,
+service manager, and reverse proxy, then validates the full combination against
+the exact support matrix target row.
+It is not triggered by push or pull request events.
+
+To validate a release support claim against real host evidence:
+
+```powershell
+.\scripts\dev\Test-SupportClaim.ps1 `
+  -EvidencePath .\evidence `
+  -TargetId windows-11,windows-server-2022,ubuntu,macos `
+  -MaxEvidenceAgeDays 30 `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies
 ```
 
 For Unix-like hosts without PowerShell, run:
@@ -235,4 +351,8 @@ status JSON from those actual hosts and validate it:
 ```
 
 For stricter release gates, add `-MaxEvidenceAgeDays` and `-FailOnWarnings`.
+Run `Test-SupportEvidenceCoverage.ps1` when you need a missing-coverage report
+before making the final support claim.
 See [Host Verification Evidence](HOST_VERIFICATION.md) for the full workflow.
+Use [Support Matrix](SUPPORT_MATRIX.md) to choose the exact target IDs required
+for a platform-specific release claim.

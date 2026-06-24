@@ -30,6 +30,7 @@
   <a href="docs/ANSIBLE.md">Ansible</a> •
   <a href="docs/RUNBOOK.md">Runbook</a> •
   <a href="docs/HOST_VERIFICATION.md">Host Evidence</a> •
+  <a href="docs/SUPPORT_MATRIX.md">Support Matrix</a> •
   <a href="docs/VARIABLES.md">Variables</a> •
   <a href="docs/BACKUP_RESTORE.md">Backup</a> •
   <a href="docs/RELEASE.md">Release</a> •
@@ -83,8 +84,8 @@ opening a pull request:
 
 It checks PowerShell syntax, Linux shell syntax, Unix shell portability
 patterns, platform-family mapping for Linux/macOS/BSD targets, LF-only
-deployment files, example config shape, template rendering, release package
-hygiene, docs consistency, Next.js standalone packaging plus
+deployment files, example config shape, service and reverse-proxy template
+rendering, release package hygiene, docs consistency, Next.js standalone packaging plus
 standalone/next-start preflight behavior, a local Node.js runtime smoke for
 the managed `PORT`/`HOSTNAME` contract, obvious secret patterns, and `git diff
 --check`. On Windows it needs Git Bash or another `bash` executable for the
@@ -97,8 +98,9 @@ To run only the Next.js support checks:
 ```
 
 On Unix-like hosts, including macOS CI runners, the Bash-only Next.js smoke
-test checks the package helper, package validator, runtime layout checker, and
-static launchd/bsdrc preflight paths:
+test checks the package helper, package validator, runtime layout checker,
+rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and static
+systemd, System V, OpenRC, launchd, and BSD rc preflight/status evidence paths:
 
 ```bash
 bash scripts/dev/test-unix-nextjs-support.sh
@@ -118,8 +120,132 @@ or BSD machines:
 .\scripts\dev\Test-HostEvidence.ps1 -EvidencePath .\evidence -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
 ```
 
-See [Host Verification Evidence](docs/HOST_VERIFICATION.md) before claiming a
-release is proven on a specific operating system family.
+Status JSON includes a normalized `supportTargetId` / `SupportTargetId` such
+as `windows-server-2022`, `ubuntu`, `macos`, or `freebsd` so support claims can
+match the exact matrix target instead of relying only on OS-family inference.
+
+A manual GitHub Actions workflow, `.github/workflows/host-evidence.yml`, can
+collect and validate safe status evidence from a self-hosted Windows, Linux, or
+macOS runner where the release is already deployed. It is intentionally
+`workflow_dispatch` only, so normal push/PR CI does not create support claims.
+The workflow validates `runner_labels` before collection and requires a JSON
+array containing `self-hosted` plus the expected target label; GitHub-hosted
+labels such as `ubuntu-latest`, `windows-latest`, and `macos-latest` are
+rejected for real evidence collection.
+The workflow also requires expected target, Next.js mode, service manager, and
+reverse proxy inputs from the generated support evidence plan so collected
+artifacts are rejected when they do not match the matrix combination being
+claimed. The workflow choices are limited to declared matrix vocabulary for
+Next.js modes, service managers, and reverse-proxy modes, then validated
+against the exact target row in `config/support-matrix.example.json`.
+
+The support matrix is machine-readable and checked by CI:
+
+```powershell
+.\scripts\dev\Test-SupportMatrix.ps1
+```
+
+Windows service-manager routing and runtime environment parity are checked by:
+
+```powershell
+.\scripts\dev\Test-WindowsServiceManagers.ps1
+```
+
+To generate the real-host evidence checklist for a release:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\support-evidence-plan.md `
+  -Format Markdown
+```
+
+The plan includes the local collection command for each required
+target/mode/service/proxy row. Windows, Linux, and macOS rows also include
+manual `host-evidence` workflow inputs; BSD rows are local-command-only unless
+you operate a compatible runner environment.
+
+To generate reviewable GitHub CLI dispatch commands from the same matrix for
+workflow-capable targets:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\host-evidence-dispatch.md `
+  -Format DispatchMarkdown
+```
+
+To generate a guarded PowerShell dispatcher, review its print-only output first
+and run it with `-Run` only after the runner labels match your real hosts:
+
+```powershell
+.\scripts\dev\New-SupportEvidencePlan.ps1 `
+  -OutputPath .\evidence\Invoke-HostEvidenceDispatch.ps1 `
+  -Format DispatchPowerShell
+.\evidence\Invoke-HostEvidenceDispatch.ps1
+```
+
+To report which declared matrix combinations are still missing collected
+evidence:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -EvidencePath .\evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+To create a private release evidence bundle with per-file SHA256 hashes:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceBundle.ps1 `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -ValidateSupportClaim `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies `
+  -RequireCoverageComplete `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+To verify a saved evidence bundle later:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceBundle.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip
+```
+
+To decide whether a saved full-matrix evidence bundle is ready for a release
+support claim:
+
+```powershell
+.\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+The support-claim gate also has a self-test:
+
+```powershell
+.\scripts\dev\Test-SupportClaim.ps1 -SelfTest
+```
+
+To validate a strict real release claim against collected target evidence:
+
+```powershell
+.\scripts\dev\Test-SupportClaim.ps1 `
+  -EvidencePath .\evidence `
+  -TargetId windows-11,windows-server-2022,ubuntu,macos `
+  -RequireBothNextJsModes `
+  -RequireDeclaredServiceManagers `
+  -RequireDeclaredReverseProxies
+```
+
+See [Host Verification Evidence](docs/HOST_VERIFICATION.md) and
+[Support Matrix](docs/SUPPORT_MATRIX.md) before claiming a release is proven on
+a specific operating system family.
 
 ---
 
@@ -259,7 +385,8 @@ prove the service has stayed up for a required period. Use `-JsonPath` when you
 want a safe machine-readable release evidence file without environment values
 or raw log contents. If the app was installed from a package import, the
 evidence also includes the safe deployment manifest summary: package file name,
-package SHA256, import timestamp, and Next.js build ID.
+package SHA256, import timestamp, Next.js build ID, and live status collector
+metadata for release evidence validation.
 
 6. Restart or uninstall through the top-level wrappers when needed:
 
@@ -337,26 +464,24 @@ owned by the current service during an intentional update, set
 sudo bash scripts/linux/install-node-service.sh config/linux/app.env
 ```
 
-6. Optional Nginx reverse proxy:
+6. Optional config-selected reverse proxy:
+
+```bash
+sudo bash scripts/linux/install-reverse-proxy.sh config/linux/app.env
+```
+
+Set `REVERSE_PROXY` to `nginx`, `apache`, `haproxy`, `traefik`, or `none`.
+Use `--dry-run` to print the installer that would run. The direct installers
+remain available when you need to target one proxy explicitly:
 
 ```bash
 sudo bash scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
-```
-
-7. Optional Apache reverse proxy:
-
-```bash
 sudo bash scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
-```
-
-8. Optional HAProxy or Traefik reverse proxy:
-
-```bash
 sudo bash scripts/linux/install-haproxy-reverse-proxy.sh config/linux/app.env
 sudo bash scripts/linux/install-traefik-reverse-proxy.sh config/linux/app.env
 ```
 
-9. Optional Tomcat WAR deployment:
+7. Optional Tomcat WAR deployment:
 
 ```bash
 APP_RUNTIME="tomcat"
@@ -380,8 +505,8 @@ This project is a deployment kit, not a vendor support guarantee. Older operatin
 
 | Platform | Service mode | Reverse proxy | Notes |
 |---|---|---|---|
-| Windows 10 | WinSW / NSSM / PM2 fallback | IIS optional | Good for testing or workstation services |
-| Windows 11 | WinSW / NSSM / PM2 fallback | IIS optional | Good for testing or workstation services |
+| Windows 10 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
+| Windows 11 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
 | Windows Server 2012 / 2012 R2 | WinSW / NSSM | IIS | Legacy target; validate Node.js runtime compatibility |
 | Windows Server 2016 | WinSW / NSSM | IIS | Supported deployment target |
 | Windows Server 2019 | WinSW / NSSM | IIS | Recommended minimum for many production environments |

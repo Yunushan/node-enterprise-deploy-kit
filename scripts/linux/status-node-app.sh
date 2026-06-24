@@ -221,6 +221,64 @@ safe_evidence_text() {
     sed -E 's#(^|[[:space:]])/[[:alnum:]_.@%+=:,/-]+#\1<path>#g; s#[A-Za-z]:\\[^[:space:],;:"<>|]+#<path>#g'
 }
 
+support_target_id() {
+  local kernel os_id os_id_like pretty_lower
+  kernel="$(printf '%s' "${KERNEL_NAME:-}" | tr '[:upper:]' '[:lower:]')"
+  os_id="$(normalize_name "${OS_RELEASE_ID:-}")"
+  os_id_like="$(printf '%s' "${OS_RELEASE_ID_LIKE:-}" | tr '[:upper:]' '[:lower:]')"
+  pretty_lower="$(printf '%s' "${OS_RELEASE_PRETTY_NAME:-}" | tr '[:upper:]' '[:lower:]')"
+
+  case "$kernel" in
+    darwin)
+      echo "macos"
+      return
+      ;;
+    freebsd|openbsd|netbsd)
+      echo "$kernel"
+      return
+      ;;
+  esac
+
+  if [[ "$pretty_lower" == *"centos stream"* ]]; then
+    echo "centos-stream"
+    return
+  fi
+  if [[ "$pretty_lower" == *"oracle linux"* ]]; then
+    echo "oracle-linux"
+    return
+  fi
+  if [[ "$pretty_lower" == *"linux mint"* ]]; then
+    echo "linux-mint"
+    return
+  fi
+
+  case "$os_id" in
+    linuxmint)
+      echo "linux-mint"
+      ;;
+    ol)
+      echo "oracle-linux"
+      ;;
+    redhat|red-hat)
+      echo "rhel"
+      ;;
+    ubuntu|debian|rhel|centos|centos-stream|rocky|almalinux|fedora|alpine|macos|freebsd|openbsd|netbsd)
+      echo "$os_id"
+      ;;
+    *)
+      if [[ "$os_id_like" == *"rhel"* || "$os_id_like" == *"redhat"* ]]; then
+        echo "rhel"
+      elif [[ "$os_id_like" == *"debian"* ]]; then
+        echo "debian"
+      elif [[ "$kernel" == "linux" ]]; then
+        echo "linux"
+      else
+        echo "$kernel"
+      fi
+      ;;
+  esac
+}
+
 default_proxy_health_url() {
   local proxy_port path
   if [[ -n "${PROXY_HEALTH_URL:-}" ]]; then
@@ -958,6 +1016,16 @@ write_json_output() {
   {
     printf '{\n'
     printf '  "evidenceSchemaVersion": 1,\n'
+    printf '  "evidenceCollection": {\n'
+    printf '    "source": "node-enterprise-deploy-kit/status-node-app.sh",\n'
+    printf '    "collector": "scripts/linux/status-node-app.sh",\n'
+    printf '    "collectorVersion": 1,\n'
+    printf '    "liveHost": true,\n'
+    printf '    "synthetic": false,\n'
+    printf '    "mock": false,\n'
+    printf '    "sample": false\n'
+    printf '  },\n'
+    printf '  "supportTargetId": "%s",\n' "$(json_escape "$SUPPORT_TARGET_ID")"
     printf '  "generatedAtUtc": "%s",\n' "$(json_escape "$generated_at")"
     printf '  "appName": "%s",\n' "$(json_escape "${APP_NAME:-}")"
     printf '  "serviceName": "%s",\n' "$(json_escape "$SERVICE_NAME")"
@@ -1083,6 +1151,7 @@ write_json_output() {
     printf '  },\n'
     printf '  "platform": {\n'
     printf '    "family": "%s",\n' "$(json_escape "$PLATFORM_FAMILY")"
+    printf '    "supportTargetId": "%s",\n' "$(json_escape "$SUPPORT_TARGET_ID")"
     printf '    "kernelName": "%s",\n' "$(json_escape "$KERNEL_NAME")"
     printf '    "kernelRelease": "%s",\n' "$(json_escape "$KERNEL_RELEASE")"
     printf '    "machine": "%s",\n' "$(json_escape "$KERNEL_MACHINE")"
@@ -1152,10 +1221,12 @@ OS_RELEASE_ID="$(os_release_value ID || echo "")"
 OS_RELEASE_ID_LIKE="$(os_release_value ID_LIKE || echo "")"
 OS_RELEASE_VERSION_ID="$(os_release_value VERSION_ID || echo "")"
 OS_RELEASE_PRETTY_NAME="$(os_release_value PRETTY_NAME || echo "")"
+SUPPORT_TARGET_ID="$(support_target_id)"
 
 echo "Status for: ${APP_NAME:-unknown}"
 echo "Config: $CONFIG_FILE"
 echo "GeneratedAtUtc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "SupportTargetId=$SUPPORT_TARGET_ID"
 echo "ServiceName=$SERVICE_NAME"
 echo "ServiceManager=$SERVICE_MANAGER_NORMALIZED"
 echo "AppRuntime=$APP_RUNTIME_NORMALIZED"

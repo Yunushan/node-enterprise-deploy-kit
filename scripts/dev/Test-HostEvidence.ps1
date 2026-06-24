@@ -1,9 +1,14 @@
 param(
   [string]$EvidencePath = ".\evidence",
   [string[]]$RequiredTargets = @(),
+  [string]$ExpectedTargetId = "",
+  [string]$ExpectedNextJsMode = "",
+  [string]$ExpectedServiceManager = "",
+  [string]$ExpectedReverseProxy = "",
   [int]$MaxEvidenceAgeDays = 0,
   [switch]$RequireNextJs,
   [switch]$RequireReverseProxy,
+  [switch]$AllowReverseProxyNone,
   [switch]$RequireDeploymentIdentity,
   [switch]$FailOnWarnings,
   [switch]$SelfTest
@@ -26,6 +31,13 @@ function Normalize-Target {
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
   $normalized = $Value.Trim().ToLowerInvariant() -replace '[^a-z0-9]+', '-'
   return $normalized.Trim('-')
+}
+
+function Normalize-ReverseProxy {
+  param([string]$Value)
+  $normalized = Normalize-Target $Value
+  if ($normalized -eq "httpd") { return "apache" }
+  return $normalized
 }
 
 function Add-Target {
@@ -132,6 +144,10 @@ function Get-EvidenceTargets {
 
   $targets = New-Object System.Collections.Generic.HashSet[string]
   $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $supportTargetId = Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  if (-not $supportTargetId) {
+    $supportTargetId = Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  }
   $family = Get-StringValue -Object $platform -Names @("Family", "family")
   $osCaption = Get-StringValue -Object $platform -Names @("OsCaption", "osCaption")
   $osId = Get-StringValue -Object $platform -Names @("OsId", "osId")
@@ -142,6 +158,7 @@ function Get-EvidenceTargets {
     $serviceManager = Get-StringValue -Object $Evidence -Names @("ServiceManager", "serviceManager")
   }
 
+  Add-Target -Targets $targets -Value $supportTargetId
   Add-Target -Targets $targets -Value $family
   Add-Target -Targets $targets -Value $osId
   Add-Target -Targets $targets -Value $kernelName
@@ -156,6 +173,12 @@ function Get-EvidenceTargets {
   }
   if ($osCaption -match 'Windows Server') {
     Add-Target -Targets $targets -Value "windows-server"
+  }
+  if ($osCaption -match 'Windows\s+10' -and $osCaption -notmatch 'Windows Server') {
+    Add-Target -Targets $targets -Value "windows-10"
+  }
+  if ($osCaption -match 'Windows\s+11' -and $osCaption -notmatch 'Windows Server') {
+    Add-Target -Targets $targets -Value "windows-11"
   }
   foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
     if ($osCaption -match $year) {
@@ -185,6 +208,28 @@ function Get-EvidenceTargets {
   }
 
   return @($targets | Sort-Object)
+}
+
+function Get-SupportTargetId {
+  param([object]$Evidence)
+
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $value = Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  if (-not $value) {
+    $value = Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  }
+  return (Normalize-Target $value)
+}
+
+function Get-ServiceManager {
+  param([object]$Evidence)
+
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $serviceManager = Get-StringValue -Object $platform -Names @("ServiceManager", "serviceManager")
+  if (-not $serviceManager) {
+    $serviceManager = Get-StringValue -Object $Evidence -Names @("ServiceManager", "serviceManager")
+  }
+  return (Normalize-Target $serviceManager)
 }
 
 function Get-ServiceEvidence {
@@ -420,6 +465,37 @@ function Get-DeploymentIdentityEvidence {
   }
 }
 
+function Get-EvidenceCollectionEvidence {
+  param([object]$Evidence)
+
+  $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  return [pscustomobject]@{
+    Source = Get-StringValue -Object $collection -Names @("Source", "source")
+    Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
+    CollectorVersion = Get-IntegerValue -Object $collection -Names @("CollectorVersion", "collectorVersion")
+    LiveHost = Get-BooleanValue -Object $collection -Names @("LiveHost", "liveHost", "CapturedFromLiveHost", "capturedFromLiveHost") -Default $null
+    Synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
+    Mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
+    Sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+  }
+}
+
+function Test-SupportedEvidenceCollector {
+  param([object]$Collection)
+
+  $source = Normalize-Target $Collection.Source
+  $collector = Normalize-Target $Collection.Collector
+  $allowed = @(
+    "node-enterprise-deploy-kit-status-ps1",
+    "node-enterprise-deploy-kit-status-node-app-sh",
+    "status-ps1",
+    "scripts-linux-status-node-app-sh",
+    "status-node-app-sh"
+  )
+
+  return (($source -in $allowed) -or ($collector -in $allowed))
+}
+
 function Test-UnsafeEvidenceText {
   param([string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
@@ -433,6 +509,24 @@ function New-SelfTestEvidence {
 
   New-Item -ItemType Directory -Path $Path -Force | Out-Null
   $now = (Get-Date).ToUniversalTime().ToString("o")
+  $windowsCollectionEvidence = [ordered]@{
+    Source = "node-enterprise-deploy-kit/status.ps1"
+    Collector = "status.ps1"
+    CollectorVersion = 1
+    LiveHost = $true
+    Synthetic = $false
+    Mock = $false
+    Sample = $false
+  }
+  $unixCollectionEvidence = [ordered]@{
+    source = "node-enterprise-deploy-kit/status-node-app.sh"
+    collector = "scripts/linux/status-node-app.sh"
+    collectorVersion = 1
+    liveHost = $true
+    synthetic = $false
+    mock = $false
+    sample = $false
+  }
   $unixManagedProxyConfig = [ordered]@{
     applicable = $true
     pathName = "example-next-app.conf"
@@ -536,10 +630,13 @@ function New-SelfTestEvidence {
       Name = "windows-server-2022.json"
       Data = [ordered]@{
         EvidenceSchemaVersion = 1
+        EvidenceCollection = $windowsCollectionEvidence
+        SupportTargetId = "windows-server-2022"
         GeneratedAtUtc = $now
         AppName = "example-next-app"
         Platform = [ordered]@{
           Family = "windows"
+          SupportTargetId = "windows-server-2022"
           OsCaption = "Microsoft Windows Server 2022 Datacenter"
           OsVersion = "10.0.20348"
           OsBuildNumber = "20348"
@@ -639,9 +736,120 @@ function New-SelfTestEvidence {
       }
     },
     @{
+      Name = "windows-11.json"
+      Data = [ordered]@{
+        EvidenceSchemaVersion = 1
+        EvidenceCollection = $windowsCollectionEvidence
+        SupportTargetId = "windows-11"
+        GeneratedAtUtc = $now
+        AppName = "example-next-app"
+        Platform = [ordered]@{
+          Family = "windows"
+          SupportTargetId = "windows-11"
+          OsCaption = "Microsoft Windows 11 Pro"
+          OsVersion = "10.0.22631"
+          OsBuildNumber = "22631"
+          ServiceManager = "winsw"
+          AppFramework = "nextjs"
+          NextjsDeploymentMode = "standalone"
+        }
+        Service = [ordered]@{
+          Installed = $true
+          Status = "Running"
+          StartType = "Automatic"
+          Win32State = "Running"
+          Win32StartMode = "Auto"
+          ProcessId = 2234
+        }
+        Port = [ordered]@{
+          Checked = $true
+          Port = 3000
+          Listening = $true
+          OwnerReadable = $true
+          OwnerProcessCount = 1
+          ServiceProcessIdsKnown = $true
+          OwnedByService = $true
+        }
+        Health = [ordered]@{
+          Checked = $true
+          Url = "http://127.0.0.1:3000/health"
+          Status = "ok"
+          StatusCode = 200
+          ResponseMs = 12
+          TimeoutSeconds = 10
+        }
+        Uptime = [ordered]@{
+          HostUptimeSeconds = 345600
+          ServiceUptimeSeconds = 259200
+          MinimumUptimeHours = 72
+          MinimumSatisfied = $true
+          ServiceStartKnown = $true
+        }
+        HealthMonitor = [ordered]@{
+          Status = "ok"
+          Scheduled = $true
+          ScheduleType = "windows-task"
+          TaskExists = $true
+          TaskLastResult = 0
+          TaskMissedRuns = 0
+          StateExists = $true
+          ConsecutiveFailures = 0
+          LastSuccessAgeSeconds = 60
+          LastSuccessFresh = $true
+          LogExists = $true
+          LogFailureCount = 0
+          LogRestartCount = 0
+        }
+        NextJsRuntime = [ordered]@{
+          Applicable = $true
+          Status = "ok"
+          AppFramework = "nextjs"
+          Mode = "standalone"
+          RuntimeRootName = "example-next-app"
+        }
+        ReverseProxy = [ordered]@{
+          Applicable = $true
+          Mode = "iis"
+          Status = "ok"
+          ProbeUrl = "https://example.local/health"
+          StatusCode = 200
+          ResponseMs = 23
+          Iis = [ordered]@{
+            Applicable = $true
+            ModuleAvailable = $true
+            SiteName = "example-next-app"
+            SiteExists = $true
+            SiteState = "Started"
+            SitePathName = "example-next-app"
+            ConfiguredSitePathName = "example-next-app"
+            SitePathMatchesConfig = $true
+            PublicPort = 443
+            BindingProtocol = "https"
+            BindingHostConfigured = $true
+            BindingMatchesConfig = $true
+            DuplicateBindingCount = 0
+            DuplicateBindingConflict = $false
+          }
+        }
+        DeploymentIdentity = [ordered]@{
+          Status = "ok"
+          AppDirectoryName = "example-next-app"
+          DeploymentId = "example-deploy-001"
+          NextBuildId = "example-build"
+          PackageSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+        Verdict = "Healthy"
+        Critical = 0
+        Warnings = 0
+        Findings = @()
+      }
+    },
+    @{
       Name = "ubuntu.json"
       Data = [ordered]@{
         evidenceSchemaVersion = 1
+        evidenceCollection = $unixCollectionEvidence
+        supportTargetId = "ubuntu"
         generatedAtUtc = $now
         appName = "example-next-app"
         serviceName = "example-next-app"
@@ -678,6 +886,7 @@ function New-SelfTestEvidence {
         }
         platform = [ordered]@{
           family = "linux"
+          supportTargetId = "ubuntu"
           kernelName = "Linux"
           osId = "ubuntu"
           osIdLike = "debian"
@@ -693,6 +902,8 @@ function New-SelfTestEvidence {
       Name = "macos.json"
       Data = [ordered]@{
         evidenceSchemaVersion = 1
+        evidenceCollection = $unixCollectionEvidence
+        supportTargetId = "macos"
         generatedAtUtc = $now
         appName = "example-next-app"
         serviceName = "example-next-app"
@@ -728,6 +939,7 @@ function New-SelfTestEvidence {
         }
         platform = [ordered]@{
           family = "macos"
+          supportTargetId = "macos"
           kernelName = "Darwin"
           osPrettyName = "Apple macOS"
         }
@@ -741,6 +953,8 @@ function New-SelfTestEvidence {
       Name = "freebsd.json"
       Data = [ordered]@{
         evidenceSchemaVersion = 1
+        evidenceCollection = $unixCollectionEvidence
+        supportTargetId = "freebsd"
         generatedAtUtc = $now
         appName = "example-next-app"
         serviceName = "example-next-app"
@@ -776,6 +990,7 @@ function New-SelfTestEvidence {
         }
         platform = [ordered]@{
           family = "freebsd"
+          supportTargetId = "freebsd"
           kernelName = "FreeBSD"
           osPrettyName = "FreeBSD"
         }
@@ -789,6 +1004,8 @@ function New-SelfTestEvidence {
       Name = "openbsd.json"
       Data = [ordered]@{
         evidenceSchemaVersion = 1
+        evidenceCollection = $unixCollectionEvidence
+        supportTargetId = "openbsd"
         generatedAtUtc = $now
         appName = "example-next-app"
         serviceName = "example-next-app"
@@ -824,6 +1041,7 @@ function New-SelfTestEvidence {
         }
         platform = [ordered]@{
           family = "openbsd"
+          supportTargetId = "openbsd"
           kernelName = "OpenBSD"
           osPrettyName = "OpenBSD"
         }
@@ -837,6 +1055,8 @@ function New-SelfTestEvidence {
       Name = "netbsd.json"
       Data = [ordered]@{
         evidenceSchemaVersion = 1
+        evidenceCollection = $unixCollectionEvidence
+        supportTargetId = "netbsd"
         generatedAtUtc = $now
         appName = "example-next-app"
         serviceName = "example-next-app"
@@ -872,6 +1092,7 @@ function New-SelfTestEvidence {
         }
         platform = [ordered]@{
           family = "netbsd"
+          supportTargetId = "netbsd"
           kernelName = "NetBSD"
           osPrettyName = "NetBSD"
         }
@@ -886,6 +1107,30 @@ function New-SelfTestEvidence {
   foreach ($example in $examples) {
     $examplePath = Join-Path $Path $example.Name
     $example.Data | ConvertTo-Json -Depth 8 | Set-Content -Path $examplePath -Encoding UTF8
+  }
+}
+
+function Invoke-ExpectHostEvidenceFailure {
+  param(
+    [hashtable]$Parameters,
+    [string]$ExpectedMessage
+  )
+
+  $failed = $false
+  $outputText = ""
+  try {
+    $output = & $PSCommandPath @Parameters 6>&1 2>&1
+    $outputText = ($output | Out-String)
+  } catch {
+    $failed = $true
+    $outputText = $_.Exception.Message
+  }
+
+  if (-not $failed) {
+    throw "Expected host evidence validation failure containing '$ExpectedMessage', but validation succeeded."
+  }
+  if ($outputText -notlike "*$ExpectedMessage*") {
+    throw "Expected host evidence validation failure containing '$ExpectedMessage', got: $outputText"
   }
 }
 
@@ -909,7 +1154,9 @@ function Test-EvidenceFile {
   $critical = Get-IntegerValue -Object $evidence -Names @("Critical", "critical")
   $warnings = Get-IntegerValue -Object $evidence -Names @("Warnings", "warnings")
   $hasFindings = Test-PropertyExists -Object $evidence -Names @("Findings", "findings")
+  $supportTargetId = Get-SupportTargetId -Evidence $evidence
   $targets = @(Get-EvidenceTargets -Evidence $evidence)
+  $serviceManager = Get-ServiceManager -Evidence $evidence
   $serviceEvidence = Get-ServiceEvidence -Evidence $evidence
   $portEvidence = Get-PortEvidence -Evidence $evidence
   $healthEvidence = Get-HealthEvidence -Evidence $evidence
@@ -918,12 +1165,38 @@ function Test-EvidenceFile {
   $nextJsEvidence = Get-NextJsEvidence -Evidence $evidence
   $reverseProxyEvidence = Get-ReverseProxyEvidence -Evidence $evidence
   $deploymentIdentityEvidence = Get-DeploymentIdentityEvidence -Evidence $evidence
+  $collectionEvidence = Get-EvidenceCollectionEvidence -Evidence $evidence
+  $nextJsMode = Normalize-Target $nextJsEvidence.Mode
+  $reverseProxyMode = Normalize-ReverseProxy $reverseProxyEvidence.Mode
   $nextJsRawEvidence = Get-PropertyValue -Object $evidence -Names @("NextJsRuntime", "nextJsRuntime")
   $deploymentIdentityRawEvidence = Get-PropertyValue -Object $evidence -Names @("DeploymentIdentity", "deploymentIdentity")
   $findingsValue = Get-PropertyValue -Object $evidence -Names @("Findings", "findings")
+  $topLevelSynthetic = Get-BooleanValue -Object $evidence -Names @("Synthetic", "synthetic") -Default $false
+  $topLevelMock = Get-BooleanValue -Object $evidence -Names @("Mock", "mock") -Default $false
+  $topLevelSample = Get-BooleanValue -Object $evidence -Names @("Sample", "sample") -Default $false
 
   if (-not $appName) {
     $Issues.Add("$($File.FullName) is missing app name.") | Out-Null
+  }
+  if (-not $collectionEvidence.Source -and -not $collectionEvidence.Collector) {
+    $Issues.Add("$($File.FullName) is missing evidenceCollection source/collector metadata from the live status collector.") | Out-Null
+  } elseif (-not (Test-SupportedEvidenceCollector -Collection $collectionEvidence)) {
+    $Issues.Add("$($File.FullName) does not identify a supported node-enterprise-deploy-kit live status collector.") | Out-Null
+  }
+  if ($null -eq $collectionEvidence.CollectorVersion -or $collectionEvidence.CollectorVersion -lt 1) {
+    $Issues.Add("$($File.FullName) is missing a valid evidence collector version.") | Out-Null
+  }
+  if ($collectionEvidence.LiveHost -ne $true) {
+    $Issues.Add("$($File.FullName) does not declare live-host collection.") | Out-Null
+  }
+  $missingCollectionMarkers = @()
+  if ($null -eq $collectionEvidence.Synthetic) { $missingCollectionMarkers += "synthetic" }
+  if ($null -eq $collectionEvidence.Mock) { $missingCollectionMarkers += "mock" }
+  if ($null -eq $collectionEvidence.Sample) { $missingCollectionMarkers += "sample" }
+  if ($missingCollectionMarkers.Count -gt 0) {
+    $Issues.Add("$($File.FullName) is missing explicit evidenceCollection anti-synthetic marker(s): $($missingCollectionMarkers -join ', ').") | Out-Null
+  } elseif ($collectionEvidence.Synthetic -ne $false -or $collectionEvidence.Mock -ne $false -or $collectionEvidence.Sample -ne $false -or $topLevelSynthetic -eq $true -or $topLevelMock -eq $true -or $topLevelSample -eq $true) {
+    $Issues.Add("$($File.FullName) declares synthetic, mock, or sample evidence and cannot prove a real-host support claim.") | Out-Null
   }
   if (Test-PropertyExists -Object $evidence -Names @("ComputerName", "computerName", "HostName", "hostName", "MachineName", "machineName")) {
     $Issues.Add("$($File.FullName) contains a raw host identity field. Use a private evidence folder name or an external release record instead.") | Out-Null
@@ -971,6 +1244,11 @@ function Test-EvidenceFile {
   }
   if (-not $hasFindings) {
     $Issues.Add("$($File.FullName) is missing findings array.") | Out-Null
+  }
+  if (-not $supportTargetId) {
+    $Issues.Add("$($File.FullName) is missing supportTargetId metadata required for matrix-level support claims.") | Out-Null
+  } elseif ($targets -notcontains $supportTargetId) {
+    $Issues.Add("$($File.FullName) has supportTargetId '$supportTargetId' that does not match recognized platform target metadata.") | Out-Null
   }
   if ($targets.Count -eq 0) {
     $Issues.Add("$($File.FullName) has no recognizable platform target metadata.") | Out-Null
@@ -1112,19 +1390,23 @@ function Test-EvidenceFile {
     }
   }
   if ($RequireReverseProxy) {
-    if (-not $reverseProxyEvidence.Applicable) {
+    $normalizedProxyMode = Normalize-Target $reverseProxyEvidence.Mode
+    $serviceOnlyReverseProxy = ($AllowReverseProxyNone -and $normalizedProxyMode -eq "none")
+    if ((-not $serviceOnlyReverseProxy) -and -not $reverseProxyEvidence.Applicable) {
       $Issues.Add("$($File.FullName) does not prove a reverse-proxy check was applicable.") | Out-Null
     }
-    if ((Normalize-Target $reverseProxyEvidence.Mode) -in @("", "none", "unknown")) {
+    if ((-not $serviceOnlyReverseProxy) -and ($normalizedProxyMode -in @("", "none", "unknown"))) {
       $Issues.Add("$($File.FullName) does not prove a configured reverse-proxy mode (value: $($reverseProxyEvidence.Mode)).") | Out-Null
     }
-    if ($reverseProxyEvidence.Status -ne "ok") {
+    if ($serviceOnlyReverseProxy -and ((Normalize-Target $reverseProxyEvidence.Status) -notin @("not-applicable", "none", "disabled", "skipped"))) {
+      $Issues.Add("$($File.FullName) does not prove reverse-proxy mode 'none' is explicitly not applicable (status: $($reverseProxyEvidence.Status)).") | Out-Null
+    }
+    if ((-not $serviceOnlyReverseProxy) -and $reverseProxyEvidence.Status -ne "ok") {
       $Issues.Add("$($File.FullName) does not prove a successful reverse-proxy health probe (status: $($reverseProxyEvidence.Status)).") | Out-Null
     }
-    if ($null -eq $reverseProxyEvidence.StatusCode -or $reverseProxyEvidence.StatusCode -lt 200 -or $reverseProxyEvidence.StatusCode -ge 400) {
+    if ((-not $serviceOnlyReverseProxy) -and ($null -eq $reverseProxyEvidence.StatusCode -or $reverseProxyEvidence.StatusCode -lt 200 -or $reverseProxyEvidence.StatusCode -ge 400)) {
       $Issues.Add("$($File.FullName) does not prove a successful reverse-proxy HTTP status code.") | Out-Null
     }
-    $normalizedProxyMode = Normalize-Target $reverseProxyEvidence.Mode
     if ($normalizedProxyMode -eq "iis") {
       if ($reverseProxyEvidence.IisModuleAvailable -ne $true) {
         $Issues.Add("$($File.FullName) does not prove IIS WebAdministration evidence was available.") | Out-Null
@@ -1179,6 +1461,11 @@ function Test-EvidenceFile {
     NextJs = "$($nextJsEvidence.AppFramework)/$($nextJsEvidence.Mode)/$($nextJsEvidence.Status)"
     Proxy = "$($reverseProxyEvidence.Mode)/$($reverseProxyEvidence.Status)"
     Identity = "$($deploymentIdentityEvidence.Status)/$($deploymentIdentityEvidence.DeploymentId)/$($deploymentIdentityEvidence.NextBuildId)/$($deploymentIdentityEvidence.PackageSha256)"
+    Collection = "$($collectionEvidence.Collector)/live=$($collectionEvidence.LiveHost)"
+    SupportTargetId = $supportTargetId
+    NextJsMode = $nextJsMode
+    ServiceManager = $serviceManager
+    ReverseProxy = $reverseProxyMode
     Targets = ($targets -join ",")
   }
 }
@@ -1188,9 +1475,46 @@ Write-Step "Host evidence validation"
 if ($SelfTest) {
   $EvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-selftest-$([Guid]::NewGuid().ToString('N'))"
   if ($RequiredTargets.Count -eq 0) {
-    $RequiredTargets = @("windows-server", "linux", "macos", "freebsd", "openbsd", "netbsd")
+    $RequiredTargets = @("windows-11", "windows-server", "linux", "macos", "freebsd", "openbsd", "netbsd")
   }
   New-SelfTestEvidence -Path $EvidencePath
+
+  $syntheticEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-synthetic-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $syntheticEvidencePath
+  $syntheticFile = Join-Path $syntheticEvidencePath "ubuntu.json"
+  $syntheticEvidence = Get-Content -LiteralPath $syntheticFile -Raw | ConvertFrom-Json
+  $syntheticEvidence.evidenceCollection.synthetic = $true
+  $syntheticEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $syntheticFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "declares synthetic, mock, or sample evidence" -Parameters @{
+    EvidencePath = $syntheticEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $missingMarkerEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-missing-marker-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingMarkerEvidencePath
+  $missingMarkerFile = Join-Path $missingMarkerEvidencePath "ubuntu.json"
+  $missingMarkerEvidence = Get-Content -LiteralPath $missingMarkerFile -Raw | ConvertFrom-Json
+  $missingMarkerEvidence.evidenceCollection.PSObject.Properties.Remove("mock")
+  $missingMarkerEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingMarkerFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "missing explicit evidenceCollection anti-synthetic marker" -Parameters @{
+    EvidencePath = $missingMarkerEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "No evidence file matched expected collection dimensions" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "next-start"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
 }
 
 if (-not [System.IO.Path]::IsPathRooted($EvidencePath)) {
@@ -1225,15 +1549,43 @@ foreach ($required in $RequiredTargets) {
   }
 }
 
+$expectedTarget = Normalize-Target $ExpectedTargetId
+$expectedMode = Normalize-Target $ExpectedNextJsMode
+$expectedServiceManager = Normalize-Target $ExpectedServiceManager
+$expectedReverseProxy = Normalize-ReverseProxy $ExpectedReverseProxy
+if ($expectedTarget -or $expectedMode -or $expectedServiceManager -or $expectedReverseProxy) {
+  $matchedExpected = $false
+  foreach ($result in $results) {
+    if ($expectedTarget -and $result.SupportTargetId -ne $expectedTarget) { continue }
+    if ($expectedMode -and $result.NextJsMode -ne $expectedMode) { continue }
+    if ($expectedServiceManager -and $result.ServiceManager -ne $expectedServiceManager) { continue }
+    if ($expectedReverseProxy -and $result.ReverseProxy -ne $expectedReverseProxy) { continue }
+    $matchedExpected = $true
+    break
+  }
+  if (-not $matchedExpected) {
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($expectedTarget) { $parts.Add("target '$expectedTarget'") | Out-Null }
+    if ($expectedMode) { $parts.Add("Next.js mode '$expectedMode'") | Out-Null }
+    if ($expectedServiceManager) { $parts.Add("service manager '$expectedServiceManager'") | Out-Null }
+    if ($expectedReverseProxy) { $parts.Add("reverse proxy '$expectedReverseProxy'") | Out-Null }
+    $issues.Add("No evidence file matched expected collection dimensions: $(@($parts) -join ', ').") | Out-Null
+  }
+}
+
 if ($results.Count -gt 0) {
-  $results | Sort-Object File | Format-Table File, AppName, Verdict, Critical, Warnings, Service, Port, Health, Uptime, Monitor, NextJs, Proxy, Identity, Targets -Wrap
+  $results | Sort-Object File | Format-Table File, AppName, Verdict, Critical, Warnings, Service, Port, Health, Uptime, Monitor, NextJs, Proxy, Identity, Collection, SupportTargetId, NextJsMode, ServiceManager, ReverseProxy, Targets -Wrap
 }
 
 if ($issues.Count -gt 0) {
   Write-Host ""
   Write-Host "Host evidence validation failures:"
   $issues | ForEach-Object { Write-Host "  $_" }
-  throw "Host evidence validation failed."
+  $issueSummary = (@($issues | Select-Object -First 5) -join " | ")
+  if ($issues.Count -gt 5) {
+    $issueSummary = "$issueSummary | ..."
+  }
+  throw "Host evidence validation failed. $issueSummary"
 }
 
 Write-Host "Host evidence validation OK"

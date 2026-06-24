@@ -200,6 +200,15 @@ to localhost behind IIS instead of opening a public listener. WinSW remains the
 recommended Windows production service manager; NSSM and PM2 are compatibility
 fallbacks.
 
+The Windows service-manager contract is checked locally by:
+
+```powershell
+.\scripts\dev\Test-WindowsServiceManagers.ps1
+```
+
+This is a static verifier. Release support still requires real-host evidence
+from `status.ps1` on each claimed Windows and Windows Server target.
+
 `ServiceAccount` controls the Windows service logon account. Supported
 values are `NetworkService`, `LocalService`, `LocalSystem`, a dedicated
 local/domain account, or a group managed service account such as
@@ -207,8 +216,9 @@ local/domain account, or a group managed service account such as
 for production. Ordinary domain/local users require `ServiceAccountPassword`,
 but a gMSA is preferred so no password has to be stored in deployment config.
 
-When `ReverseProxy` is `iis`, the IIS installer writes `web.config`, configures
-an always-running app pool, creates or updates the IIS site, and adds the
+When `ReverseProxy` is `iis`, `scripts\windows\Install-ReverseProxy.ps1`
+dispatches to the IIS installer, which writes `web.config`, configures an
+always-running app pool, creates or updates the IIS site, and adds the
 configured HTTP/HTTPS binding. If `TlsEnabled` is true and
 `IisCertificateThumbprint` is empty or unavailable, certificate binding remains
 an explicit manual step and the script prints a warning.
@@ -254,6 +264,8 @@ so normal service updates should not need `-AllowPortInUse`.
 .\scripts\windows\Test-DeploymentPreflight.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Invoke-AppPreparation.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Install-NodeService.ps1 -ConfigPath .\config\windows\app.config.json
+.\scripts\windows\Install-ReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json -DryRun
+.\scripts\windows\Install-ReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json
 ```

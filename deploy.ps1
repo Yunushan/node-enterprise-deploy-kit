@@ -108,11 +108,13 @@ switch ($config.ServiceManager) {
 }
 
 if (-not $SkipReverseProxy) {
-    switch ([string]$config.ReverseProxy) {
-        "iis" { & (Join-Path $repoRoot "scripts\windows\Install-IISReverseProxy.ps1") -ConfigPath $ConfigPath }
-        "none" { }
-        "" { }
-        default { throw "Unsupported Windows ReverseProxy: $($config.ReverseProxy). Use iis or none. Apache, HAProxy, and Traefik installers are Linux/Unix scripts in this kit." }
+    $reverseProxyArgs = @{
+        ConfigPath = $ConfigPath
+    }
+    if ($WhatIfPreference) {
+        & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs -WhatIf
+    } else {
+        & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs
     }
 }
 

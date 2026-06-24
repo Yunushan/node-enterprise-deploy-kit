@@ -228,25 +228,25 @@ The service installer runs configured `INSTALL_COMMAND` and `BUILD_COMMAND`
 inside `APP_DIR` as the configured service user. Set `SKIP_INSTALL="true"` or
 `SKIP_BUILD="true"` for artifact-only releases.
 
-9. Optional Nginx reverse proxy:
+9. Optional config-selected reverse proxy:
+
+```bash
+sudo bash scripts/linux/install-reverse-proxy.sh config/linux/app.env
+```
+
+Set `REVERSE_PROXY` to `nginx`, `apache`, `haproxy`, `traefik`, or `none`.
+Use `--dry-run` to print the installer that would run without requiring root.
+The direct installers remain available when you need to target one proxy
+explicitly:
 
 ```bash
 sudo bash scripts/linux/install-nginx-reverse-proxy.sh config/linux/app.env
-```
-
-10. Optional Apache reverse proxy:
-
-```bash
 sudo bash scripts/linux/install-apache-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-haproxy-reverse-proxy.sh config/linux/app.env
+sudo bash scripts/linux/install-traefik-reverse-proxy.sh config/linux/app.env
 ```
 
 On Debian-family hosts, the Apache installer enables `proxy`, `proxy_http`, `proxy_wstunnel`, `headers`, and `rewrite`.
-
-11. Optional HAProxy reverse proxy:
-
-```bash
-sudo bash scripts/linux/install-haproxy-reverse-proxy.sh config/linux/app.env
-```
 
 The HAProxy installer renders a complete config to `HAPROXY_CONFIG_FILE`, backs
 up any previous file, validates with `haproxy -c`, and reloads/restarts HAProxy.
@@ -256,18 +256,12 @@ set. Use it on a dedicated HAProxy instance, explicitly opt in, or point
 `HAPROXY_CONFIG_FILE` at an app-specific config path that your HAProxy service
 includes.
 
-12. Optional Traefik dynamic config:
-
-```bash
-sudo bash scripts/linux/install-traefik-reverse-proxy.sh config/linux/app.env
-```
-
 The Traefik installer writes a dynamic file provider config under
 `TRAEFIK_DYNAMIC_DIR`. Your static Traefik config must already watch that
 directory. The installer validates the rendered dynamic file through a temporary
 Traefik file-provider config before reloading the service.
 
-13. Optional Tomcat WAR deployment:
+10. Optional Tomcat WAR deployment:
 
 ```bash
 APP_RUNTIME="tomcat"

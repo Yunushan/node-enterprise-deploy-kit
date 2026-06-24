@@ -59,6 +59,9 @@ function New-Pm2EcosystemConfig($Config, $EnvironmentMap) {
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+if ($config.ServiceManager -ne "pm2") {
+    throw "This installer supports ServiceManager='pm2'. For WinSW/NSSM, use the dedicated scripts."
+}
 New-Item -ItemType Directory -Force -Path $config.ServiceDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
 Set-Location $config.AppDirectory
