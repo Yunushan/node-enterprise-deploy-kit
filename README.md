@@ -26,8 +26,10 @@
   <a href="#what-this-solves">What this solves</a> •
   <a href="#supported-platforms">Supported Platforms</a> •
   <a href="#deployment-modes">Deployment Modes</a> •
+  <a href="docs/NEXTJS_DEPLOYMENT.md">Next.js</a> •
   <a href="docs/ANSIBLE.md">Ansible</a> •
   <a href="docs/RUNBOOK.md">Runbook</a> •
+  <a href="docs/HOST_VERIFICATION.md">Host Evidence</a> •
   <a href="docs/VARIABLES.md">Variables</a> •
   <a href="docs/BACKUP_RESTORE.md">Backup</a> •
   <a href="docs/RELEASE.md">Release</a> •
@@ -79,10 +81,28 @@ opening a pull request:
 .\scripts\dev\Test-Repository.ps1
 ```
 
-It checks PowerShell syntax, Linux shell syntax, LF-only deployment files,
-example config shape, template rendering, release package hygiene, docs
-consistency, obvious secret patterns, and `git diff --check`. On Windows it
-needs Git Bash or another `bash` executable for the shell syntax step.
+It checks PowerShell syntax, Linux shell syntax, Unix shell portability
+patterns, platform-family mapping for Linux/macOS/BSD targets, LF-only
+deployment files, example config shape, template rendering, release package
+hygiene, docs consistency, Next.js standalone packaging plus
+standalone/next-start preflight behavior, a local Node.js runtime smoke for
+the managed `PORT`/`HOSTNAME` contract, obvious secret patterns, and `git diff
+--check`. On Windows it needs Git Bash or another `bash` executable for the
+shell syntax and Unix Next.js smoke-test steps.
+
+To run only the Next.js support checks:
+
+```powershell
+.\scripts\dev\Test-NextJsSupport.ps1
+```
+
+On Unix-like hosts, including macOS CI runners, the Bash-only Next.js smoke
+test checks the package helper, package validator, runtime layout checker, and
+static launchd/bsdrc preflight paths:
+
+```bash
+bash scripts/dev/test-unix-nextjs-support.sh
+```
 
 To build a sanitized handoff package:
 
@@ -90,6 +110,16 @@ To build a sanitized handoff package:
 .\scripts\dev\Test-ReleasePackage.ps1
 .\scripts\dev\New-ReleasePackage.ps1 -Version 1.0.0
 ```
+
+To validate real host evidence collected from deployed Windows, Linux, macOS,
+or BSD machines:
+
+```powershell
+.\scripts\dev\Test-HostEvidence.ps1 -EvidencePath .\evidence -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
+```
+
+See [Host Verification Evidence](docs/HOST_VERIFICATION.md) before claiming a
+release is proven on a specific operating system family.
 
 ---
 
@@ -109,6 +139,8 @@ notepad .\config\windows\app.config.json
 ```json
 {
   "AppName": "ExampleNodeApp",
+  "AppFramework": "nextjs",
+  "NextjsDeploymentMode": "standalone",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "StartCommand": "server.js",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
@@ -151,6 +183,34 @@ For built artifacts, import a package before service setup:
   -SkipInstall -SkipBuild
 ```
 
+For Next.js standalone deployments, package the contents of
+`.next\standalone` after copying `.next\static` into
+`.next\standalone\.next\static`, and copy `public` too when the app uses it.
+See [Next.js Deployment](docs/NEXTJS_DEPLOYMENT.md) for the full artifact
+layout and verification flow.
+
+You can create that zip with the built-in packaging helper:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip
+.\scripts\windows\Test-NextJsStandalonePackage.ps1 `
+  -PackagePath C:\deploy\example-node-app.zip
+```
+
+For full-app `next-start` packages, pass `-Mode next-start` on Windows or
+`--mode next-start` with the Unix validator. Package import runs the matching
+Next.js validator automatically before replacing the live app directory.
+
+After import or manual copy, validate the live runtime folder without touching
+service state:
+
+```powershell
+.\scripts\windows\Test-NextJsRuntimeLayout.ps1 `
+  -ConfigPath .\config\windows\app.config.json
+```
+
 Windows package import supports `.zip`. Linux package import supports `.zip`,
 `.tar.gz`, `.tgz`, and `.tar`. `.rar` and `.7z` are intentionally not supported
 by the built-in import flow because they require external tools.
@@ -189,12 +249,17 @@ If preflight reports a known, intentional listener on the configured port that i
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
 ```
 
 The status command reports host uptime, service uptime, configured port
 ownership, HTTP health latency, scheduled health-check freshness, recent health
 history, and an operational verdict. Use `-MinimumUptimeHours` when you want to
-prove the service has stayed up for a required period.
+prove the service has stayed up for a required period. Use `-JsonPath` when you
+want a safe machine-readable release evidence file without environment values
+or raw log contents. If the app was installed from a package import, the
+evidence also includes the safe deployment manifest summary: package file name,
+package SHA256, import timestamp, and Next.js build ID.
 
 6. Restart or uninstall through the top-level wrappers when needed:
 
@@ -217,6 +282,8 @@ nano config/linux/app.env
 
 ```bash
 APP_RUNTIME="node"          # node or tomcat
+APP_FRAMEWORK="nextjs"      # node or nextjs
+NEXTJS_DEPLOYMENT_MODE="standalone"
 SERVICE_MANAGER="systemd"   # systemd, systemv, openrc, launchd, or bsdrc
 REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 ```
@@ -237,6 +304,26 @@ sudo bash scripts/linux/install-dependencies.sh config/linux/app.env
 ```bash
 bash scripts/linux/test-deployment-preflight.sh config/linux/app.env
 bash deploy.sh config/linux/app.env
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./evidence/unix-status.json --fail-on-critical
+```
+
+For Next.js standalone deployments, create a deployable archive with:
+
+```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz
+bash scripts/linux/validate-nextjs-standalone-package.sh \
+  --package-path /opt/releases/example-node-app.tar.gz
+```
+
+After import or manual copy, validate the live runtime folder:
+
+```bash
+bash scripts/linux/test-nextjs-runtime-layout.sh config/linux/app.env
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./evidence/unix-nextjs-status.json --fail-on-critical
 ```
 
 `deploy.sh` runs the same preflight automatically before it installs or updates
@@ -277,10 +364,10 @@ TOMCAT_WAR_FILE="/opt/releases/example.war"
 sudo bash scripts/linux/install-tomcat-app.sh config/linux/app.env
 ```
 
-10. Optional systemd health check timer:
+10. Optional health check scheduler:
 
 ```bash
-sudo bash scripts/linux/install-healthcheck-timer.sh config/linux/app.env
+sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 ```
 
 ---
@@ -339,6 +426,12 @@ healthcheck_enabled: true
 monitoring_export_enabled: true
 ```
 
+On Windows, WinSW is the recommended production service manager. NSSM and PM2
+are compatibility fallbacks; all three receive the same managed runtime
+environment defaults (`NODE_ENV`, `PORT`, `APP_PORT`, `APP_NAME`,
+`BIND_ADDRESS`, `HOST`, and `HOSTNAME`) so Node.js and Next.js bind to the
+configured localhost address behind IIS.
+
 ---
 
 ## Repository Layout
@@ -352,6 +445,7 @@ node-enterprise-deploy-kit/
 │   ├── linux/                       # Unix-like services, reverse proxies, Tomcat, health checks
 │   └── windows/                     # WinSW, IIS, scheduled tasks, diagnostics
 ├── scripts/dev/                     # CI, repository safety checks, release packaging
+├── scripts/linux/status-node-app.sh  # Unix service/port/health/Next.js status verdict
 ├── templates/                       # WinSW, init/launchd, IIS, proxy templates
 ├── tools/                           # Place external wrappers here; no binaries included
 ├── install.bat                      # Windows double-click wrapper
@@ -418,7 +512,18 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
 {
   "AppName": "ExampleNodeApp",
   "DisplayName": "Example Node App",
+  "AppFramework": "nextjs",
+  "NextjsDeploymentMode": "standalone",
+  "NextjsRequireStaticAssets": true,
+  "NextjsRequirePublicDirectory": false,
+  "NextjsRequireServerActionsEncryptionKey": false,
+  "NextjsRequireDeploymentId": false,
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
+  "PackageExpectedFiles": [
+    "server.js",
+    ".next/BUILD_ID",
+    ".next/static"
+  ],
   "StartCommand": "server.js",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
   "NodeArguments": "",
@@ -472,9 +577,15 @@ APP_NAME="example-node-app"
 APP_DISPLAY_NAME="Example Node App"
 APP_DIR="/opt/example-node-app"
 APP_RUNTIME="node"
+APP_FRAMEWORK="nextjs"
+NEXTJS_DEPLOYMENT_MODE="standalone"
+NEXTJS_REQUIRE_STATIC_ASSETS="true"
+NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
+NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
 SERVICE_MANAGER="systemd"
 PACKAGE_PATH=""
-PACKAGE_EXPECTED_FILES="server.js"
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
 NODE_BIN="/usr/bin/node"
 START_SCRIPT="server.js"
@@ -504,6 +615,15 @@ LOG_RETENTION_DAYS="30"
 BACKUP_RETENTION_DAYS="90"
 DIAGNOSTIC_RETENTION_DAYS="14"
 ```
+
+For Unix-like Next.js services, the installer derives the managed runtime
+`PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` values from `APP_PORT` and
+`BIND_ADDRESS`, so the generated standalone server binds to the same local
+address that the reverse proxy targets.
+
+For Windows Next.js services, the WinSW, NSSM, and PM2 installers derive the
+same managed runtime defaults from `Port`, `AppName`, and `BindAddress`. PM2
+is still fallback-only; prefer WinSW for live Windows Server deployments.
 
 Set `SERVICE_MANAGER` to `systemv` for legacy init hosts, `openrc` for OpenRC hosts, `launchd` for macOS, or `bsdrc` for BSD. Set `REVERSE_PROXY` to `apache`, `haproxy`, or `traefik` to use those installers instead of Nginx. Set `APP_RUNTIME` to `tomcat` when deploying a WAR with `TOMCAT_WAR_FILE`. HAProxy refuses to replace an existing main config unless `HAPROXY_ALLOW_MAIN_CONFIG_REPLACE="true"` is set.
 

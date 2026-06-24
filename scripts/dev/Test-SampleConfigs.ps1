@@ -123,6 +123,12 @@ function Test-WindowsExampleConfig {
     "DisplayName",
     "Description",
     "DeploymentMode",
+    "AppFramework",
+    "NextjsDeploymentMode",
+    "NextjsRequireStaticAssets",
+    "NextjsRequirePublicDirectory",
+    "NextjsRequireServerActionsEncryptionKey",
+    "NextjsRequireDeploymentId",
     "ServiceManager",
     "ReverseProxy",
     "AutoDownloadWinSW",
@@ -166,8 +172,14 @@ function Test-WindowsExampleConfig {
   Assert-IntegerAtLeast ([string]$config.BackupRetentionDays) "BackupRetentionDays"
   Assert-IntegerAtLeast ([string]$config.DiagnosticRetentionDays) "DiagnosticRetentionDays"
   Assert-IntegerAtLeast ([string]$config.IisProxyTimeoutSeconds) "IisProxyTimeoutSeconds"
-  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport")) {
+  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport", "NextjsRequireStaticAssets", "NextjsRequirePublicDirectory", "NextjsRequireServerActionsEncryptionKey", "NextjsRequireDeploymentId")) {
     Assert-BoolString ([string]$config.$name) $name
+  }
+  if ([string]$config.AppFramework -notin @("node", "nextjs")) {
+    throw "Windows AppFramework must be node or nextjs."
+  }
+  if ([string]$config.NextjsDeploymentMode -notin @("standalone", "next-start")) {
+    throw "Windows NextjsDeploymentMode must be standalone or next-start."
   }
   Assert-BoolString ([string]$config.AutoDownloadWinSW) "AutoDownloadWinSW"
   $winswUri = [Uri][string]$config.WinSWDownloadUrl
@@ -230,6 +242,12 @@ function Test-LinuxExampleConfig {
     "APP_DISPLAY_NAME",
     "APP_DESCRIPTION",
     "DEPLOYMENT_MODE",
+    "APP_FRAMEWORK",
+    "NEXTJS_DEPLOYMENT_MODE",
+    "NEXTJS_REQUIRE_STATIC_ASSETS",
+    "NEXTJS_REQUIRE_PUBLIC_DIR",
+    "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY",
+    "NEXTJS_REQUIRE_DEPLOYMENT_ID",
     "APP_RUNTIME",
     "SERVICE_MANAGER",
     "REVERSE_PROXY",
@@ -265,8 +283,14 @@ function Test-LinuxExampleConfig {
   if (-not $env.ContainsKey("PACKAGE_PATH")) {
     throw "config/linux/app.env.example is missing PACKAGE_PATH."
   }
-  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
+  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "NEXTJS_REQUIRE_STATIC_ASSETS", "NEXTJS_REQUIRE_PUBLIC_DIR", "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY", "NEXTJS_REQUIRE_DEPLOYMENT_ID", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
+  }
+  if ($env.APP_FRAMEWORK -notin @("node", "nextjs")) {
+    throw "Linux APP_FRAMEWORK must be node or nextjs."
+  }
+  if ($env.NEXTJS_DEPLOYMENT_MODE -notin @("standalone", "next-start")) {
+    throw "Linux NEXTJS_DEPLOYMENT_MODE must be standalone or next-start."
   }
   if ($env.FORWARDED_PROTO -notin @("http", "https")) {
     throw "Linux FORWARDED_PROTO must be http or https."
@@ -320,6 +344,12 @@ function Test-AnsibleDefaults {
     "node_deploy_display_name",
     "node_deploy_description",
     "node_deploy_mode",
+    "node_deploy_app_framework",
+    "node_deploy_nextjs_deployment_mode",
+    "node_deploy_nextjs_require_static_assets",
+    "node_deploy_nextjs_require_public_directory",
+    "node_deploy_nextjs_require_server_actions_encryption_key",
+    "node_deploy_nextjs_require_deployment_id",
     "node_deploy_app_runtime",
     "node_deploy_package_path_windows",
     "node_deploy_package_path_linux",
@@ -390,6 +420,52 @@ function Test-AnsibleDefaults {
     if ($text -notmatch "(?m)^$([regex]::Escape($name))\s*:") {
       throw "config/ansible/group_vars_all.example.yml is missing $name."
     }
+  }
+
+  if ($text -notmatch "(?m)^node_deploy_package_expected_files:\s*\[\]\s*$") {
+    throw "config/ansible/group_vars_all.example.yml should leave node_deploy_package_expected_files empty so templates use mode-aware Next.js defaults."
+  }
+
+  $windowsTemplate = Get-Content -Path (Join-Path $RepoRoot "ansible/roles/windows_node_service/templates/app.config.json.j2") -Raw
+  $linuxTemplate = Get-Content -Path (Join-Path $RepoRoot "ansible/roles/linux_node_service/templates/deploy.env.j2") -Raw
+  foreach ($template in @(
+      @{ Name = "Windows Ansible app config"; Text = $windowsTemplate },
+      @{ Name = "Linux Ansible deploy env"; Text = $linuxTemplate }
+    )) {
+    foreach ($expected in @(
+        "default_package_expected_files",
+        "node_modules/next",
+        "configured_package_expected_files",
+        "package_expected_files",
+        "default_node_arguments",
+        "node_arguments",
+        "start -H"
+      )) {
+      if (-not $template.Text.Contains($expected)) {
+        throw "$($template.Name) is missing mode-aware package expected file handling: $expected"
+      }
+    }
+  }
+
+  $windowsTasks = Get-Content -Path (Join-Path $RepoRoot "ansible/roles/windows_node_service/tasks/main.yml") -Raw
+  $linuxTasks = Get-Content -Path (Join-Path $RepoRoot "ansible/roles/linux_node_service/tasks/main.yml") -Raw
+  foreach ($taskFile in @(
+      @{ Name = "Windows Ansible tasks"; Text = $windowsTasks },
+      @{ Name = "Linux Ansible tasks"; Text = $linuxTasks }
+    )) {
+    foreach ($expected in @(
+        "application framework",
+        "Next.js deployment mode",
+        "standalone",
+        "next-start"
+      )) {
+      if (-not $taskFile.Text.Contains($expected)) {
+        throw "$($taskFile.Name) is missing Next.js validation text: $expected"
+      }
+    }
+  }
+  if (-not $linuxTasks.Contains("APP_FRAMEWORK=nextjs requires node_deploy_app_runtime=node.")) {
+    throw "Linux Ansible tasks should reject Next.js deployments that are not APP_RUNTIME=node."
   }
 
   Write-Host "Ansible example variables OK"
@@ -484,6 +560,8 @@ function Test-RenderedTemplates {
     FORWARDED_PORT = $LinuxEnv.FORWARDED_PORT
     HEALTH_URL = $LinuxEnv.HEALTH_URL
     HEALTHCHECK_INTERVAL = $LinuxEnv.HEALTHCHECK_INTERVAL
+    HEALTHCHECK_SCRIPT = "/usr/local/sbin/$($LinuxEnv.APP_NAME)-healthcheck.sh"
+    HEALTHCHECK_CONFIG = "/etc/node-enterprise-deploy-kit/$($LinuxEnv.APP_NAME).env"
     HEALTHCHECK_COMMAND = "/usr/local/sbin/$($LinuxEnv.APP_NAME)-healthcheck.sh /etc/node-enterprise-deploy-kit/$($LinuxEnv.APP_NAME).env"
     RUNNER_SCRIPT = "/usr/local/sbin/$($LinuxEnv.APP_NAME)-runner.sh"
     HAPROXY_BIND = $LinuxEnv.HAPROXY_BIND
@@ -521,7 +599,7 @@ function Test-RenderedTemplates {
       $source = Get-RelativePath $file.FullName
       $rendered = Render-TokenTemplate (Get-Content -Path $file.FullName -Raw) $values $source
 
-      if ($source -like "templates/windows/*.tpl") {
+      if ($source -like "templates/windows/*.tpl" -or $source -match 'launchd-(node-app|healthcheck)\.plist\.tpl$') {
         try {
           [xml]$null = $rendered
         }
@@ -532,20 +610,31 @@ function Test-RenderedTemplates {
 
       if ($source -match 'sysv-node-app\.init\.tpl$|openrc-node-app\.init\.tpl$|bsdrc-node-app\.init\.tpl$|launchd-runner\.sh\.tpl$') {
         if (-not $SkipShellRenderedSyntax) {
-          $bash = Get-Command bash -ErrorAction SilentlyContinue
-          if ($bash) {
-            $renderedPath = Join-Path $tempDir ([System.IO.Path]::GetFileName($file.FullName))
-            [System.IO.File]::WriteAllText($renderedPath, $rendered, [System.Text.UTF8Encoding]::new($false))
-            Push-Location $RepoRoot
-            try {
+          $renderedPath = Join-Path $tempDir ([System.IO.Path]::GetFileName($file.FullName))
+          [System.IO.File]::WriteAllText($renderedPath, $rendered, [System.Text.UTF8Encoding]::new($false))
+
+          Push-Location $RepoRoot
+          try {
+            $bash = Get-Command bash -ErrorAction SilentlyContinue
+            if ($bash) {
               & $bash.Source -n (Get-RelativePath $renderedPath)
               if ($LASTEXITCODE -ne 0) {
-                throw "$source rendered shell syntax check failed."
+                throw "$source rendered bash syntax check failed."
               }
             }
-            finally {
-              Pop-Location
+
+            if ($source -match 'sysv-node-app\.init\.tpl$|openrc-node-app\.init\.tpl$|bsdrc-node-app\.init\.tpl$') {
+              $sh = Get-Command sh -ErrorAction SilentlyContinue
+              if ($sh) {
+                & $sh.Source -n (Get-RelativePath $renderedPath)
+                if ($LASTEXITCODE -ne 0) {
+                  throw "$source rendered POSIX sh syntax check failed."
+                }
+              }
             }
+          }
+          finally {
+            Pop-Location
           }
         }
       }

@@ -33,9 +33,9 @@ detect_os_id_like() {
   esac
 }
 
-detect_platform_family() {
-  local id_like
-  id_like="$(detect_os_id_like)"
+classify_platform_family() {
+  local id_like="${1:-}"
+  id_like="$(printf '%s\n' "$id_like" | tr '[:upper:]' '[:lower:]')"
   if echo "$id_like" | grep -Eq 'debian|ubuntu|linuxmint|mint'; then
     echo "debian"
   elif echo "$id_like" | grep -Eq 'rhel|fedora|centos|rocky|almalinux|ol|oracle'; then
@@ -53,6 +53,28 @@ detect_platform_family() {
   else
     echo "unknown"
   fi
+}
+
+detect_platform_family() {
+  classify_platform_family "$(detect_os_id_like)"
+}
+
+recommended_service_manager_for_family() {
+  local family="${1:-$(detect_platform_family)}"
+  case "$family" in
+    macos)
+      echo "launchd"
+      ;;
+    freebsd|openbsd|netbsd)
+      echo "bsdrc"
+      ;;
+    alpine)
+      echo "openrc"
+      ;;
+    *)
+      echo "systemd"
+      ;;
+  esac
 }
 
 default_service_manager() {
@@ -113,6 +135,24 @@ runtime_env_key_list() {
   printf '%s' "${1:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
 }
 
+shell_single_quote() {
+  printf "'"
+  printf '%s' "${1:-}" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+write_shell_env_assignment() {
+  local output_file="$1" key="$2" value="${3:-}"
+  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "Invalid environment key: $key" >&2
+    return 1
+  fi
+
+  printf '%s=' "$key" >> "$output_file"
+  shell_single_quote "$value" >> "$output_file"
+  printf '\n' >> "$output_file"
+}
+
 load_config_file() {
   local __result_var="$1" repo_root="$2" config_file="${3:-config/linux/app.env}"
   config_file="$(resolve_config_path "$repo_root" "$config_file")"
@@ -160,6 +200,7 @@ sed_escape_replacement() {
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+# shellcheck disable=SC2034 # Read by scripts that source this helper after backup operations.
 LAST_BACKUP_PATH=""
 
 get_last_backup_path() {

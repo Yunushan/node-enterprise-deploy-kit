@@ -107,6 +107,68 @@ function Test-ShellSyntax {
   }
 }
 
+function Test-UnixShellPortabilityPatterns {
+  Write-Step "Unix shell portability patterns"
+  $patterns = @(
+    @{ Regex = 'date\s+-I'; Description = "GNU date -I is not portable to macOS/BSD; use a POSIX date format helper." },
+    @{ Regex = 'date\s+-r\s+[^`r`n]*\s+-I'; Description = "date -r <file> -I is not portable to macOS/BSD; use stat fallback helpers." },
+    @{ Regex = '\$\{[^}`r`n]+,,\}'; Description = "Bash 4 lowercase expansion is not portable to macOS Bash 3." },
+    @{ Regex = '\bmapfile\b|\breadarray\b'; Description = "mapfile/readarray are not portable to macOS Bash 3." },
+    @{ Regex = '\bdeclare\s+-A\b'; Description = "Associative arrays are not portable to macOS Bash 3." }
+  )
+  $paths = @(
+    "deploy.sh",
+    "scripts/dev/*.sh",
+    "scripts/linux/*.sh",
+    "templates/linux/*.tpl"
+  )
+  $failed = $false
+
+  foreach ($path in $paths) {
+    Get-ChildItem -Path (Join-Path $RepoRoot $path) -File -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        $relativePath = $_.FullName.Substring($RepoRoot.Length + 1)
+        $lineNumber = 0
+        foreach ($line in Get-Content -Path $_.FullName) {
+          $lineNumber++
+          foreach ($pattern in $patterns) {
+            if ($line -match $pattern.Regex) {
+              Write-Host "$relativePath`:$lineNumber $($pattern.Description)"
+              $failed = $true
+            }
+          }
+        }
+      }
+  }
+
+  if ($failed) { throw "Unix shell portability pattern check failed." }
+  Write-Host "Unix shell portability patterns OK"
+}
+
+function Test-PlatformMatrix {
+  if ($SkipShellSyntax) {
+    Write-Host "Skipping platform matrix check."
+    return
+  }
+
+  Write-Step "Platform matrix"
+  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  if (-not $bash) {
+    throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
+  }
+
+  Push-Location $RepoRoot
+  try {
+    & $bash.Source "scripts/dev/test-platform-matrix.sh"
+    if ($LASTEXITCODE -ne 0) {
+      throw "Platform matrix check failed."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Test-NoObviousSecrets {
   Write-Step "Obvious secret patterns"
   $patterns = @(
@@ -168,8 +230,20 @@ function Test-SampleConfigsAndTemplates {
   & (Join-Path $ScriptDir "Test-SampleConfigs.ps1")
 }
 
+function Test-NextJsSupport {
+  & (Join-Path $ScriptDir "Test-NextJsSupport.ps1")
+}
+
+function Test-NextJsRuntimeSmoke {
+  & (Join-Path $ScriptDir "Test-NextJsRuntimeSmoke.ps1")
+}
+
 function Test-ReleasePackageHygiene {
   & (Join-Path $ScriptDir "Test-ReleasePackage.ps1")
+}
+
+function Test-HostEvidenceSelfTest {
+  & (Join-Path $ScriptDir "Test-HostEvidence.ps1") -SelfTest -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
 }
 
 function Test-DocsConsistency {
@@ -179,8 +253,13 @@ function Test-DocsConsistency {
 Test-PowerShellSyntax
 Test-LineEndings
 Test-ShellSyntax
+Test-UnixShellPortabilityPatterns
+Test-PlatformMatrix
 Test-SampleConfigsAndTemplates
+Test-NextJsSupport
+Test-NextJsRuntimeSmoke
 Test-ReleasePackageHygiene
+Test-HostEvidenceSelfTest
 Test-DocsConsistency
 Test-NoObviousSecrets
 Test-GitDiffCheck

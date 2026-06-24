@@ -37,3 +37,41 @@ jobs:
       - name: Windows repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax
+
+  linux-family-static-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - ubuntu
+          - debian
+          - linux-mint
+          - rhel
+          - oracle-linux
+          - centos
+          - centos-stream
+          - rocky
+          - almalinux
+          - fedora
+          - alpine
+          - macos
+          - freebsd
+          - openbsd
+          - netbsd
+    steps:
+      - uses: actions/checkout@v6
+      - name: Platform family mapping
+        shell: bash
+        run: bash scripts/dev/test-platform-matrix.sh --case "${{ matrix.platform }}"
+
+  macos-checks:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: macOS Unix/Next.js verification
+        shell: bash
+        run: |
+          bash scripts/dev/test-platform-matrix.sh --case macos
+          bash scripts/dev/lint-shell-basic.sh
+          bash scripts/dev/test-unix-nextjs-support.sh

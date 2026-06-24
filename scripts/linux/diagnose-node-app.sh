@@ -86,6 +86,55 @@ safe_url() {
   printf '%s\n' "$url" | sed -E 's#(https?://)[^/@]+@#\1[redacted]@#'
 }
 
+timestamp_iso_utc() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+epoch_to_iso_utc() {
+  local epoch="$1"
+  date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
+    date -u -r "$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
+    printf '%s\n' "$epoch"
+}
+
+file_mtime_iso_utc() {
+  local path="$1" epoch
+  epoch="$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || true)"
+  if [[ -n "$epoch" ]]; then
+    epoch_to_iso_utc "$epoch"
+  fi
+}
+
+safe_relative_path() {
+  local path="${1//\\//}" part
+  local -a parts
+  [[ -n "$path" ]] || return 1
+  [[ "$path" != /* ]] || return 1
+  IFS='/' read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    [[ -z "$part" || "$part" == "." ]] && continue
+    [[ "$part" != ".." ]] || return 1
+  done
+  return 0
+}
+
+path_state() {
+  local label="$1" path="$2" type="${3:-any}"
+  local exists="false"
+  case "$type" in
+    file)
+      [[ -f "$path" ]] && exists="true"
+      ;;
+    dir)
+      [[ -d "$path" ]] && exists="true"
+      ;;
+    *)
+      [[ -e "$path" ]] && exists="true"
+      ;;
+  esac
+  printf '%s=%s path=%s\n' "$label" "$exists" "$path"
+}
+
 service_status_summary() {
   local service_manager_normalized
   service_manager_normalized="$(normalize_name "$SERVICE_MANAGER")"
@@ -168,6 +217,128 @@ port_summary() {
   fi
 }
 
+next_start_hostname_argument() {
+  local tokens=() i token
+  read -r -a tokens <<< "${NODE_ARGUMENTS:-}"
+  for ((i = 0; i < ${#tokens[@]}; i++)); do
+    token="${tokens[$i]}"
+    case "$token" in
+      -H|--hostname)
+        if (( i + 1 < ${#tokens[@]} )); then printf '%s\n' "${tokens[$((i + 1))]}"; fi
+        return 0
+        ;;
+      --hostname=*)
+        printf '%s\n' "${token#--hostname=}"
+        return 0
+        ;;
+      -H=*)
+        printf '%s\n' "${token#-H=}"
+        return 0
+        ;;
+    esac
+  done
+}
+
+nextjs_runtime_summary() {
+  local app_framework_normalized mode app_dir start_script start_has_arguments hostname_argument next_start_starts_with_start next_start_script_path next_start_under_next_package
+  app_framework_normalized="$(normalize_name "${APP_FRAMEWORK:-node}")"
+  case "$app_framework_normalized" in
+    next|nextjs|next-js) ;;
+    *) echo "APP_FRAMEWORK=${APP_FRAMEWORK:-node}; Next.js runtime layout check not applicable."; return ;;
+  esac
+
+  mode="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-standalone}")"
+  app_dir="${APP_DIR:-}"
+  start_script="${START_SCRIPT:-server.js}"
+  start_has_arguments="false"
+  [[ "$start_script" == *" "* ]] && start_has_arguments="true"
+  hostname_argument="$(next_start_hostname_argument)"
+  next_start_starts_with_start="true"
+  next_start_script_path=""
+  next_start_under_next_package="true"
+  if [[ "$mode" == "next-start" ]]; then
+    local tokens=()
+    read -r -a tokens <<< "${NODE_ARGUMENTS:-}"
+    if [[ "${#tokens[@]}" -eq 0 || "${tokens[0]}" != "start" ]]; then
+      next_start_starts_with_start="false"
+    fi
+    if [[ -n "$start_script" && "$start_script" != *" "* ]]; then
+      if [[ "$start_script" = /* ]]; then
+        next_start_script_path="$start_script"
+      elif safe_relative_path "$start_script"; then
+        next_start_script_path="${app_dir%/}/$start_script"
+      fi
+    fi
+    case "$(printf '%s' "$next_start_script_path" | tr '\\' '/')" in
+      */node_modules/next/*) next_start_under_next_package="true" ;;
+      *) next_start_under_next_package="false" ;;
+    esac
+  fi
+
+  echo "AppFramework=nextjs"
+  echo "NextjsDeploymentMode=$mode"
+  echo "AppDirectory=$app_dir"
+  echo "StartScript=$start_script"
+  echo "StartScriptHasArguments=$start_has_arguments"
+  echo "NextStartScriptPath=$next_start_script_path"
+  echo "NextStartScriptUnderNextPackage=$next_start_under_next_package"
+  echo "NodeArguments=${NODE_ARGUMENTS:-}"
+  echo "BindAddress=${BIND_ADDRESS:-127.0.0.1}"
+  echo "NextStartCommandStartsWithStart=$next_start_starts_with_start"
+  echo "NextStartHostnameArgument=$hostname_argument"
+  if [[ "$mode" == "next-start" && "$hostname_argument" == "${BIND_ADDRESS:-127.0.0.1}" ]]; then
+    echo "NextStartHostnameMatchesBindAddress=true"
+  elif [[ "$mode" == "next-start" ]]; then
+    echo "NextStartHostnameMatchesBindAddress=false"
+  fi
+  echo "RequiresStaticAssets=${NEXTJS_REQUIRE_STATIC_ASSETS:-true}"
+  echo "RequiresPublicDirectory=${NEXTJS_REQUIRE_PUBLIC_DIR:-false}"
+
+  if [[ -z "$app_dir" ]]; then
+    echo "AppDirectoryConfigured=false"
+    return
+  fi
+  path_state "AppDirectoryExists" "$app_dir" dir
+
+  case "$mode" in
+    standalone)
+      local start_path runtime_root
+      start_path=""
+      runtime_root="$app_dir"
+      if [[ "$start_has_arguments" == "false" ]]; then
+        if [[ "$start_script" = /* ]]; then
+          start_path="$start_script"
+        elif safe_relative_path "$start_script"; then
+          start_path="${app_dir%/}/$start_script"
+        else
+          echo "StartScriptSafeRelative=false"
+        fi
+        if [[ -n "$start_path" ]]; then
+          runtime_root="$(dirname "$start_path")"
+        fi
+      else
+        echo "StartScriptPathCheckSkipped=true"
+      fi
+      echo "RuntimeRoot=$runtime_root"
+      path_state "ServerJsExists" "${start_path:-${runtime_root%/}/server.js}" file
+      path_state "DotNextExists" "${runtime_root%/}/.next" dir
+      path_state "BuildIdExists" "${runtime_root%/}/.next/BUILD_ID" file
+      path_state "StaticAssetsExist" "${runtime_root%/}/.next/static" dir
+      path_state "PublicDirectoryExists" "${runtime_root%/}/public" dir
+      path_state "NodeModulesExists" "${runtime_root%/}/node_modules" dir
+      ;;
+    next-start)
+      path_state "PackageJsonExists" "${app_dir%/}/package.json" file
+      path_state "DotNextExists" "${app_dir%/}/.next" dir
+      path_state "BuildIdExists" "${app_dir%/}/.next/BUILD_ID" file
+      path_state "NextPackageExists" "${app_dir%/}/node_modules/next" dir
+      ;;
+    *)
+      echo "UnsupportedNextjsDeploymentMode=$mode"
+      ;;
+  esac
+}
+
 http_health_summary() {
   if ! command -v curl >/dev/null 2>&1; then
     echo "curl not found."
@@ -231,7 +402,7 @@ list_files_summary() {
 }
 
 {
-  echo "Diagnostics generated $(date -Is)"
+  echo "Diagnostics generated $(timestamp_iso_utc)"
   echo "APP_NAME=$APP_NAME"
   echo "SERVICE_NAME=$SERVICE_NAME"
   echo "APP_DIR=$APP_DIR"
@@ -258,6 +429,9 @@ process_summary >> "$OUT"
 section "Port"
 port_summary >> "$OUT"
 
+section "Next.js Runtime Layout"
+nextjs_runtime_summary >> "$OUT"
+
 section "HTTP Health Summary"
 http_health_summary >> "$OUT"
 
@@ -275,7 +449,7 @@ else
 fi
 if [[ -f "$LOG_DIR/healthcheck.log" ]]; then
   {
-    echo "healthcheck.log lastWrite=$(date -r "$LOG_DIR/healthcheck.log" -Is 2>/dev/null || true) sizeBytes=$(wc -c < "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "healthcheck.log lastWrite=$(file_mtime_iso_utc "$LOG_DIR/healthcheck.log") sizeBytes=$(wc -c < "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
     echo "OK count=$(grep -c ' OK ' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
     echo "FAILED count=$(grep -Ec ' FAILED|FAILED_THRESHOLD|HTTP_FAILED|SERVICE_NOT_RUNNING' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
     echo "RESTART count=$(grep -Ec 'RESTARTING_SERVICE|SERVICE_NOT_RUNNING' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"

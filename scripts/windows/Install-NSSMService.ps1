@@ -12,6 +12,39 @@ function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run as Administrator." }
 }
+function Get-ConfigString($Config, [string]$Name, [string]$Default = "") {
+    if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
+        return [string]$Config.$Name
+    }
+    return $Default
+}
+function ConvertTo-ServiceEnvironmentMap($Config) {
+    $map = [ordered]@{}
+    $bindAddress = Get-ConfigString $Config "BindAddress" "127.0.0.1"
+
+    $map["NODE_ENV"] = "production"
+    $map["PORT"] = [string]$Config.Port
+    $map["APP_PORT"] = [string]$Config.Port
+    $map["APP_NAME"] = [string]$Config.AppName
+    $map["BIND_ADDRESS"] = $bindAddress
+    $map["HOST"] = $bindAddress
+    $map["HOSTNAME"] = $bindAddress
+
+    if ($Config.Environment) {
+        $Config.Environment.PSObject.Properties | ForEach-Object {
+            $map[$_.Name] = [string]$_.Value
+        }
+    }
+
+    return $map
+}
+function ConvertTo-NssmEnvironmentArguments($EnvironmentMap) {
+    $entries = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $EnvironmentMap.Keys) {
+        $entries.Add(("{0}={1}" -f $name, $EnvironmentMap[$name])) | Out-Null
+    }
+    return @($entries)
+}
 Assert-Admin
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -33,10 +66,13 @@ if ($PSCmdlet.ShouldProcess($config.AppName, "Install NSSM service")) {
     & $nssm set $config.AppName AppRotateFiles 1
     & $nssm set $config.AppName AppRotateBytes 10485760
     & $nssm set $config.AppName AppRestartDelay 60000
-    foreach ($p in $config.Environment.PSObject.Properties) {
-      & $nssm set $config.AppName AppEnvironmentExtra "$($p.Name)=$($p.Value)"
+    $environmentEntries = @(ConvertTo-NssmEnvironmentArguments (ConvertTo-ServiceEnvironmentMap $config))
+    if ($environmentEntries.Count -gt 0) {
+      & $nssm set $config.AppName AppEnvironmentExtra @environmentEntries
     }
+    sc.exe config $config.AppName start= auto | Out-Null
     sc.exe failure $config.AppName reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
+    sc.exe failureflag $config.AppName 1 | Out-Null
     & $nssm start $config.AppName
 }
 Write-Host "Installed NSSM service: $($config.AppName)" -ForegroundColor Green

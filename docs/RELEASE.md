@@ -14,23 +14,73 @@ The verifier checks:
 
 - PowerShell parser errors in `.ps1` files
 - Bash syntax for Linux and dev shell scripts
+- Unix shell portability patterns for macOS/BSD-compatible Bash and date usage
+- Platform-family mapping checks for Ubuntu, Debian, Linux Mint, RHEL, Oracle Linux, CentOS, CentOS Stream, Rocky Linux, AlmaLinux, Fedora, Alpine, macOS, FreeBSD, OpenBSD, and NetBSD
 - LF-only line endings for Linux scripts, Linux env examples, and Linux templates
 - Windows JSON example config shape
 - Linux env example shape
 - Ansible example variable coverage
 - plain token template rendering with unresolved-token detection
 - rendered XML validity for Windows templates
-- rendered shell syntax for Linux init templates when `bash` is available
+- rendered shell syntax for Linux init templates with `bash`, plus POSIX `sh` checks for System V, OpenRC, and BSD rc templates when available
+- Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
+- Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, and launchd/bsdrc static preflight paths
+- Local Node.js runtime smoke coverage for the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract used by standalone Next.js services
 - release package hygiene and required release files
+- host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - local docs links, README anchors, and documented entrypoint presence
 - obvious committed secret patterns
 - `git diff --check` whitespace problems
 
 On Windows, install Git Bash or another `bash` executable for the shell syntax
-step. If you are only checking Windows scripts on a restricted machine, use:
+and Unix Next.js smoke-test steps. If you are only checking Windows scripts on a
+restricted machine, use:
 
 ```powershell
 .\scripts\dev\Test-Repository.ps1 -SkipShellSyntax
+```
+
+To run only the Next.js deployment checks:
+
+```powershell
+.\scripts\dev\Test-NextJsSupport.ps1
+```
+
+For Unix-like hosts without PowerShell, run:
+
+```bash
+bash scripts/dev/test-unix-nextjs-support.sh
+```
+
+To build application artifacts for a Next.js standalone app, use the package
+helpers from a build workspace after `npm run build`:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip
+.\scripts\windows\Test-NextJsStandalonePackage.ps1 `
+  -PackagePath C:\deploy\example-node-app.zip
+```
+
+```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz
+bash scripts/linux/validate-nextjs-standalone-package.sh \
+  --package-path /opt/releases/example-node-app.tar.gz
+```
+
+After importing or copying a live runtime folder, validate the deployed
+directory itself:
+
+```powershell
+.\scripts\windows\Test-NextJsRuntimeLayout.ps1 `
+  -ConfigPath .\config\windows\app.config.json
+```
+
+```bash
+bash scripts/linux/test-nextjs-runtime-layout.sh config/linux/app.env
 ```
 
 Ansible playbook syntax is checked automatically when `ansible-playbook` is
@@ -93,6 +143,28 @@ If the configured port is already owned by the current service during an
 intentional update, use the Windows `-AllowPortInUse` switch or Linux
 `ALLOW_PORT_IN_USE="true"`.
 
+For Next.js standalone releases, verify the built archive before handing it to
+the server. The archive root should contain `server.js`, `.next/BUILD_ID`, and
+`.next/static`, and
+should contain `public` when the app serves files from `public`. Configure
+`PackageExpectedFiles` or `PACKAGE_EXPECTED_FILES` with files or directories
+that must exist after extraction:
+
+```json
+"PackageExpectedFiles": [
+  "server.js",
+  ".next/BUILD_ID",
+  ".next/static"
+]
+```
+
+```bash
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
+```
+
+See [Next.js Deployment](NEXTJS_DEPLOYMENT.md) for the full standalone build
+and packaging flow.
+
 ## Deploy
 
 Windows:
@@ -120,18 +192,47 @@ Windows:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-status.json -FailOnCritical
 Get-Service <AppName>
 ```
 
 Linux:
 
 ```bash
+bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --fail-on-critical
+bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --json-output ./evidence/unix-status.json --fail-on-critical
 systemctl status <app-name>
 curl -fsS http://127.0.0.1:3000/health
 ```
 
 Also confirm the public reverse proxy endpoint, recent logs, and reboot
 behavior for new service installs.
+Keep the JSON status file with the release evidence when the change requires an
+audit trail. It records the verdict and findings without dumping runtime
+environment values, raw host identity, full filesystem paths, or raw logs.
+When deployment used a package import, the JSON `DeploymentIdentity` /
+`deploymentIdentity` section also records the package file name, package
+SHA256, import timestamp, and Next.js build ID from
+`.node-enterprise-deploy.json`, so the release evidence can prove which
+artifact is running.
 
 For updates, confirm the backup directory contains any changed managed files
 before deleting old release artifacts.
+
+## Real Host Evidence
+
+When a release needs a support claim for specific operating systems, collect
+status JSON from those actual hosts and validate it:
+
+```powershell
+.\scripts\dev\Test-HostEvidence.ps1 `
+  -EvidencePath .\evidence `
+  -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd `
+  -RequireNextJs `
+  -RequireReverseProxy `
+  -RequireDeploymentIdentity
+```
+
+For stricter release gates, add `-MaxEvidenceAgeDays` and `-FailOnWarnings`.
+See [Host Verification Evidence](HOST_VERIFICATION.md) for the full workflow.

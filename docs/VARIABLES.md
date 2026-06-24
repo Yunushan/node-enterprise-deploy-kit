@@ -7,15 +7,25 @@
 | App name | `AppName` | `APP_NAME` | Short service-safe name |
 | Display name | `DisplayName` | `APP_DISPLAY_NAME` | Human-friendly service name |
 | App runtime | n/a | `APP_RUNTIME` | `node` for Node.js service mode, `tomcat` for WAR deployment mode |
+| App framework | `AppFramework` | `APP_FRAMEWORK` | `node` for generic Node.js, `nextjs` for Next.js layout validation |
+| Next.js deployment mode | `NextjsDeploymentMode` | `NEXTJS_DEPLOYMENT_MODE` | `standalone` for `.next/standalone/server.js`, or `next-start` for full app runtime |
+| Next.js require static assets | `NextjsRequireStaticAssets` | `NEXTJS_REQUIRE_STATIC_ASSETS` | Require `.next/static` under the standalone runtime root |
+| Next.js require public directory | `NextjsRequirePublicDirectory` | `NEXTJS_REQUIRE_PUBLIC_DIR` | Require `public` under the standalone runtime root when the app serves public files |
+| Next.js require Server Actions key | `NextjsRequireServerActionsEncryptionKey` | `NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY` | When true, preflight requires `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in private runtime config and validates base64 AES key length |
+| Next.js require deployment ID | `NextjsRequireDeploymentId` | `NEXTJS_REQUIRE_DEPLOYMENT_ID` | When true, preflight requires `NEXT_DEPLOYMENT_ID` in private runtime config for rolling deployment/version-skew protection |
+| Deployment ID | `DeploymentId` | `DEPLOYMENT_ID` | Optional safe release/build identifier emitted in status evidence; prefer a sanitized release ID, not a private hostname or ticket URL |
 | App directory | `AppDirectory` | `APP_DIR` | Application working directory |
 | Package path | `PackagePath` | `PACKAGE_PATH` | Optional deployment archive to import before install/build/service setup |
-| Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files that must exist after extraction, usually `server.js` |
+| Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files or directories that must exist after extraction; Ansible can leave `node_deploy_package_expected_files: []` to use the selected Next.js mode default |
 | Strip single top directory | `PackageStripSingleTopLevelDirectory` | `PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR` | Use package contents when the archive has one wrapping directory |
 | Skip package import | script flag | `SKIP_PACKAGE_IMPORT` | Leave `AppDirectory`/`APP_DIR` unchanged even when package path is configured |
 | Start script | `StartCommand` | `START_SCRIPT` | JS entry point, usually `server.js` |
 | Node binary | `NodeExe` | `NODE_BIN` | Node executable path |
+| Node arguments | `NodeArguments` | `NODE_ARGUMENTS` | Extra arguments passed after the start script; for `next-start`, use `start -H <bind address>` |
 | Port | `Port` | `APP_PORT` | Local Node.js port |
+| Bind address | `BindAddress` | `BIND_ADDRESS` | Local address the Node.js service should bind to; Unix-like service env generation derives `HOST` and `HOSTNAME` from this value for Next.js |
 | Health URL | `HealthUrl` | `HEALTH_URL` | HTTP health probe URL |
+| Proxy health URL | `ProxyHealthUrl` | `PROXY_HEALTH_URL` | Optional explicit reverse-proxy health probe URL for status evidence |
 | Log directory | `LogDirectory` | `LOG_DIR` | Production log directory |
 | Backup directory | `BackupDirectory` | `BACKUP_DIR` | Timestamped backups of overwritten service/proxy/health files |
 | Health state directory | n/a | `HEALTHCHECK_STATE_DIR` | Root-owned Linux health-check state directory; keep outside `LOG_DIR` |
@@ -39,7 +49,7 @@
 | Allow port in use | script flag | `ALLOW_PORT_IN_USE` | Permit updates while the configured port is already listening |
 | Skip reverse proxy | script flag | `SKIP_REVERSE_PROXY` | Install/update the service but leave proxy configuration unchanged |
 | Skip health check | script flag | `SKIP_HEALTH_CHECK` | Install/update the service but leave health-check scheduling unchanged |
-| Runtime env keys | `Environment` | `RUNTIME_ENV_KEYS` | Extra Linux config variables to write into the private service env file |
+| Runtime env keys | `Environment` | `RUNTIME_ENV_KEYS` | Extra Linux config variables to write into the private service env file; the managed env already includes `NODE_ENV`, `PORT`, `APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME` |
 | Health failures | `HealthCheckFailureThreshold` | `HEALTHCHECK_FAILURE_THRESHOLD` | Consecutive failures before restart |
 | Restart cooldown | `HealthCheckRestartCooldownMinutes` | `HEALTHCHECK_RESTART_COOLDOWN` | Minimum time between health-check restarts |
 | Health timeout | `HealthCheckTimeoutSeconds` | `HEALTHCHECK_TIMEOUT` | HTTP health probe timeout |
@@ -75,6 +85,7 @@
 | Windows WinSW source | Auto-download pinned stable WinSW, or provide an internal `tools\winsw\winsw-x64.exe` |
 | Windows service account | `NetworkService`, `LocalService`, dedicated account, or gMSA; avoid `LocalSystem` unless required |
 | Unix-like service manager | systemd on mainstream Linux, launchd on macOS, bsdrc on BSD |
+| Next.js service mode | `AppFramework=nextjs`, `NextjsDeploymentMode=standalone`, `StartCommand=server.js` |
 | Windows reverse proxy | IIS |
 | Unix-like reverse proxy | Nginx, Apache, HAProxy, or Traefik |
 | Restart policy | Always restart after service failure |

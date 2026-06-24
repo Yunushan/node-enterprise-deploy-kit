@@ -1,3 +1,4 @@
+# Managed by node-enterprise-deploy-kit for {{APP_NAME}}.
 <VirtualHost *:{{PROXY_LISTEN_PORT}}>
     ServerName {{PUBLIC_HOSTNAME}}
 

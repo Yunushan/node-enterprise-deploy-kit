@@ -23,7 +23,7 @@ Important controls:
 | `node_deploy_skip_preflight` | Skip target preflight checks |
 | `node_deploy_package_path_windows` | Optional remote Windows `.zip` package to import before service setup |
 | `node_deploy_package_path_linux` | Optional remote Linux `.zip`, `.tar.gz`, `.tgz`, or `.tar` package to import before service setup |
-| `node_deploy_package_expected_files` | Relative files required after package extraction |
+| `node_deploy_package_expected_files` | Relative files or directories required after package extraction; leave as `[]` to use the mode-aware Next.js default |
 | `node_deploy_package_strip_single_top_level_directory` | Strip a single wrapping archive directory |
 | `node_deploy_skip_package_import` | Skip package import even when a package path is configured |
 | `node_deploy_allow_port_in_use` | Allow intentional updates while the app port is already listening |
@@ -32,6 +32,10 @@ Important controls:
 | `node_deploy_skip_reverse_proxy` | Leave IIS/Nginx/Apache config unchanged |
 | `node_deploy_skip_health_check` | Leave scheduled health checks unchanged |
 | `node_deploy_app_runtime` | `node` service deployment or `tomcat` WAR deployment |
+| `node_deploy_app_framework` | `node` for generic Node.js, `nextjs` for Next.js layout validation |
+| `node_deploy_nextjs_deployment_mode` | `standalone` or `next-start` |
+| `node_deploy_nextjs_require_static_assets` | Require `.next/static` under the standalone runtime root |
+| `node_deploy_nextjs_require_public_directory` | Require `public` under the standalone runtime root |
 | `node_deploy_windows_auto_download_winsw` | Download pinned WinSW automatically on the Windows target when no source exe is copied |
 | `node_deploy_windows_winsw_download_url` | HTTPS URL for the pinned WinSW executable |
 | `node_deploy_windows_winsw_download_sha256` | Optional SHA256 digest for WinSW verification |
@@ -89,6 +93,17 @@ and templates, optionally install OS dependencies, optionally import a remote
 archive package, then run `deploy.sh`. The
 same role can target mainstream Linux, BSD, and macOS hosts when the selected
 service manager and package tooling are available on the remote system.
+
+When `node_deploy_package_expected_files` is empty or omitted, the roles render
+`server.js`, `.next/BUILD_ID`, and `.next/static` for `standalone` and
+`package.json`, `.next/BUILD_ID`, `.next`, plus `node_modules/next` for
+`next-start`. Set the variable only when your artifact has additional
+project-specific paths that must be present.
+
+When `node_deploy_nextjs_deployment_mode: next-start` and
+`node_deploy_node_arguments` is empty, the roles render `start -H
+<node_deploy_bind_address>` so `next start` runs in production mode and binds
+to the same local address targeted by the reverse proxy.
 
 ## Safety Notes
 

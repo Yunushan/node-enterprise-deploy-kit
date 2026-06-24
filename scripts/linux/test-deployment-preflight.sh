@@ -14,12 +14,14 @@ ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
 SKIP_PACKAGE_IMPORT="${SKIP_PACKAGE_IMPORT:-false}"
 SKIP_REVERSE_PROXY="${SKIP_REVERSE_PROXY:-false}"
 SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
+SKIP_SERVICE_MANAGER_CHECK="${SKIP_SERVICE_MANAGER_CHECK:-false}"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --allow-port-in-use) ALLOW_PORT_IN_USE="true" ;;
     --skip-reverse-proxy) SKIP_REVERSE_PROXY="true" ;;
     --skip-health-check) SKIP_HEALTH_CHECK="true" ;;
+    --skip-service-manager-check) SKIP_SERVICE_MANAGER_CHECK="true" ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -27,6 +29,7 @@ done
 
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
+APP_FRAMEWORK_NORMALIZED="$(normalize_name "${APP_FRAMEWORK:-node}")"
 
 errors=()
 warnings=()
@@ -74,6 +77,19 @@ is_loopback_host() {
 is_sensitive_key_name() {
   [[ "${1:-}" =~ ([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Cc][Oo][Nn][Nn][Ee][Cc][Tt][Ii][Oo][Nn][Ss][Tt][Rr][Ii][Nn][Gg]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]|[Jj][Ww][Tt]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]) ]]
 }
+is_base64_aes_key_length() {
+  local key="${1:-}" node_bin="${NODE_BIN:-}"
+  [[ -n "$key" && -n "$node_bin" && -x "$node_bin" ]] || return 1
+  "$node_bin" -e '
+const key = process.argv[1] || "";
+if (!/^[A-Za-z0-9+/]+={0,2}$/.test(key) || key.length % 4 !== 0) process.exit(2);
+const bytes = Buffer.from(key, "base64");
+const normalized = bytes.toString("base64").replace(/=+$/, "");
+const input = key.replace(/=+$/, "");
+if (normalized !== input) process.exit(2);
+if (![16, 24, 32].includes(bytes.length)) process.exit(3);
+' "$key" >/dev/null 2>&1
+}
 safe_relative_path() {
   local path="${1//\\//}"
   [[ -n "$path" ]] || return 1
@@ -88,6 +104,130 @@ safe_relative_path() {
 }
 is_user_runtime_path() {
   [[ "${1:-}" =~ ^/home/[^/]+/(Desktop|Downloads|Documents)(/|$) || "${1:-}" =~ ^/Users/[^/]+/(Desktop|Downloads|Documents)(/|$) ]]
+}
+nextjs_start_command_path() {
+  local start_script="${START_SCRIPT:-server.js}"
+  if [[ "$start_script" = /* ]]; then
+    printf '%s\n' "$start_script"
+  else
+    printf '%s/%s\n' "${APP_DIR%/}" "$start_script"
+  fi
+}
+argument_tokens_contain_next_start() {
+  local tokens=()
+  read -r -a tokens <<< "${NODE_ARGUMENTS:-}"
+  [[ "${#tokens[@]}" -gt 0 && "${tokens[0]}" == "start" ]]
+}
+next_start_hostname_argument() {
+  local tokens=() i token
+  read -r -a tokens <<< "${NODE_ARGUMENTS:-}"
+  for ((i = 0; i < ${#tokens[@]}; i++)); do
+    token="${tokens[$i]}"
+    case "$token" in
+      -H|--hostname)
+        if (( i + 1 < ${#tokens[@]} )); then printf '%s\n' "${tokens[$((i + 1))]}"; fi
+        return 0
+        ;;
+      --hostname=*)
+        printf '%s\n' "${token#--hostname=}"
+        return 0
+        ;;
+      -H=*)
+        printf '%s\n' "${token#-H=}"
+        return 0
+        ;;
+    esac
+  done
+}
+validate_nextjs_layout() {
+  case "$APP_FRAMEWORK_NORMALIZED" in
+    next|nextjs|next-js) ;;
+    *) return 0 ;;
+  esac
+
+  if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
+    add_error "APP_FRAMEWORK=nextjs requires APP_RUNTIME=node."
+    return 0
+  fi
+  if is_true "${NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY:-false}"; then
+    if [[ -z "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:-}" ]]; then
+      add_error "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY=true, but NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is missing. Put the value in target-local private config, not committed example config."
+    elif ! is_base64_aes_key_length "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"; then
+      add_error "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY must be base64-encoded with a valid AES key length of 16, 24, or 32 bytes."
+    fi
+  fi
+  if is_true "${NEXTJS_REQUIRE_DEPLOYMENT_ID:-false}"; then
+    if [[ -z "${NEXT_DEPLOYMENT_ID:-}" ]]; then
+      add_error "NEXTJS_REQUIRE_DEPLOYMENT_ID=true, but NEXT_DEPLOYMENT_ID is missing. Put the deployment ID in target-local private config or set it during build."
+    elif [[ "$NEXT_DEPLOYMENT_ID" =~ [[:space:]] ]]; then
+      add_error "NEXT_DEPLOYMENT_ID must not contain whitespace."
+    fi
+  fi
+  if [[ -z "${APP_DIR:-}" || ! -d "${APP_DIR:-}" ]]; then
+    return 0
+  fi
+
+  local mode hostname_argument start_path
+  mode="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-standalone}")"
+  case "$mode" in
+    standalone)
+      if [[ "${START_SCRIPT:-server.js}" == *" "* ]]; then
+        add_warning "Next.js layout validation skipped because START_SCRIPT contains shell-style arguments."
+        return 0
+      fi
+      if [[ "${START_SCRIPT:-server.js}" != /* ]] && ! safe_relative_path "${START_SCRIPT:-server.js}"; then
+        add_error "START_SCRIPT must be a safe relative file path for Next.js standalone validation."
+        return 0
+      fi
+
+      local start_path standalone_root start_name
+      start_path="$(nextjs_start_command_path)"
+      standalone_root="$(dirname "$start_path")"
+      start_name="$(basename "$start_path")"
+      if [[ "$start_name" != "server.js" ]]; then
+        add_warning "Next.js standalone deployments normally start the generated server.js file."
+      fi
+      [[ -d "$standalone_root/.next" ]] || add_error "Next.js standalone runtime root is missing .next directory: $standalone_root"
+      [[ -f "$standalone_root/.next/BUILD_ID" ]] || add_error "Next.js standalone runtime root is missing .next/BUILD_ID. Keep BUILD_ID with the deployed artifact so status evidence can identify the running build."
+      if is_true "${NEXTJS_REQUIRE_STATIC_ASSETS:-true}" && [[ ! -d "$standalone_root/.next/static" ]]; then
+        add_error "Next.js standalone runtime root is missing .next/static. Copy .next/static into the standalone .next directory before deployment."
+      fi
+      if is_true "${NEXTJS_REQUIRE_PUBLIC_DIR:-false}" && [[ ! -d "$standalone_root/public" ]]; then
+        add_error "Next.js standalone runtime root is missing public directory, but NEXTJS_REQUIRE_PUBLIC_DIR=true."
+      fi
+      [[ -d "$standalone_root/node_modules" ]] || add_warning "Next.js standalone runtime root has no node_modules directory. Confirm the standalone artifact includes traced dependencies."
+      ;;
+    next-start)
+      if [[ "${START_SCRIPT:-}" == *" "* ]]; then
+        add_error "START_SCRIPT must be a single file path for Next.js next-start validation."
+      elif [[ "${START_SCRIPT:-}" != /* ]] && ! safe_relative_path "${START_SCRIPT:-}"; then
+        add_error "START_SCRIPT must be a safe relative file path for Next.js next-start validation."
+      else
+        start_path="$(nextjs_start_command_path)"
+        [[ -f "$start_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $start_path"
+        case "$(printf '%s' "$start_path" | tr '\\' '/')" in
+          */node_modules/next/*) ;;
+          *) add_error "Next.js next-start START_SCRIPT should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next." ;;
+        esac
+      fi
+      if ! argument_tokens_contain_next_start; then
+        add_error "Next.js next-start mode requires NODE_ARGUMENTS to start with 'start'. Example: start -H ${BIND_ADDRESS:-127.0.0.1}"
+      fi
+      hostname_argument="$(next_start_hostname_argument)"
+      if [[ -z "$hostname_argument" ]]; then
+        add_error "Next.js next-start mode requires NODE_ARGUMENTS to include '-H ${BIND_ADDRESS:-127.0.0.1}' or '--hostname ${BIND_ADDRESS:-127.0.0.1}' so next start binds to BIND_ADDRESS."
+      elif [[ "$hostname_argument" != "${BIND_ADDRESS:-127.0.0.1}" ]]; then
+        add_error "Next.js next-start hostname argument '$hostname_argument' must match BIND_ADDRESS '${BIND_ADDRESS:-127.0.0.1}'."
+      fi
+      [[ -f "$APP_DIR/package.json" ]] || add_error "Next.js next-start mode requires package.json under APP_DIR."
+      [[ -d "$APP_DIR/.next" ]] || add_error "Next.js next-start mode requires a built .next directory under APP_DIR."
+      [[ -f "$APP_DIR/.next/BUILD_ID" ]] || add_error "Next.js next-start mode requires .next/BUILD_ID under APP_DIR so status evidence can identify the running build."
+      [[ -d "$APP_DIR/node_modules/next" ]] || add_error "Next.js next-start mode requires node_modules/next under APP_DIR."
+      ;;
+    *)
+      add_error "NEXTJS_DEPLOYMENT_MODE must be standalone or next-start."
+      ;;
+  esac
 }
 
 for key in APP_NAME APP_DISPLAY_NAME APP_PORT BIND_ADDRESS HEALTH_URL LOG_DIR SERVICE_MANAGER REVERSE_PROXY; do
@@ -142,6 +282,8 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && -d "$APP_DIR" 
     [[ -f "$APP_DIR/$START_SCRIPT" ]] || add_error "START_SCRIPT file not found under APP_DIR: $APP_DIR/$START_SCRIPT"
   fi
 fi
+
+validate_nextjs_layout
 
 if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
   if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
@@ -203,19 +345,25 @@ fi
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"
 case "$SERVICE_MANAGER_NORMALIZED" in
   systemd)
-    command -v systemctl >/dev/null 2>&1 || add_error "SERVICE_MANAGER=systemd but systemctl was not found."
+    if ! is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
+      command -v systemctl >/dev/null 2>&1 || add_error "SERVICE_MANAGER=systemd but systemctl was not found."
+    fi
     ;;
   systemv|sysv|sysvinit|initd|init-d)
-    if ! command -v service >/dev/null 2>&1 && [[ ! -x "/etc/init.d/${APP_NAME:-}" ]]; then
+    if ! is_true "$SKIP_SERVICE_MANAGER_CHECK" && ! command -v service >/dev/null 2>&1 && [[ ! -x "/etc/init.d/${APP_NAME:-}" ]]; then
       add_warning "System V selected, but service command/init script is not currently available."
     fi
     ;;
   openrc)
-    command -v rc-service >/dev/null 2>&1 || add_error "SERVICE_MANAGER=openrc but rc-service was not found."
-    command -v rc-update >/dev/null 2>&1 || add_error "SERVICE_MANAGER=openrc but rc-update was not found."
+    if ! is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
+      command -v rc-service >/dev/null 2>&1 || add_error "SERVICE_MANAGER=openrc but rc-service was not found."
+      command -v rc-update >/dev/null 2>&1 || add_error "SERVICE_MANAGER=openrc but rc-update was not found."
+    fi
     ;;
   launchd)
-    command -v launchctl >/dev/null 2>&1 || add_error "SERVICE_MANAGER=launchd but launchctl was not found."
+    if ! is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
+      command -v launchctl >/dev/null 2>&1 || add_error "SERVICE_MANAGER=launchd but launchctl was not found."
+    fi
     [[ "$PLATFORM_FAMILY" == "macos" ]] || add_warning "SERVICE_MANAGER=launchd is normally used on macOS."
     ;;
   bsdrc|bsd-rc|rcd|rc.d)

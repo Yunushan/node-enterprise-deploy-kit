@@ -1,3 +1,4 @@
+# Managed by node-enterprise-deploy-kit for {{APP_NAME}}.
 server {
     listen {{PROXY_LISTEN_PORT}};
     server_name {{PUBLIC_HOSTNAME}};

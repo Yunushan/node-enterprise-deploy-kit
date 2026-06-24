@@ -1,8 +1,21 @@
+{% set nextjs_mode = node_deploy_nextjs_deployment_mode | default('standalone') | lower | replace('_', '-') %}
+{% set default_package_expected_files = ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next'] if nextjs_mode == 'next-start' else ['server.js', '.next/BUILD_ID', '.next/static'] %}
+{% set configured_package_expected_files = node_deploy_package_expected_files | default([]) %}
+{% set package_expected_files = configured_package_expected_files if configured_package_expected_files | length > 0 else default_package_expected_files %}
+{% set configured_node_arguments = node_deploy_node_arguments | default('') %}
+{% set default_node_arguments = 'start -H ' ~ node_deploy_bind_address if nextjs_mode == 'next-start' else '' %}
+{% set node_arguments = configured_node_arguments if configured_node_arguments | length > 0 else default_node_arguments %}
 {
   "AppName": {{ node_deploy_project_name | to_json }},
   "DisplayName": {{ node_deploy_display_name | to_json }},
   "Description": {{ node_deploy_description | default(node_deploy_display_name ~ ' production service') | to_json }},
   "DeploymentMode": {{ node_deploy_mode | to_json }},
+  "AppFramework": {{ node_deploy_app_framework | default('nextjs') | to_json }},
+  "NextjsDeploymentMode": {{ nextjs_mode | to_json }},
+  "NextjsRequireStaticAssets": {{ node_deploy_nextjs_require_static_assets | default(true) | bool | to_json }},
+  "NextjsRequirePublicDirectory": {{ node_deploy_nextjs_require_public_directory | default(false) | bool | to_json }},
+  "NextjsRequireServerActionsEncryptionKey": {{ node_deploy_nextjs_require_server_actions_encryption_key | default(false) | bool | to_json }},
+  "NextjsRequireDeploymentId": {{ node_deploy_nextjs_require_deployment_id | default(false) | bool | to_json }},
   "ServiceManager": {{ node_deploy_windows_service_manager | to_json }},
   "ReverseProxy": {{ node_deploy_windows_reverse_proxy | to_json }},
   "AutoDownloadWinSW": {{ node_deploy_windows_auto_download_winsw | default(true) | bool | to_json }},
@@ -10,11 +23,11 @@
   "WinSWDownloadSha256": {{ node_deploy_windows_winsw_download_sha256 | default('') | to_json }},
   "AppDirectory": {{ node_deploy_app_dir_windows | to_json }},
   "PackagePath": {{ node_deploy_package_path_windows | default('') | to_json }},
-  "PackageExpectedFiles": {{ node_deploy_package_expected_files | default([node_deploy_start_script]) | to_json }},
+  "PackageExpectedFiles": {{ package_expected_files | to_json }},
   "PackageStripSingleTopLevelDirectory": {{ node_deploy_package_strip_single_top_level_directory | default(true) | bool | to_json }},
   "StartCommand": {{ node_deploy_start_script | to_json }},
   "NodeExe": {{ node_deploy_windows_node_exe | to_json }},
-  "NodeArguments": {{ node_deploy_node_arguments | default('') | to_json }},
+  "NodeArguments": {{ node_arguments | to_json }},
   "InstallCommand": {{ node_deploy_install_command | default('') | to_json }},
   "BuildCommand": {{ node_deploy_build_command | default('') | to_json }},
   "Port": {{ node_deploy_port }},

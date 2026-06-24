@@ -78,11 +78,9 @@ if ! is_true "$SKIP_REVERSE_PROXY"; then
 fi
 
 if is_true "$SKIP_HEALTH_CHECK"; then
-  echo "Skipping healthcheck timer because SKIP_HEALTH_CHECK=true."
-elif [[ "$SERVICE_MANAGER_NORMALIZED" == "systemd" ]]; then
-  run_root "$REPO_ROOT/scripts/linux/install-healthcheck-timer.sh" "$CONFIG_FILE"
+  echo "Skipping healthcheck scheduler because SKIP_HEALTH_CHECK=true."
 else
-  echo "Skipping systemd healthcheck timer for SERVICE_MANAGER=${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}."
+  run_root "$REPO_ROOT/scripts/linux/install-healthcheck-scheduler.sh" "$CONFIG_FILE"
 fi
 
 echo "Deployment finished for ${APP_NAME}."

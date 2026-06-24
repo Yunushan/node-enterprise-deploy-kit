@@ -26,6 +26,7 @@ Repository verification:
 .\install.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
 .\scripts\windows\Diagnose-NodeApp.ps1 -ConfigPath .\config\windows\app.config.json
 .\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
 Get-ScheduledTaskInfo -TaskName <AppName>-HealthCheck
@@ -39,6 +40,9 @@ Get-EventLog Application -Newest 50
 ```bash
 bash scripts/linux/test-deployment-preflight.sh config/linux/app.env
 bash deploy.sh config/linux/app.env
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --json-output ./evidence/unix-status.json --fail-on-critical
 sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 systemctl status <app-name>
 systemctl restart <app-name>
@@ -94,14 +98,26 @@ Long-running health checks:
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
 ```
 
 For Windows, treat the deployment as healthy only when the operational verdict
 has no critical findings, the service is running with automatic startup, the
 configured port is owned by the configured service process tree, the HTTP health
 probe succeeds, and the scheduled health check has a recent successful run.
+Keep the `-JsonPath` output with the release record when you need proof for a
+change window or uptime review. It is designed to avoid environment values,
+raw logs, raw host identity, and full filesystem paths.
 
 ```bash
 sudo cat /var/lib/node-enterprise-deploy-kit/<app-name>/healthcheck.state
 sudo grep -Ec ' OK |FAILED|RESTARTING_SERVICE|RESTART_SUPPRESSED' /var/log/<app-name>/healthcheck.log
 ```
+
+For Linux, macOS, and BSD service modes, treat the deployment as healthy only
+when `status-node-app.sh --fail-on-critical` reports no critical findings,
+the service manager sees the service as active and boot-enabled, the configured
+port is listening, the HTTP health check succeeds, and the Next.js runtime
+layout matches the configured deployment mode.
+Use `--json-output` for the same kind of release evidence on Linux, macOS, and
+BSD hosts; it follows the same privacy-safe evidence shape.

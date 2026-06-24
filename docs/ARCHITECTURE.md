@@ -13,7 +13,7 @@ IIS on Windows or Nginx/Apache/HAProxy/Traefik on Unix-like hosts
 http://127.0.0.1:<app_port>
         |
         v
-Node.js app as managed service, or Tomcat WAR deployment
+Node.js / Next.js app as managed service, or Tomcat WAR deployment
 WinSW on Windows or systemd/System V/OpenRC/launchd/bsdrc on Unix-like hosts
         |
         v

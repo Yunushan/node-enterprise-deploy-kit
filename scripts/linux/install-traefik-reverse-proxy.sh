@@ -22,13 +22,14 @@ TEMPLATE="$REPO_ROOT/templates/linux/traefik-dynamic.yml.tpl"
 
 mkdir -p "$LOG_DIR" "$TRAEFIK_DYNAMIC_DIR"
 render_template_file "$TEMPLATE" "$TRAEFIK_DYNAMIC_FILE" \
+  APP_NAME "$APP_NAME" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
   APP_PORT "$APP_PORT" \
   TRAEFIK_ENTRYPOINT "$TRAEFIK_ENTRYPOINT" \
   TRAEFIK_ROUTER_NAME "$TRAEFIK_ROUTER_NAME" \
   TRAEFIK_SERVICE_NAME "$TRAEFIK_SERVICE_NAME" \
   HEALTHCHECK_PATH "$HEALTHCHECK_PATH"
-backup_path="$LAST_BACKUP_PATH"
+backup_path="$(get_last_backup_path)"
 
 tmp_static="$(mktemp)"
 cat > "$tmp_static" <<EOF

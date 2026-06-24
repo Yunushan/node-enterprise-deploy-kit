@@ -97,9 +97,76 @@ To deploy a built `.zip` artifact, set `PackagePath` in config or pass
 Windows package import supports `.zip` with built-in .NET extraction. It
 validates archive paths before extraction, extracts to a temporary directory,
 checks `PackageExpectedFiles`, stops the service if it exists, backs up the
-current `AppDirectory`, then imports the new package contents. `.rar` and `.7z`
-are intentionally unsupported because they require external tooling and a
-larger security surface.
+current `AppDirectory`, then imports the new package contents.
+`PackageExpectedFiles` may name files or directories, so Next.js standalone
+packages can require `server.js`, `.next/BUILD_ID`, and `.next/static`. `.rar` and `.7z` are
+intentionally unsupported because they require external tooling and a larger
+security surface.
+
+For Next.js standalone deployments, build with `output: 'standalone'`, package
+the contents of `.next\standalone`, and copy `.next\static` to
+`.next\standalone\.next\static` before creating the zip. Copy `public` to
+`.next\standalone\public` too when the app uses public files. Use:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip
+```
+
+The package helper blocks obvious private files such as `.env`, private keys,
+and certificates from the staged artifact before it creates the zip. Configure
+the deployment with:
+
+```powershell
+.\scripts\windows\Test-NextJsStandalonePackage.ps1 `
+  -PackagePath C:\deploy\example-node-app.zip
+```
+
+For full-app `next-start` packages, add `-Mode next-start`. Run that validator
+on any zip that did not come directly from the helper. The Windows package
+import flow also runs this validator automatically when `AppFramework` is
+`nextjs` and `NextjsDeploymentMode` is `standalone` or `next-start`.
+
+```json
+{
+  "AppFramework": "nextjs",
+  "NextjsDeploymentMode": "standalone",
+  "NextjsRequireStaticAssets": true,
+  "NextjsRequirePublicDirectory": false,
+  "NextjsRequireServerActionsEncryptionKey": false,
+  "NextjsRequireDeploymentId": false,
+  "StartCommand": "server.js",
+  "PackageExpectedFiles": [
+    "server.js",
+    ".next/BUILD_ID",
+    ".next/static"
+  ]
+}
+```
+
+The Windows preflight validates the selected Next.js mode and the deployed
+runtime layout before replacing service/proxy configuration. See
+[Next.js Deployment](NEXTJS_DEPLOYMENT.md) for build, packaging, and
+multi-instance notes.
+
+To check only the live Next.js folder structure after package import or manual
+copy, run:
+
+```powershell
+.\scripts\windows\Test-NextJsRuntimeLayout.ps1 `
+  -ConfigPath .\config\windows\app.config.json
+```
+
+After deployment, `status.ps1` and `scripts/windows/Diagnose-NodeApp.ps1`
+include a safe Next.js runtime layout section when `AppFramework=nextjs`.
+Use it to confirm the live folder still contains the expected standalone or
+`next-start` files without printing private environment values.
+The status JSON also includes `HealthMonitor` evidence from the scheduled
+health-check task, state file, and recent health-check log summary. For a
+fully proven production host, collect evidence after the monitor has completed
+successfully and after the requested uptime window, not immediately after the
+first service start.
 
 For live RDP/VPN operations where each release is already extracted to a new
 timestamped folder, use the latest-release helper instead of moving the current
@@ -123,11 +190,15 @@ another IIS site already owns the configured public port, the helper fails by
 default; `-TakeOverPublicPortBinding` removes the conflicting binding only when
 you intentionally want the configured site to take over that port.
 
-The WinSW installer writes safe runtime environment defaults into the service
-XML when they are not already set in `Environment`: `NODE_ENV`, `PORT`,
-`APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME`. This keeps the
+The Windows service installers write safe runtime environment defaults when
+they are not already set in `Environment`: `NODE_ENV`, `PORT`, `APP_PORT`,
+`APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME`. WinSW writes them into the
+service XML, NSSM writes them to `AppEnvironmentExtra`, and the PM2 fallback
+writes a generated ecosystem config under `ServiceDirectory`. This keeps the
 service aligned with `Port` and `BindAddress` and helps Node/Next.js apps bind
-to localhost behind IIS instead of opening a public listener.
+to localhost behind IIS instead of opening a public listener. WinSW remains the
+recommended Windows production service manager; NSSM and PM2 are compatibility
+fallbacks.
 
 `ServiceAccount` controls the Windows service logon account. Supported
 values are `NetworkService`, `LocalService`, `LocalSystem`, a dedicated
@@ -192,6 +263,7 @@ so normal service updates should not need `-AllowPortInUse`.
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
 ```
 
 The status command reports host uptime, service state, service wrapper uptime,
@@ -200,7 +272,23 @@ the listener, HTTP health latency, scheduled health-check freshness, health
 history, and recent log file metadata without printing environment variables or
 log contents. `-MinimumUptimeHours` is useful after a reboot or several days of
 runtime because it warns when the service has restarted more recently than the
-period you expected.
+period you expected. `-JsonPath` writes the same safe verdict and findings to a
+machine-readable evidence file for release reviews.
+
+For IIS reverse-proxy deployments, the status JSON also includes safe IIS
+evidence: whether the WebAdministration module was available, whether the
+configured site exists, whether the site physical path matches the configured
+deployment path, whether the configured site owns the expected public binding,
+and whether another IIS site also has that binding. Full filesystem paths are
+not written to evidence; only safe path basenames are emitted.
+
+The status JSON also includes a safe configured-port proof section. It records
+whether the app port was checked, is listening, has readable owner process
+metadata, and is owned by the configured Windows service process tree.
+It also includes structured HTTP health proof with a sanitized URL, status,
+status code, response time, and timeout.
+Uptime evidence records host uptime when available, service process uptime, and
+whether the requested `-MinimumUptimeHours` window was satisfied.
 
 Managed file updates create timestamped backups in `BackupDirectory` before
 replacing existing WinSW XML/exe files, IIS `web.config`, or the scheduled

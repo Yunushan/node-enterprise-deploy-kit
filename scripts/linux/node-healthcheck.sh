@@ -30,7 +30,10 @@ LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-90}"
 DIAGNOSTIC_RETENTION_DAYS="${DIAGNOSTIC_RETENTION_DAYS:-14}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
-log() { echo "$(date -Is) $*" >> "$LOG_FILE"; }
+timestamp_iso_utc() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+log() { echo "$(timestamp_iso_utc) $*" >> "$LOG_FILE"; }
 is_positive_integer() {
   [[ "${1:-}" =~ ^[0-9]+$ && "$1" -gt 0 ]]
 }

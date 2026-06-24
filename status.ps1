@@ -9,12 +9,15 @@
   .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .EXAMPLE
   .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.EXAMPLE
+  .\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-status.json -FailOnCritical
 #>
 [CmdletBinding()]
 param(
     [string] $ConfigPath = ".\config\windows\app.config.json",
     [int] $MinimumUptimeHours = 0,
     [int] $HealthTimeoutSeconds = 0,
+    [string] $JsonPath = "",
     [switch] $FailOnCritical
 )
 
@@ -34,6 +37,90 @@ $escapedServiceName = $serviceName.Replace("'", "''")
 $configuredPort = [int]$config.Port
 $healthUrl = [string]$config.HealthUrl
 $script:findings = New-Object System.Collections.Generic.List[object]
+$script:nextJsRuntimeEvidence = [pscustomobject]@{
+    Applicable = $false
+    Status = "not-applicable"
+    AppFramework = "node"
+    Mode = ""
+    RuntimeRoot = ""
+}
+$script:reverseProxyEvidence = [pscustomobject]@{
+    Applicable = $false
+    Mode = ""
+    Status = "not-applicable"
+    ProbeUrl = ""
+    StatusCode = $null
+    ResponseMs = $null
+    Iis = [pscustomobject]@{
+        Applicable = $false
+        ModuleAvailable = $false
+        SiteName = ""
+        SiteExists = $false
+        SiteState = ""
+        SitePathName = ""
+        ConfiguredSitePathName = ""
+        SitePathMatchesConfig = $null
+        AppPoolName = ""
+        PublicPort = 0
+        BindingProtocol = ""
+        BindingHostConfigured = $false
+        BindingMatchesConfig = $null
+        DuplicateBindingCount = 0
+        DuplicateBindingConflict = $false
+    }
+}
+$script:deploymentIdentityEvidence = [pscustomobject]@{
+    AppDirectory = ""
+    AppDirectoryName = ""
+    DeploymentId = ""
+    NextBuildId = ""
+    ManifestExists = $false
+    ManifestSchema = ""
+    PackageName = ""
+    PackageSha256 = ""
+    PackageImportedAtUtc = ""
+    ManifestNextBuildId = ""
+    Status = "unknown"
+}
+$script:portEvidence = [pscustomobject]@{
+    Checked = $false
+    Port = $configuredPort
+    Listening = $false
+    OwnerReadable = $false
+    OwnerProcessCount = 0
+    ServiceProcessIdsKnown = $false
+    OwnedByService = $false
+}
+$script:healthEvidence = [pscustomobject]@{
+    Checked = $false
+    Url = ""
+    Status = "not-checked"
+    StatusCode = $null
+    ResponseMs = $null
+    TimeoutSeconds = $HealthTimeoutSeconds
+}
+$script:uptimeEvidence = [pscustomobject]@{
+    HostUptimeSeconds = $null
+    ServiceUptimeSeconds = $null
+    MinimumUptimeHours = $MinimumUptimeHours
+    MinimumSatisfied = $null
+    ServiceStartKnown = $false
+}
+$script:healthMonitorEvidence = [pscustomobject]@{
+    Status = "unknown"
+    Scheduled = $false
+    ScheduleType = "windows-task"
+    TaskExists = $false
+    TaskLastResult = $null
+    TaskMissedRuns = $null
+    StateExists = $false
+    ConsecutiveFailures = $null
+    LastSuccessAgeSeconds = $null
+    LastSuccessFresh = $false
+    LogExists = $false
+    LogFailureCount = $null
+    LogRestartCount = $null
+}
 
 function Add-Finding {
     param(
@@ -100,10 +187,378 @@ function Get-ConfigInt($Config, [string]$Name, [int]$Default) {
     }
     return $Default
 }
+function Get-ConfigString($Config, [string]$Name, [string]$Default = "") {
+    if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
+        return [string]$Config.$Name
+    }
+    return $Default
+}
+function Get-ConfigEnvironmentString($Config, [string]$Name, [string]$Default = "") {
+    if (-not $Config.PSObject.Properties["Environment"] -or -not $Config.Environment) { return $Default }
+    if ($Config.Environment.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.Environment.$Name)) {
+        return [string]$Config.Environment.$Name
+    }
+    return $Default
+}
+function Get-ConfigBool($Config, [string]$Name, [bool]$Default) {
+    if (-not $Config.PSObject.Properties[$Name]) { return $Default }
+    $value = $Config.$Name
+    if ($value -is [bool]) { return [bool]$value }
+    switch -Regex ([string]$value) {
+        '^(true|1|yes)$' { return $true }
+        '^(false|0|no)$' { return $false }
+        default { return $Default }
+    }
+}
+function Normalize-Name([string]$Value) {
+    return $Value.ToLowerInvariant().Replace("_", "-")
+}
+function Test-SafeRelativePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $normalized = $Path.Replace("\", "/")
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $false }
+    foreach ($part in $normalized.Split("/")) {
+        if ($part -eq "..") { return $false }
+    }
+    return $true
+}
+function Split-ArgumentTokens([string]$Arguments) {
+    if ([string]::IsNullOrWhiteSpace($Arguments)) { return @() }
+    return @($Arguments -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+function Get-HostnameArgumentValue([string[]]$Tokens) {
+    for ($i = 0; $i -lt $Tokens.Count; $i++) {
+        $token = $Tokens[$i]
+        if ($token -eq "-H" -or $token -eq "--hostname") {
+            if (($i + 1) -lt $Tokens.Count) { return $Tokens[$i + 1] }
+            return ""
+        }
+        if ($token -like "--hostname=*") {
+            return $token.Substring("--hostname=".Length)
+        }
+        if ($token -like "-H=*") {
+            return $token.Substring("-H=".Length)
+        }
+    }
+    return ""
+}
 function Get-WorstFindingSeverity {
     if (@($script:findings | Where-Object { $_.Severity -eq "Critical" }).Count -gt 0) { return "Critical" }
     if (@($script:findings | Where-Object { $_.Severity -eq "Warning" }).Count -gt 0) { return "Warning" }
     return "Healthy"
+}
+function Get-SafeUrl([string]$Url) {
+    if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
+    $safe = $Url -replace '#.*$', ''
+    $safe = $safe -replace '\?.*$', ''
+    return ($safe -replace '(https?://)[^/@]+@', '$1[redacted]@')
+}
+function Get-SafePathLeaf([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    try {
+        return Split-Path -Leaf $Path
+    } catch {
+        return ""
+    }
+}
+function Get-SafeEvidenceText([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
+    $safe = $Text
+    foreach ($path in @(
+        Get-ConfigString $config "AppDirectory" "",
+        Get-ConfigString $config "ServiceDirectory" "",
+        Get-ConfigString $config "LogDirectory" "",
+        Get-ConfigString $config "BackupDirectory" "",
+        $ConfigPath,
+        (Split-Path -Parent $ConfigPath)
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($path)) {
+            $safe = $safe -replace [regex]::Escape($path), "<path>"
+        }
+    }
+    $safe = $safe -replace '(?i)[A-Z]:\\[^\s,;:"<>|]+', '<path>'
+    $safe = $safe -replace '\\\\[^\s,;:"<>|]+', '<unc-path>'
+    return $safe
+}
+function Get-ObjectPropertyValue($Object, [string]$Name, $Default = $null) {
+    if ($null -eq $Object) { return $Default }
+    if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
+    return $Default
+}
+function Get-SafeNextJsRuntimeEvidence($Evidence) {
+    $runtimeRoot = [string](Get-ObjectPropertyValue $Evidence "RuntimeRoot" "")
+    return [pscustomobject]@{
+        Applicable = [bool](Get-ObjectPropertyValue $Evidence "Applicable" $false)
+        Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
+        AppFramework = [string](Get-ObjectPropertyValue $Evidence "AppFramework" "")
+        Mode = [string](Get-ObjectPropertyValue $Evidence "Mode" "")
+        RuntimeRootName = Get-SafePathLeaf $runtimeRoot
+        AppDirectoryExists = Get-ObjectPropertyValue $Evidence "AppDirectoryExists" $null
+        StartCommand = Get-SafeEvidenceText ([string](Get-ObjectPropertyValue $Evidence "StartCommand" ""))
+        NodeArguments = [string](Get-ObjectPropertyValue $Evidence "NodeArguments" "")
+        BindAddress = [string](Get-ObjectPropertyValue $Evidence "BindAddress" "")
+        ServerJsExists = Get-ObjectPropertyValue $Evidence "ServerJsExists" $null
+        DotNextExists = Get-ObjectPropertyValue $Evidence "DotNextExists" $null
+        BuildIdExists = Get-ObjectPropertyValue $Evidence "BuildIdExists" $null
+        StaticAssetsExist = Get-ObjectPropertyValue $Evidence "StaticAssetsExist" $null
+        PublicDirectoryExists = Get-ObjectPropertyValue $Evidence "PublicDirectoryExists" $null
+        NodeModulesExists = Get-ObjectPropertyValue $Evidence "NodeModulesExists" $null
+        PackageJsonExists = Get-ObjectPropertyValue $Evidence "PackageJsonExists" $null
+        NextPackageExists = Get-ObjectPropertyValue $Evidence "NextPackageExists" $null
+    }
+}
+function Get-SafeDeploymentIdentityEvidence($Evidence) {
+    return [pscustomobject]@{
+        Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
+        AppDirectoryName = [string](Get-ObjectPropertyValue $Evidence "AppDirectoryName" "")
+        DeploymentId = [string](Get-ObjectPropertyValue $Evidence "DeploymentId" "")
+        NextBuildId = [string](Get-ObjectPropertyValue $Evidence "NextBuildId" "")
+        ManifestExists = [bool](Get-ObjectPropertyValue $Evidence "ManifestExists" $false)
+        ManifestSchema = [string](Get-ObjectPropertyValue $Evidence "ManifestSchema" "")
+        PackageName = [string](Get-ObjectPropertyValue $Evidence "PackageName" "")
+        PackageSha256 = [string](Get-ObjectPropertyValue $Evidence "PackageSha256" "")
+        PackageImportedAtUtc = [string](Get-ObjectPropertyValue $Evidence "PackageImportedAtUtc" "")
+        ManifestNextBuildId = [string](Get-ObjectPropertyValue $Evidence "ManifestNextBuildId" "")
+    }
+}
+function Get-SafeRelativeUrlPath([string]$Path, [string]$Default) {
+    $value = if ([string]::IsNullOrWhiteSpace($Path)) { $Default } else { $Path }
+    $value = $value.Replace("\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($value)) { return $Default }
+    if ($value -match '(^|/)\.\.($|/)') { return $Default }
+    if ($value -notmatch '^[A-Za-z0-9._~/-]+$') { return $Default }
+    return $value
+}
+function Get-DefaultProxyHealthUrl($Config) {
+    $configured = Get-ConfigString $Config "ProxyHealthUrl" ""
+    if ($configured) { return $configured }
+
+    $reverseProxy = Normalize-Name (Get-ConfigString $Config "ReverseProxy" "none")
+    if ([string]::IsNullOrWhiteSpace($reverseProxy) -or $reverseProxy -eq "none") { return "" }
+
+    $tlsEnabled = Get-ConfigBool $Config "TlsEnabled" $false
+    $scheme = if ($tlsEnabled) { "https" } else { "http" }
+    $defaultPort = if ($tlsEnabled) { 443 } else { 80 }
+    $publicPort = Get-ConfigInt $Config "PublicPort" $defaultPort
+    $path = Get-SafeRelativeUrlPath (Get-ConfigString $Config "IisHealthProxyPath" "health") "health"
+    return ("{0}://127.0.0.1:{1}/{2}" -f $scheme, $publicPort, $path)
+}
+function Get-NormalizedPathForCompare([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    try {
+        return ([System.IO.Path]::GetFullPath($expanded)).TrimEnd([char[]]@('\', '/'))
+    } catch {
+        return $expanded.TrimEnd([char[]]@('\', '/'))
+    }
+}
+function Get-IisExpectedBindingInformation([string]$Protocol, [int]$Port, [string]$HostHeader) {
+    if ([string]::IsNullOrWhiteSpace($HostHeader)) { return "*:${Port}:" }
+    return "*:${Port}:$HostHeader"
+}
+function Get-IisSitesForBinding([string]$Protocol, [string]$BindingInformation) {
+    $matches = New-Object System.Collections.Generic.List[object]
+    foreach ($site in @(Get-ChildItem IIS:\Sites -ErrorAction SilentlyContinue)) {
+        foreach ($binding in @($site.Bindings.Collection)) {
+            if ([string]$binding.protocol -eq $Protocol -and [string]$binding.bindingInformation -eq $BindingInformation) {
+                $matches.Add([pscustomobject]@{
+                    SiteName = [string]$site.Name
+                    State = [string]$site.State
+                    PhysicalPath = [string]$site.PhysicalPath
+                }) | Out-Null
+            }
+        }
+    }
+    return @($matches)
+}
+function Get-IisReverseProxyEvidence($Config, [string]$Mode) {
+    $empty = [pscustomobject]@{
+        Applicable = $false
+        ModuleAvailable = $false
+        SiteName = ""
+        SiteExists = $false
+        SiteState = ""
+        SitePathName = ""
+        ConfiguredSitePathName = ""
+        SitePathMatchesConfig = $null
+        AppPoolName = ""
+        PublicPort = 0
+        BindingProtocol = ""
+        BindingHostConfigured = $false
+        BindingMatchesConfig = $null
+        DuplicateBindingCount = 0
+        DuplicateBindingConflict = $false
+    }
+    if ((Normalize-Name $Mode) -ne "iis") { return $empty }
+
+    $siteName = Get-ConfigString $Config "IisSiteName" ([string]$Config.AppName)
+    $configuredSitePath = Get-ConfigString $Config "IisSitePath" ""
+    $appPoolName = Get-ConfigString $Config "IisAppPoolName" "$([string]$Config.AppName)-AppPool"
+    $publicHostName = Get-ConfigString $Config "PublicHostName" ""
+    $tlsEnabled = Get-ConfigBool $Config "TlsEnabled" $false
+    $defaultPort = if ($tlsEnabled) { 443 } else { 80 }
+    $publicPort = Get-ConfigInt $Config "PublicPort" $defaultPort
+    $protocol = if ($tlsEnabled) { "https" } else { "http" }
+    $expectedBinding = Get-IisExpectedBindingInformation -Protocol $protocol -Port $publicPort -HostHeader $publicHostName
+
+    $evidence = [pscustomobject]@{
+        Applicable = $true
+        ModuleAvailable = $false
+        SiteName = $siteName
+        SiteExists = $false
+        SiteState = ""
+        SitePathName = ""
+        ConfiguredSitePathName = Get-SafePathLeaf $configuredSitePath
+        SitePathMatchesConfig = $null
+        AppPoolName = $appPoolName
+        PublicPort = $publicPort
+        BindingProtocol = $protocol
+        BindingHostConfigured = -not [string]::IsNullOrWhiteSpace($publicHostName)
+        BindingMatchesConfig = $null
+        DuplicateBindingCount = 0
+        DuplicateBindingConflict = $false
+    }
+
+    if (-not (Get-Module -ListAvailable -Name WebAdministration)) {
+        Add-Finding -Severity Warning -Message "IIS WebAdministration module was not found; IIS site and binding evidence could not be collected."
+        return $evidence
+    }
+    try {
+        Import-Module WebAdministration -ErrorAction Stop
+        $evidence.ModuleAvailable = $true
+    } catch {
+        Add-Finding -Severity Warning -Message "IIS WebAdministration module could not be loaded; IIS site and binding evidence could not be collected."
+        return $evidence
+    }
+
+    $site = Get-Website -Name $siteName -ErrorAction SilentlyContinue
+    if ($site) {
+        $evidence.SiteExists = $true
+        $evidence.SiteState = [string]$site.State
+        $evidence.SitePathName = Get-SafePathLeaf ([string]$site.PhysicalPath)
+        if (-not [string]::IsNullOrWhiteSpace($configuredSitePath)) {
+            $evidence.SitePathMatchesConfig = (
+                (Get-NormalizedPathForCompare ([string]$site.PhysicalPath)) -ieq
+                (Get-NormalizedPathForCompare $configuredSitePath)
+            )
+            if (-not $evidence.SitePathMatchesConfig) {
+                Add-Finding -Severity Critical -Message "Configured IIS site physical path does not match IisSitePath."
+            }
+        }
+    } else {
+        Add-Finding -Severity Critical -Message "Configured IIS reverse proxy site was not found."
+    }
+
+    $bindingSites = @(Get-IisSitesForBinding -Protocol $protocol -BindingInformation $expectedBinding)
+    $bindingOnConfiguredSite = @($bindingSites | Where-Object { $_.SiteName -eq $siteName }).Count -gt 0
+    $conflictingBindings = @($bindingSites | Where-Object { $_.SiteName -ne $siteName })
+    $evidence.BindingMatchesConfig = $bindingOnConfiguredSite
+    $evidence.DuplicateBindingCount = $conflictingBindings.Count
+    $evidence.DuplicateBindingConflict = $conflictingBindings.Count -gt 0
+    if (-not $bindingOnConfiguredSite) {
+        Add-Finding -Severity Critical -Message "Configured IIS site does not own the expected public binding."
+    }
+    if ($conflictingBindings.Count -gt 0) {
+        Add-Finding -Severity Critical -Message "Expected IIS public binding is also assigned to another IIS site."
+    }
+
+    return $evidence
+}
+function New-ReverseProxyEvidence {
+    param(
+        [bool]$Applicable,
+        [string]$Mode,
+        [string]$Status,
+        [string]$ProbeUrl = "",
+        $StatusCode = $null,
+        $ResponseMs = $null,
+        $IisEvidence = $null
+    )
+    if ($null -eq $IisEvidence) {
+        $IisEvidence = Get-IisReverseProxyEvidence $config $Mode
+    }
+    return [pscustomobject]@{
+        Applicable = $Applicable
+        Mode = $Mode
+        Status = $Status
+        ProbeUrl = $ProbeUrl
+        StatusCode = $StatusCode
+        ResponseMs = $ResponseMs
+        Iis = $IisEvidence
+    }
+}
+function Get-FirstLineFromFile([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
+    try {
+        return [string](Get-Content -Path $Path -TotalCount 1 -ErrorAction Stop)
+    } catch {
+        return ""
+    }
+}
+function Get-NextBuildId([string]$AppDirectory, [string]$RuntimeRoot) {
+    foreach ($root in @($RuntimeRoot, $AppDirectory) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) {
+        $candidate = Join-Path $root ".next\BUILD_ID"
+        $value = Get-FirstLineFromFile $candidate
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+    }
+    return ""
+}
+function Get-DeploymentManifest($AppDirectory) {
+    if ([string]::IsNullOrWhiteSpace($AppDirectory)) { return $null }
+    $manifestPath = Join-Path $AppDirectory ".node-enterprise-deploy.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $null }
+    try {
+        return Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        Add-Finding -Severity Warning -Message "Deployment manifest exists but could not be parsed."
+        return $null
+    }
+}
+function Get-ManifestString($Manifest, [string]$Name) {
+    if ($null -eq $Manifest) { return "" }
+    if ($Manifest.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Manifest.$Name)) {
+        return [string]$Manifest.$Name
+    }
+    return ""
+}
+function Update-DeploymentIdentityEvidence {
+    $appDirectory = Get-ConfigString $config "AppDirectory" ""
+    $manifest = Get-DeploymentManifest $appDirectory
+    $manifestExists = $null -ne $manifest
+    $manifestDeploymentId = Get-ManifestString $manifest "deploymentId"
+    $manifestNextBuildId = Get-ManifestString $manifest "nextBuildId"
+    $packageSha256 = Get-ManifestString $manifest "packageSha256"
+    $deploymentId = Get-ConfigString $config "DeploymentId" ""
+    if ([string]::IsNullOrWhiteSpace($deploymentId)) {
+        $deploymentId = Get-ConfigEnvironmentString $config "NEXT_DEPLOYMENT_ID" ""
+    }
+    if ([string]::IsNullOrWhiteSpace($deploymentId)) {
+        $deploymentId = Get-ConfigEnvironmentString $config "DEPLOYMENT_ID" ""
+    }
+    if ([string]::IsNullOrWhiteSpace($deploymentId)) {
+        $deploymentId = $manifestDeploymentId
+    }
+    $nextBuildId = ""
+    if ($script:nextJsRuntimeEvidence -and $script:nextJsRuntimeEvidence.Applicable) {
+        $nextBuildId = Get-NextBuildId -AppDirectory $appDirectory -RuntimeRoot ([string]$script:nextJsRuntimeEvidence.RuntimeRoot)
+    }
+    if ([string]::IsNullOrWhiteSpace($nextBuildId)) {
+        $nextBuildId = $manifestNextBuildId
+    }
+    $status = if (-not [string]::IsNullOrWhiteSpace($deploymentId) -or -not [string]::IsNullOrWhiteSpace($nextBuildId) -or -not [string]::IsNullOrWhiteSpace($packageSha256)) { "ok" } else { "unknown" }
+    $script:deploymentIdentityEvidence = [pscustomobject]@{
+        AppDirectory = $appDirectory
+        AppDirectoryName = if ($appDirectory) { Split-Path -Leaf $appDirectory } else { "" }
+        DeploymentId = $deploymentId
+        NextBuildId = $nextBuildId
+        ManifestExists = $manifestExists
+        ManifestSchema = Get-ManifestString $manifest "schema"
+        PackageName = Get-ManifestString $manifest "packageName"
+        PackageSha256 = $packageSha256
+        PackageImportedAtUtc = Get-ManifestString $manifest "generatedAtUtc"
+        ManifestNextBuildId = $manifestNextBuildId
+        Status = $status
+    }
 }
 function Test-AllOwnersMatch {
     param(
@@ -145,6 +600,189 @@ function Get-HealthLogSummary([string]$Path) {
         RetentionRemoved = @($lines | Where-Object { $_ -match 'RETENTION_REMOVED' }).Count
     }
 }
+function Show-NextJsRuntimeLayout {
+    $framework = Normalize-Name (Get-ConfigString $config "AppFramework" "node")
+    $script:nextJsRuntimeEvidence = [pscustomobject]@{
+        Applicable = $false
+        Status = "not-applicable"
+        AppFramework = $framework
+        Mode = ""
+        RuntimeRoot = ""
+    }
+    if ($framework -notin @("next", "nextjs", "next-js")) { return }
+
+    Write-Host ""
+    Write-Host "Next.js runtime layout" -ForegroundColor Yellow
+
+    $layoutFailed = $false
+    $mode = Normalize-Name (Get-ConfigString $config "NextjsDeploymentMode" "standalone")
+    $appDirectory = Get-ConfigString $config "AppDirectory"
+    $startCommand = Get-ConfigString $config "StartCommand" "server.js"
+    $nodeArguments = Get-ConfigString $config "NodeArguments" ""
+    $bindAddress = Get-ConfigString $config "BindAddress" "127.0.0.1"
+    $requiresStatic = Get-ConfigBool $config "NextjsRequireStaticAssets" $true
+    $requiresPublic = Get-ConfigBool $config "NextjsRequirePublicDirectory" $false
+    $startHasArguments = $startCommand -match '\s'
+    $startPath = ""
+    $runtimeRoot = $appDirectory
+
+    if ([string]::IsNullOrWhiteSpace($appDirectory)) {
+        Add-Finding -Severity Critical -Message "Next.js config is missing AppDirectory."
+        $layoutFailed = $true
+        $script:nextJsRuntimeEvidence = [pscustomobject]@{
+            Applicable = $true
+            Status = "failed"
+            AppFramework = "nextjs"
+            Mode = $mode
+            AppDirectoryExists = $false
+            RuntimeRoot = ""
+            StartCommand = $startCommand
+            ServerJsExists = $false
+            DotNextExists = $false
+            BuildIdExists = $false
+            StaticAssetsExist = $false
+            PublicDirectoryExists = $false
+            NodeModulesExists = $false
+        }
+        $script:nextJsRuntimeEvidence | Format-List
+        return
+    } elseif (-not (Test-Path -LiteralPath $appDirectory -PathType Container)) {
+        Add-Finding -Severity Critical -Message "Next.js AppDirectory was not found: $appDirectory"
+        $layoutFailed = $true
+    }
+
+    if ($mode -eq "standalone" -and -not $startHasArguments) {
+        if ([System.IO.Path]::IsPathRooted($startCommand)) {
+            $startPath = $startCommand
+        } elseif (Test-SafeRelativePath $startCommand) {
+            $startPath = Join-Path $appDirectory $startCommand
+        } else {
+            Add-Finding -Severity Critical -Message "Next.js StartCommand is not a safe relative path: $startCommand"
+            $layoutFailed = $true
+        }
+        if ($startPath) {
+            $runtimeRoot = Split-Path -Parent $startPath
+        }
+    } elseif ($mode -eq "standalone") {
+        Add-Finding -Severity Warning -Message "Next.js standalone layout verification skipped StartCommand path because it contains arguments."
+    }
+
+    $serverPath = if ($startPath) { $startPath } else { Join-Path $runtimeRoot "server.js" }
+    $nextPath = Join-Path $runtimeRoot ".next"
+    $buildIdPath = Join-Path $nextPath "BUILD_ID"
+    $staticPath = Join-Path $nextPath "static"
+    $publicPath = Join-Path $runtimeRoot "public"
+    $nodeModulesPath = Join-Path $runtimeRoot "node_modules"
+    $packagePath = Join-Path $appDirectory "package.json"
+    $nextPackagePath = Join-Path $appDirectory "node_modules\next"
+
+    $script:nextJsRuntimeEvidence = [pscustomobject]@{
+        Applicable = $true
+        Status = "pending"
+        AppFramework = "nextjs"
+        Mode = $mode
+        AppDirectoryExists = (Test-Path -LiteralPath $appDirectory -PathType Container)
+        RuntimeRoot = $runtimeRoot
+        StartCommand = $startCommand
+        NodeArguments = $nodeArguments
+        BindAddress = $bindAddress
+        ServerJsExists = (Test-Path -LiteralPath $serverPath -PathType Leaf)
+        DotNextExists = (Test-Path -LiteralPath $nextPath -PathType Container)
+        BuildIdExists = (Test-Path -LiteralPath $buildIdPath -PathType Leaf)
+        StaticAssetsExist = (Test-Path -LiteralPath $staticPath -PathType Container)
+        PublicDirectoryExists = (Test-Path -LiteralPath $publicPath -PathType Container)
+        NodeModulesExists = (Test-Path -LiteralPath $nodeModulesPath -PathType Container)
+    }
+
+    switch ($mode) {
+        "standalone" {
+            if ($startPath -and (Split-Path -Leaf $startPath) -ne "server.js") {
+                Add-Finding -Severity Warning -Message "Next.js standalone StartCommand normally points to server.js."
+            }
+            if ($startPath -and -not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone server.js was not found at: $serverPath"
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $nextPath -PathType Container)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing .next: $nextPath"
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $buildIdPath -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing .next\BUILD_ID: $buildIdPath"
+                $layoutFailed = $true
+            }
+            if ($requiresStatic -and -not (Test-Path -LiteralPath $staticPath -PathType Container)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing .next/static: $staticPath"
+                $layoutFailed = $true
+            }
+            if ($requiresPublic -and -not (Test-Path -LiteralPath $publicPath -PathType Container)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing public directory: $publicPath"
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
+                Add-Finding -Severity Warning -Message "Next.js standalone runtime root has no node_modules directory. Confirm the artifact includes traced dependencies."
+            }
+        }
+        "next-start" {
+            if ([string]::IsNullOrWhiteSpace($startCommand) -or $startHasArguments) {
+                Add-Finding -Severity Critical -Message "Next.js next-start StartCommand must be a single file path."
+                $layoutFailed = $true
+            } else {
+                $nextStartCommandPath = if ([System.IO.Path]::IsPathRooted($startCommand)) { $startCommand } elseif (Test-SafeRelativePath $startCommand) { Join-Path $appDirectory $startCommand } else { "" }
+                if ([string]::IsNullOrWhiteSpace($nextStartCommandPath)) {
+                    Add-Finding -Severity Critical -Message "Next.js next-start StartCommand is not a safe relative path: $startCommand"
+                    $layoutFailed = $true
+                } else {
+                    $normalizedStartCommand = ($nextStartCommandPath -replace "\\", "/").ToLowerInvariant()
+                    if (-not (Test-Path -LiteralPath $nextStartCommandPath -PathType Leaf)) {
+                        Add-Finding -Severity Critical -Message "Next.js next-start StartCommand file was not found: $nextStartCommandPath"
+                        $layoutFailed = $true
+                    }
+                    if ($normalizedStartCommand -notmatch '/node_modules/next/') {
+                        Add-Finding -Severity Critical -Message "Next.js next-start StartCommand should point to the Next CLI under node_modules/next."
+                        $layoutFailed = $true
+                    }
+                }
+            }
+            $argumentTokens = @(Split-ArgumentTokens $nodeArguments)
+            if ($argumentTokens.Count -eq 0 -or $argumentTokens[0] -ne "start") {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode requires NodeArguments to start with 'start'."
+                $layoutFailed = $true
+            }
+            $hostnameArgument = Get-HostnameArgumentValue $argumentTokens
+            if ([string]::IsNullOrWhiteSpace($hostnameArgument)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode requires NodeArguments to include '-H $bindAddress' or '--hostname $bindAddress'."
+                $layoutFailed = $true
+            } elseif ($hostnameArgument -ne $bindAddress) {
+                Add-Finding -Severity Critical -Message "Next.js next-start hostname argument '$hostnameArgument' must match BindAddress '$bindAddress'."
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode is missing package.json under AppDirectory."
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $appDirectory ".next") -PathType Container)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode is missing .next under AppDirectory."
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $appDirectory ".next\BUILD_ID") -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode is missing .next\BUILD_ID under AppDirectory."
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $nextPackagePath -PathType Container)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode is missing node_modules/next under AppDirectory."
+                $layoutFailed = $true
+            }
+        }
+        default {
+            Add-Finding -Severity Critical -Message "NextjsDeploymentMode must be standalone or next-start."
+            $layoutFailed = $true
+        }
+    }
+
+    $script:nextJsRuntimeEvidence.Status = if ($layoutFailed) { "failed" } else { "ok" }
+    $script:nextJsRuntimeEvidence | Format-List
+}
 
 Write-Host "Status for: $serviceName" -ForegroundColor Cyan
 Write-Host "Config: $ConfigPath"
@@ -158,7 +796,19 @@ if ($HealthTimeoutSeconds -lt 1) {
 
 Write-Host "Host uptime" -ForegroundColor Yellow
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+$platformEvidence = [pscustomobject]@{
+    Family = "windows"
+    OsCaption = if ($os) { [string]$os.Caption } else { "" }
+    OsVersion = if ($os) { [string]$os.Version } else { "" }
+    OsBuildNumber = if ($os) { [string]$os.BuildNumber } else { "" }
+    OsArchitecture = if ($os) { [string]$os.OSArchitecture } else { "" }
+    ServiceManager = Get-ConfigString $config "ServiceManager" "winsw"
+    ReverseProxy = Get-ConfigString $config "ReverseProxy" ""
+    AppFramework = Get-ConfigString $config "AppFramework" "node"
+    NextjsDeploymentMode = Get-ConfigString $config "NextjsDeploymentMode" ""
+}
 if ($os -and $os.LastBootUpTime) {
+    $script:uptimeEvidence.HostUptimeSeconds = [int64]((Get-Date) - $os.LastBootUpTime).TotalSeconds
     [pscustomobject]@{
         ComputerName = $env:COMPUTERNAME
         LastBootUpTime = $os.LastBootUpTime
@@ -202,11 +852,17 @@ if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessI
     if ($wrapper) {
         Write-Host ""
         Write-Host "Service wrapper uptime" -ForegroundColor Yellow
+        $wrapperUptimeSeconds = [int64]((Get-Date) - $wrapper.StartTime).TotalSeconds
+        $script:uptimeEvidence.ServiceUptimeSeconds = $wrapperUptimeSeconds
+        $script:uptimeEvidence.ServiceStartKnown = $true
+        if ($MinimumUptimeHours -gt 0) {
+            $script:uptimeEvidence.MinimumSatisfied = ($wrapperUptimeSeconds -ge ($MinimumUptimeHours * 3600))
+        }
         $wrapper |
             Select-Object Id, StartTime, @{Name="Uptime";Expression={ Format-Uptime $_.StartTime }}, Path |
             Format-Table -AutoSize
         if ($MinimumUptimeHours -gt 0) {
-            $uptimeHours = ((Get-Date) - $wrapper.StartTime).TotalHours
+            $uptimeHours = ($wrapperUptimeSeconds / 3600)
             if ($uptimeHours -lt $MinimumUptimeHours) {
                 Add-Finding -Severity Warning -Message ("Service wrapper uptime is {0:N1} hours, below requested minimum of {1} hours." -f $uptimeHours, $MinimumUptimeHours)
             }
@@ -246,18 +902,36 @@ if ($nodeProcesses -and $serviceProcessIds.Count -gt 0) {
     }
 }
 
+Show-NextJsRuntimeLayout
+Update-DeploymentIdentityEvidence
+
+Write-Host ""
+Write-Host "Deployment identity" -ForegroundColor Yellow
+$script:deploymentIdentityEvidence |
+    Select-Object Status, AppDirectoryName, DeploymentId, NextBuildId, ManifestExists, PackageName, PackageSha256, PackageImportedAtUtc |
+    Format-List
+
 Write-Host ""
 Write-Host "Configured port listener" -ForegroundColor Yellow
+$script:portEvidence.Checked = $true
+$script:portEvidence.Port = $configuredPort
+$script:portEvidence.ServiceProcessIdsKnown = ($serviceProcessIds.Count -gt 0)
 $portConnections = Get-NetTCPConnection -LocalPort $configuredPort -State Listen -ErrorAction SilentlyContinue
 if ($portConnections) {
     $portConnections | Select-Object LocalAddress, LocalPort, State, OwningProcess | Format-Table -AutoSize
     $configuredPortOwnerIds = @($portConnections | Select-Object -ExpandProperty OwningProcess -Unique)
+    $script:portEvidence.Listening = $true
+    $script:portEvidence.OwnerReadable = $true
+    $script:portEvidence.OwnerProcessCount = $configuredPortOwnerIds.Count
     if (Test-AllOwnersMatch -OwnerProcessIds $configuredPortOwnerIds -ExpectedProcessIds $serviceProcessIds) {
+        $script:portEvidence.OwnedByService = $true
         Write-Host "Configured port $configuredPort is owned by the configured service process tree." -ForegroundColor Green
     } else {
+        $script:portEvidence.OwnedByService = $false
         Add-Finding -Severity Critical -Message "Configured port $configuredPort is listening, but owner process ID(s) $($configuredPortOwnerIds -join ', ') do not all belong to the configured service process tree."
     }
 } else {
+    $script:portEvidence.Listening = $false
     Add-Finding -Severity Critical -Message "No listener was found on configured port $configuredPort."
     Write-Warning "No listener found on configured port $configuredPort."
 }
@@ -280,28 +954,71 @@ if ($serviceProcessIds.Count -gt 0) {
 
 Write-Host ""
 Write-Host "HTTP health" -ForegroundColor Yellow
+$script:healthEvidence.Checked = $true
+$script:healthEvidence.Url = Get-SafeUrl $healthUrl
+$script:healthEvidence.TimeoutSeconds = $HealthTimeoutSeconds
 if ($healthUrl) {
     try {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
         $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec $HealthTimeoutSeconds
         $timer.Stop()
+        $healthStatus = if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { "ok" } else { "failed" }
         $healthResult = [pscustomobject]@{
             StatusCode = $response.StatusCode
             StatusDescription = $response.StatusDescription
             ResponseMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 0)
             TimeoutSeconds = $HealthTimeoutSeconds
         }
+        $script:healthEvidence.Status = $healthStatus
+        $script:healthEvidence.StatusCode = [int]$response.StatusCode
+        $script:healthEvidence.ResponseMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 0)
         $healthResult | Format-Table -AutoSize
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 400) {
-            Add-Finding -Severity Critical -Message "Health probe returned HTTP $($response.StatusCode) for $healthUrl."
+            Add-Finding -Severity Critical -Message "Health probe returned HTTP $($response.StatusCode) for $(Get-SafeUrl $healthUrl)."
         }
     } catch {
-        Add-Finding -Severity Critical -Message "Health probe failed for configured HealthUrl: $($_.Exception.Message)"
+        $script:healthEvidence.Status = "failed"
+        Add-Finding -Severity Critical -Message "Health probe failed for configured HealthUrl $(Get-SafeUrl $healthUrl): $($_.Exception.Message)"
         Write-Warning "Health probe failed for configured HealthUrl. $($_.Exception.Message)"
     }
 } else {
+    $script:healthEvidence.Status = "not-configured"
     Add-Finding -Severity Critical -Message "No HealthUrl is configured."
     Write-Warning "No HealthUrl configured."
+}
+
+Write-Host ""
+Write-Host "Reverse proxy health" -ForegroundColor Yellow
+$reverseProxyMode = Normalize-Name (Get-ConfigString $config "ReverseProxy" "none")
+$proxyHealthUrl = Get-DefaultProxyHealthUrl $config
+$iisReverseProxyEvidence = Get-IisReverseProxyEvidence $config $reverseProxyMode
+if ([string]::IsNullOrWhiteSpace($reverseProxyMode) -or $reverseProxyMode -eq "none") {
+    $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $false -Mode $reverseProxyMode -Status "not-applicable" -IisEvidence $iisReverseProxyEvidence
+    Write-Host "Reverse proxy check not applicable." -ForegroundColor DarkGray
+} elseif ([string]::IsNullOrWhiteSpace($proxyHealthUrl)) {
+    $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $true -Mode $reverseProxyMode -Status "not-configured" -IisEvidence $iisReverseProxyEvidence
+    Add-Finding -Severity Warning -Message "ReverseProxy is '$reverseProxyMode', but no proxy health probe URL could be determined."
+    Write-Warning "Reverse proxy health probe URL not configured."
+} else {
+    try {
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $proxyResponse = Invoke-WebRequest -Uri $proxyHealthUrl -UseBasicParsing -TimeoutSec $HealthTimeoutSeconds
+        $timer.Stop()
+        $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $true -Mode $reverseProxyMode -Status $(if ($proxyResponse.StatusCode -ge 200 -and $proxyResponse.StatusCode -lt 400) { "ok" } else { "failed" }) -ProbeUrl (Get-SafeUrl $proxyHealthUrl) -StatusCode ([int]$proxyResponse.StatusCode) -ResponseMs ([Math]::Round($timer.Elapsed.TotalMilliseconds, 0)) -IisEvidence $iisReverseProxyEvidence
+        $script:reverseProxyEvidence | Format-Table Mode, Status, StatusCode, ResponseMs, ProbeUrl -AutoSize
+        if ($script:reverseProxyEvidence.Status -ne "ok") {
+            Add-Finding -Severity Warning -Message "Reverse proxy probe returned HTTP $($proxyResponse.StatusCode) for $(Get-SafeUrl $proxyHealthUrl)."
+        }
+    } catch {
+        $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $true -Mode $reverseProxyMode -Status "failed" -ProbeUrl (Get-SafeUrl $proxyHealthUrl) -IisEvidence $iisReverseProxyEvidence
+        Add-Finding -Severity Warning -Message "Reverse proxy probe failed for $(Get-SafeUrl $proxyHealthUrl): $($_.Exception.Message)"
+        Write-Warning "Reverse proxy probe failed. $($_.Exception.Message)"
+    }
+}
+if ($script:reverseProxyEvidence.Iis -and $script:reverseProxyEvidence.Iis.Applicable) {
+    $script:reverseProxyEvidence.Iis |
+        Select-Object SiteName, SiteExists, SiteState, SitePathName, ConfiguredSitePathName, SitePathMatchesConfig, PublicPort, BindingProtocol, BindingMatchesConfig, DuplicateBindingCount |
+        Format-List
 }
 
 Write-Host ""
@@ -309,12 +1026,16 @@ Write-Host "Health check task" -ForegroundColor Yellow
 $taskName = "$serviceName-HealthCheck"
 $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($task) {
+    $script:healthMonitorEvidence.Scheduled = $true
+    $script:healthMonitorEvidence.TaskExists = $true
     $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
     if ($taskInfo) {
         $taskInfo |
             Select-Object TaskName, LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns |
             Format-Table -AutoSize
         $nonFailureTaskCodes = @(0, 267009, 267010, 267011, 267014)
+        $script:healthMonitorEvidence.TaskLastResult = [int]$taskInfo.LastTaskResult
+        $script:healthMonitorEvidence.TaskMissedRuns = [int]$taskInfo.NumberOfMissedRuns
         if ($nonFailureTaskCodes -notcontains [int]$taskInfo.LastTaskResult) {
             Add-Finding -Severity Warning -Message "Health check task last result is $($taskInfo.LastTaskResult), not a known success/running code."
         }
@@ -339,6 +1060,8 @@ if ($statePath -and (Test-Path $statePath)) {
         $lastSuccess = Get-DateTimeFromStateValue $state.LastSuccessUtc
         $lastCheck = Get-DateTimeFromStateValue $state.LastCheckUtc
         $lastRestart = Get-DateTimeFromStateValue $state.LastRestartUtc
+        $script:healthMonitorEvidence.StateExists = $true
+        $script:healthMonitorEvidence.ConsecutiveFailures = [int]$state.ConsecutiveFailures
         [pscustomobject]@{
             ConsecutiveFailures = $state.ConsecutiveFailures
             LastCheck = Format-OptionalUtc $state.LastCheckUtc
@@ -354,6 +1077,10 @@ if ($statePath -and (Test-Path $statePath)) {
         $staleAfter = [TimeSpan]::FromMinutes([Math]::Max(5, $healthIntervalMinutes * 3))
         if ($lastSuccess -and ((Get-Date) - $lastSuccess) -gt $staleAfter) {
             Add-Finding -Severity Warning -Message "Last successful health check is older than $([int]$staleAfter.TotalMinutes) minutes."
+        }
+        if ($lastSuccess) {
+            $script:healthMonitorEvidence.LastSuccessAgeSeconds = [int64]((Get-Date) - $lastSuccess).TotalSeconds
+            $script:healthMonitorEvidence.LastSuccessFresh = (((Get-Date) - $lastSuccess) -le $staleAfter)
         }
         if (-not $lastSuccess) {
             Add-Finding -Severity Warning -Message "Health state has no recorded successful check yet."
@@ -376,6 +1103,9 @@ if ($statePath -and (Test-Path $statePath)) {
 $healthLogPath = if ($config.LogDirectory) { Join-Path $config.LogDirectory "healthcheck.log" } else { "" }
 $healthLogSummary = if ($healthLogPath) { Get-HealthLogSummary $healthLogPath } else { $null }
 if ($healthLogSummary) {
+    $script:healthMonitorEvidence.LogExists = $true
+    $script:healthMonitorEvidence.LogFailureCount = [int]$healthLogSummary.Failed
+    $script:healthMonitorEvidence.LogRestartCount = [int]$healthLogSummary.Restarted
     $healthLogSummary | Format-Table -AutoSize
     if ($healthLogSummary.Restarted -gt 0) {
         Add-Finding -Severity Warning -Message "Recent sampled health log contains $($healthLogSummary.Restarted) restart event(s)."
@@ -387,6 +1117,16 @@ if ($healthLogSummary) {
     Add-Finding -Severity Warning -Message "Health check log was not found yet."
     Write-Warning "Health check log not found yet."
 }
+
+$script:healthMonitorEvidence.Status = if (
+    $script:healthMonitorEvidence.TaskExists -and
+    $script:healthMonitorEvidence.StateExists -and
+    $script:healthMonitorEvidence.LastSuccessFresh -and
+    $script:healthMonitorEvidence.ConsecutiveFailures -eq 0 -and
+    $script:healthMonitorEvidence.LogExists -and
+    (($null -ne $script:healthMonitorEvidence.LogFailureCount) -and $script:healthMonitorEvidence.LogFailureCount -eq 0) -and
+    (($null -ne $script:healthMonitorEvidence.LogRestartCount) -and $script:healthMonitorEvidence.LogRestartCount -eq 0)
+) { "ok" } else { "warning" }
 
 Write-Host ""
 Write-Host "Recent log files" -ForegroundColor Yellow
@@ -422,20 +1162,99 @@ Write-Host "Operational verdict" -ForegroundColor Yellow
 $verdict = Get-WorstFindingSeverity
 $criticalCount = @($script:findings | Where-Object { $_.Severity -eq "Critical" }).Count
 $warningCount = @($script:findings | Where-Object { $_.Severity -eq "Warning" }).Count
-[pscustomobject]@{
+$sortedFindings = @($script:findings |
+    Sort-Object @{ Expression = { if ($_.Severity -eq "Critical") { 0 } elseif ($_.Severity -eq "Warning") { 1 } else { 2 } } }, Message)
+$safeFindings = @($sortedFindings | ForEach-Object {
+    [pscustomobject]@{
+        Severity = $_.Severity
+        Message = Get-SafeEvidenceText ([string]$_.Message)
+    }
+})
+$statusEvidence = [pscustomobject]@{
+    EvidenceSchemaVersion = 1
+    GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    AppName = $serviceName
+    ConfigFileName = Get-SafePathLeaf $ConfigPath
+    HealthUrl = Get-SafeUrl $healthUrl
+    Platform = $platformEvidence
+    NextJsRuntime = Get-SafeNextJsRuntimeEvidence $script:nextJsRuntimeEvidence
+    ReverseProxy = $script:reverseProxyEvidence
+    DeploymentIdentity = Get-SafeDeploymentIdentityEvidence $script:deploymentIdentityEvidence
+    Service = [pscustomobject]@{
+        Installed = [bool]$service
+        Status = if ($service) { [string]$service.Status } else { "NotFound" }
+        StartType = if ($service) { [string]$service.StartType } else { "" }
+        Win32State = if ($serviceProcess) { [string]$serviceProcess.State } else { "" }
+        Win32StartMode = if ($serviceProcess) { [string]$serviceProcess.StartMode } else { "" }
+        ProcessId = if ($serviceProcess) { [int]$serviceProcess.ProcessId } else { 0 }
+    }
+    Port = [pscustomobject]@{
+        Checked = [bool]$script:portEvidence.Checked
+        Port = [int]$script:portEvidence.Port
+        Listening = [bool]$script:portEvidence.Listening
+        OwnerReadable = [bool]$script:portEvidence.OwnerReadable
+        OwnerProcessCount = [int]$script:portEvidence.OwnerProcessCount
+        ServiceProcessIdsKnown = [bool]$script:portEvidence.ServiceProcessIdsKnown
+        OwnedByService = [bool]$script:portEvidence.OwnedByService
+    }
+    Health = [pscustomobject]@{
+        Checked = [bool]$script:healthEvidence.Checked
+        Url = [string]$script:healthEvidence.Url
+        Status = [string]$script:healthEvidence.Status
+        StatusCode = $script:healthEvidence.StatusCode
+        ResponseMs = $script:healthEvidence.ResponseMs
+        TimeoutSeconds = [int]$script:healthEvidence.TimeoutSeconds
+    }
+    Uptime = [pscustomobject]@{
+        HostUptimeSeconds = $script:uptimeEvidence.HostUptimeSeconds
+        ServiceUptimeSeconds = $script:uptimeEvidence.ServiceUptimeSeconds
+        MinimumUptimeHours = [int]$script:uptimeEvidence.MinimumUptimeHours
+        MinimumSatisfied = $script:uptimeEvidence.MinimumSatisfied
+        ServiceStartKnown = [bool]$script:uptimeEvidence.ServiceStartKnown
+    }
+    HealthMonitor = [pscustomobject]@{
+        Status = [string]$script:healthMonitorEvidence.Status
+        Scheduled = [bool]$script:healthMonitorEvidence.Scheduled
+        ScheduleType = [string]$script:healthMonitorEvidence.ScheduleType
+        TaskExists = [bool]$script:healthMonitorEvidence.TaskExists
+        TaskLastResult = $script:healthMonitorEvidence.TaskLastResult
+        TaskMissedRuns = $script:healthMonitorEvidence.TaskMissedRuns
+        StateExists = [bool]$script:healthMonitorEvidence.StateExists
+        ConsecutiveFailures = $script:healthMonitorEvidence.ConsecutiveFailures
+        LastSuccessAgeSeconds = $script:healthMonitorEvidence.LastSuccessAgeSeconds
+        LastSuccessFresh = [bool]$script:healthMonitorEvidence.LastSuccessFresh
+        LogExists = [bool]$script:healthMonitorEvidence.LogExists
+        LogFailureCount = $script:healthMonitorEvidence.LogFailureCount
+        LogRestartCount = $script:healthMonitorEvidence.LogRestartCount
+    }
     Verdict = $verdict
     Critical = $criticalCount
     Warnings = $warningCount
     MinimumUptimeHours = $MinimumUptimeHours
     HealthTimeoutSeconds = $HealthTimeoutSeconds
-} | Format-List
+    Findings = $safeFindings
+}
+$statusEvidence |
+    Select-Object Verdict, Critical, Warnings, MinimumUptimeHours, HealthTimeoutSeconds |
+    Format-List
 
 if ($script:findings.Count -gt 0) {
-    $script:findings |
-        Sort-Object @{ Expression = { if ($_.Severity -eq "Critical") { 0 } elseif ($_.Severity -eq "Warning") { 1 } else { 2 } } }, Message |
-        Format-Table Severity, Message -Wrap
+    $sortedFindings | Format-Table Severity, Message -Wrap
 } else {
     Write-Host "No critical or warning findings." -ForegroundColor Green
+}
+
+if (-not [string]::IsNullOrWhiteSpace($JsonPath)) {
+    $jsonOutputPath = $JsonPath
+    if (-not [System.IO.Path]::IsPathRooted($jsonOutputPath)) {
+        $jsonOutputPath = Join-Path (Get-Location) $jsonOutputPath
+    }
+    $jsonDirectory = Split-Path -Parent $jsonOutputPath
+    if ($jsonDirectory) {
+        New-Item -ItemType Directory -Path $jsonDirectory -Force | Out-Null
+    }
+    $statusEvidence | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonOutputPath -Encoding UTF8
+    Write-Host "JSON status evidence written to: $jsonOutputPath" -ForegroundColor Green
 }
 
 if ($FailOnCritical -and $criticalCount -gt 0) {

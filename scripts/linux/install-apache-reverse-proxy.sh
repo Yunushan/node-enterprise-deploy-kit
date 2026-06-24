@@ -59,6 +59,7 @@ if command -v a2enmod >/dev/null 2>&1; then
 fi
 
 render_template_file "$TEMPLATE" "$OUT" \
+  APP_NAME "$APP_NAME" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
   PROXY_LISTEN_PORT "$PROXY_LISTEN_PORT" \
   APP_PORT "$APP_PORT" \
@@ -66,7 +67,7 @@ render_template_file "$TEMPLATE" "$OUT" \
   LOG_DIR "$LOG_DIR" \
   FORWARDED_PROTO "$FORWARDED_PROTO" \
   FORWARDED_PORT "$FORWARDED_PORT"
-backup_path="$LAST_BACKUP_PATH"
+backup_path="$(get_last_backup_path)"
 
 if [[ "$ENABLE_WITH_A2ENSITE" == "true" ]] && command -v a2ensite >/dev/null 2>&1; then
   a2ensite "$APACHE_SITE_NAME" >/dev/null

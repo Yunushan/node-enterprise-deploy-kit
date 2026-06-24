@@ -23,19 +23,23 @@ RUNTIME_ENV_KEYS="${RUNTIME_ENV_KEYS:-}"
 require_root() { if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi; }
 write_env_value() {
   local key="$1" value="$2"
-  printf '%s=%q\n' "$key" "$value" >> "$ENV_FILE"
+  write_shell_env_assignment "$ENV_FILE" "$key" "$value"
 }
 write_runtime_env_file() {
-  local tmp
+  local tmp runtime_host
+  runtime_host="${HOST:-$BIND_ADDRESS}"
   tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
   ENV_FILE="$tmp" write_env_value "NODE_ENV" "$NODE_ENV"
   ENV_FILE="$tmp" write_env_value "PORT" "$APP_PORT"
+  ENV_FILE="$tmp" write_env_value "APP_PORT" "$APP_PORT"
   ENV_FILE="$tmp" write_env_value "APP_NAME" "$APP_NAME"
   ENV_FILE="$tmp" write_env_value "BIND_ADDRESS" "$BIND_ADDRESS"
+  ENV_FILE="$tmp" write_env_value "HOST" "$runtime_host"
+  ENV_FILE="$tmp" write_env_value "HOSTNAME" "$runtime_host"
 
   while IFS= read -r key; do
     case "$key" in
-      NODE_ENV|PORT|APP_PORT|APP_NAME|BIND_ADDRESS|"") continue ;;
+      NODE_ENV|PORT|APP_PORT|APP_NAME|BIND_ADDRESS|HOST|HOSTNAME|"") continue ;;
     esac
     if [[ -n "${!key+x}" ]]; then
       ENV_FILE="$tmp" write_env_value "$key" "${!key}"

@@ -32,4 +32,5 @@ dist/ export-ignore
 build/ export-ignore
 coverage/ export-ignore
 logs/ export-ignore
+evidence/ export-ignore
 .tmp/ export-ignore

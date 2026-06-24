@@ -39,7 +39,7 @@ render_template_file "$TEMPLATE" "$HAPROXY_CONFIG_FILE" \
   HEALTHCHECK_PATH "$HEALTHCHECK_PATH" \
   FORWARDED_PROTO "$FORWARDED_PROTO" \
   FORWARDED_PORT "$FORWARDED_PORT"
-backup_path="$LAST_BACKUP_PATH"
+backup_path="$(get_last_backup_path)"
 
 if ! haproxy -c -f "$HAPROXY_CONFIG_FILE"; then
   restore_file_from_backup "$backup_path" "$HAPROXY_CONFIG_FILE"

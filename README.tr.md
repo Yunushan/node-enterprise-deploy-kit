@@ -23,6 +23,9 @@
 
 > Varsayılan proje giriş noktası İngilizce `README.md` dosyasıdır. Bu dosya Türkçe destek dokümanıdır. Çelişki olursa İngilizce README ve `docs/` altındaki teknik dokümanlar kaynak kabul edilmelidir.
 
+Next.js için ayrıntılı artifact ve servis kurulumu rehberi:
+[docs/NEXTJS_DEPLOYMENT.md](docs/NEXTJS_DEPLOYMENT.md).
+
 ---
 
 ## Bu Proje Ne Çözer
@@ -74,6 +77,17 @@ Gizli bilgi taraması için:
 python .\scripts\dev\check-no-secrets.py
 ```
 
+Gerçek sunuculardan toplanan Windows, Linux, macOS veya BSD status evidence
+dosyalarını doğrulamak için:
+
+```powershell
+.\scripts\dev\Test-HostEvidence.ps1 -EvidencePath .\evidence -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
+```
+
+Belirli bir işletim sistemi ailesi için destek iddiasında bulunmadan önce
+[Host Verification Evidence](docs/HOST_VERIFICATION.md) rehberindeki akışı
+uygulayın.
+
 ## Windows Server Kurulumu
 
 Windows tarafında önerilen model, uygulamayı WinSW tabanlı Windows servisi olarak çalıştırmak ve dış trafiği IIS üzerinden yönlendirmektir. Apache, HAProxy ve Traefik installer scriptleri bu kitte Linux/Unix tarafı içindir; Windows'ta bu proxy'ler kullanılacaksa proxy kurulumu ayrıca yönetilmelidir.
@@ -88,44 +102,75 @@ internete kapalıysa veya kurum içi onaylı artifact kullanmanız gerekiyorsa
 1. Örnek konfigürasyonu kopyalayın:
 
 ```powershell
-Copy-Item .\config\windows\appsettings.sample.json .\config\windows\appsettings.json
+Copy-Item .\config\windows\app.config.example.json .\config\windows\app.config.json
 ```
 
 2. Uygulamanıza göre değerleri düzenleyin:
 
 ```json
 {
-  "AppName": "MyNodeApp",
-  "DisplayName": "My Node App",
-  "InstallPath": "C:\\services\\MyNodeApp",
+  "AppName": "ExampleNodeApp",
+  "DisplayName": "Example Node App",
+  "AppFramework": "nextjs",
+  "NextjsDeploymentMode": "standalone",
+  "NextjsRequireStaticAssets": true,
+  "NextjsRequirePublicDirectory": false,
+  "NextjsRequireServerActionsEncryptionKey": false,
+  "NextjsRequireDeploymentId": false,
+  "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
-  "EntryPoint": "server.js",
+  "StartCommand": "server.js",
   "Port": 3000,
-  "Hostname": "127.0.0.1",
-  "LogPath": "C:\\logs\\MyNodeApp",
-  "Proxy": "iis",
-  "StartMode": "Automatic"
+  "BindAddress": "127.0.0.1",
+  "HealthUrl": "http://127.0.0.1:3000/health",
+  "ServiceManager": "winsw",
+  "ReverseProxy": "iis"
 }
 ```
 
 3. Kurulumu yönetici PowerShell ile çalıştırın:
 
 ```powershell
-.\scripts\windows\install.ps1 -ConfigPath .\config\windows\appsettings.json
+.\install.ps1 -ConfigPath .\config\windows\app.config.json
+```
+
+Next.js standalone artifact oluşturmak için:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip
+.\scripts\windows\Test-NextJsStandalonePackage.ps1 `
+  -PackagePath C:\deploy\example-node-app.zip
+```
+
+Tam uygulama `next-start` paketleri için Windows'ta `-Mode next-start`, Unix
+validator tarafında `--mode next-start` kullanın. Package import, canlı
+uygulama klasörünü değiştirmeden önce uygun Next.js validator'ını otomatik
+çalıştırır.
+
+Import veya manuel kopyalama sonrası canlı runtime klasörünü servis durumuna
+dokunmadan kontrol etmek için:
+
+```powershell
+.\scripts\windows\Test-NextJsRuntimeLayout.ps1 `
+  -ConfigPath .\config\windows\app.config.json
 ```
 
 4. Servisi kontrol edin:
 
 ```powershell
-Get-Service MyNodeApp
-Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'" |
+.\status.ps1 -ConfigPath .\config\windows\app.config.json
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
+Get-Service ExampleNodeApp
+Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'" |
   Select-Object Name, State, StartMode, ProcessId, PathName
 ```
 
 5. Beklenen portun servis process'i tarafından dinlendiğini doğrulayın:
 
 ```powershell
-$svc = Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'"
+$svc = Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'"
 Get-NetTCPConnection -State Listen |
   Where-Object OwningProcess -eq $svc.ProcessId |
   Select-Object LocalAddress, LocalPort, OwningProcess
@@ -134,11 +179,15 @@ Get-NetTCPConnection -State Listen |
 6. Logları kontrol edin:
 
 ```powershell
-Get-Content C:\logs\MyNodeApp\MyNodeApp.wrapper.log -Tail 100
-Get-Content C:\logs\MyNodeApp\MyNodeApp.err.log -Tail 100
+Get-Content C:\logs\ExampleNodeApp\ExampleNodeApp.wrapper.log -Tail 100
+Get-Content C:\logs\ExampleNodeApp\ExampleNodeApp.err.log -Tail 100
 ```
 
 Servis `Running`, `StartMode` otomatik ve port beklenen process ID altında dinliyorsa Windows tarafındaki temel kurulum sağlıklıdır.
+`-JsonPath` çıktısını release kaydı olarak saklayabilirsiniz; verdict ve bulguları
+yazar, environment değerlerini veya ham log içeriğini yazmaz. Uygulama package
+import ile kurulduysa evidence içinde paket dosya adı, paket SHA256 değeri,
+import zamanı ve Next.js build ID de güvenli manifest özeti olarak yer alır.
 
 ## Windows'ta start.bat ve server.js
 
@@ -153,7 +202,7 @@ Windows Service Control Manager
 `start.bat` sadece yardımcı giriş noktası olarak kullanılabilir. Sunucu reboot olduğunda önemli olan şey Windows servisinin otomatik başlangıç modunda kayıtlı olmasıdır. Bunu kontrol etmek için:
 
 ```powershell
-Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'" |
+Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'" |
   Select-Object Name, State, StartMode, ProcessId, PathName
 ```
 
@@ -175,6 +224,12 @@ cp config/linux/app.env.example config/linux/app.env
 APP_NAME="example-node-app"
 APP_DISPLAY_NAME="Example Node App"
 APP_RUNTIME="node"
+APP_FRAMEWORK="nextjs"
+NEXTJS_DEPLOYMENT_MODE="standalone"
+NEXTJS_REQUIRE_STATIC_ASSETS="true"
+NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
+NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
 SERVICE_USER="nodeapp"
 SERVICE_GROUP="nodeapp"
 APP_DIR="/opt/example-node-app"
@@ -184,7 +239,7 @@ APP_PORT="3000"
 BIND_ADDRESS="127.0.0.1"
 SERVICE_MANAGER="systemd"
 REVERSE_PROXY="nginx"
-HEALTHCHECK_URL="http://127.0.0.1:3000/health"
+HEALTH_URL="http://127.0.0.1:3000/health"
 HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 PUBLIC_PORT="443"
 TLS_ENABLED="true"
@@ -193,10 +248,22 @@ FORWARDED_PROTO="https"
 FORWARDED_PORT="443"
 ```
 
+Unix benzeri Next.js servislerinde installer, yönetilen runtime `PORT`,
+`APP_PORT`, `HOST` ve `HOSTNAME` değerlerini `APP_PORT` ve `BIND_ADDRESS`
+üzerinden üretir. Böylece generated standalone server, reverse proxy'nin
+hedeflediği aynı lokal adrese bind eder.
+
+Windows Next.js servislerinde WinSW, NSSM ve PM2 installer'ları aynı yönetilen
+runtime varsayılanlarını `Port`, `AppName` ve `BindAddress` üzerinden üretir.
+PM2 sadece fallback seçeneğidir; canlı Windows Server dağıtımlarında WinSW
+önerilir.
+
 3. Dağıtım öncesi kontrol çalıştırın:
 
 ```bash
 bash scripts/linux/test-deployment-preflight.sh config/linux/app.env
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./evidence/unix-status.json --fail-on-critical
 ```
 
 4. Dağıtımı çalıştırın:
@@ -208,9 +275,23 @@ bash deploy.sh config/linux/app.env
 Hazır build artifact kullanıyorsanız önce paketi import edebilirsiniz:
 
 ```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz
+bash scripts/linux/validate-nextjs-standalone-package.sh \
+  --package-path /opt/releases/example-node-app.tar.gz
+
 PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
-PACKAGE_EXPECTED_FILES="server.js"
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 bash deploy.sh config/linux/app.env
+```
+
+Import veya manuel kopyalama sonrası canlı runtime klasörünü kontrol etmek için:
+
+```bash
+bash scripts/linux/test-nextjs-runtime-layout.sh config/linux/app.env
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./evidence/unix-nextjs-status.json --fail-on-critical
 ```
 
 Windows tarafında import `.zip` destekler. Linux/Unix tarafında `.zip`,
@@ -237,10 +318,10 @@ systemctl status example-node-app
 journalctl -u example-node-app -n 100 --no-pager
 ```
 
-6. Healthcheck timer kurun:
+6. Healthcheck scheduler kurun:
 
 ```bash
-sudo bash scripts/linux/install-healthcheck-timer.sh config/linux/app.env
+sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 ```
 
 ## Desteklenen Platformlar
@@ -310,7 +391,8 @@ Node.js process'i yine WinSW, systemd, OpenRC, launchd veya BSD servis yönetici
 | Windows script kurulumu | Tek Windows Server veya manuel operasyon | `scripts/windows/install.ps1` |
 | Linux script kurulumu | Tek Linux sunucusu veya manuel operasyon | `deploy.sh` |
 | Ansible | Çoklu sunucu ve tekrarlanabilir dağıtım | `ansible/playbooks/site.yml` |
-| Healthcheck timer | Servisin uzun süre sağlıklı kaldığını izlemek | `scripts/linux/install-healthcheck-timer.sh` |
+| Healthcheck scheduler | Servisin uzun süre sağlıklı kaldığını izlemek | `scripts/linux/install-healthcheck-scheduler.sh` |
+| Status script | Servis, port, health ve Next.js layout sonucunu exit code ile doğrulamak | `scripts/linux/status-node-app.sh` |
 | Diagnose script | Sorun anında güvenli özet almak | `scripts/linux/diagnose-node-app.sh` |
 
 ## Repository Düzeni
@@ -355,10 +437,10 @@ HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 Windows:
 
 ```powershell
-Get-Service MyNodeApp
-Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'" |
+Get-Service ExampleNodeApp
+Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'" |
   Select-Object Name, State, StartMode, ProcessId
-Get-Process -Id (Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'").ProcessId |
+Get-Process -Id (Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'").ProcessId |
   Select-Object Id, StartTime, CPU, PM, WS, Path
 ```
 
@@ -419,10 +501,10 @@ Daha ayrıntılı güvenlik rehberi için [docs/HARDENING.md](docs/HARDENING.md)
 Windows hızlı kontrol:
 
 ```powershell
-Get-Service MyNodeApp
-Get-CimInstance Win32_Service -Filter "Name='MyNodeApp'"
-Get-Content C:\logs\MyNodeApp\MyNodeApp.wrapper.log -Tail 100
-Get-Content C:\logs\MyNodeApp\MyNodeApp.err.log -Tail 100
+Get-Service ExampleNodeApp
+Get-CimInstance Win32_Service -Filter "Name='ExampleNodeApp'"
+Get-Content C:\logs\ExampleNodeApp\ExampleNodeApp.wrapper.log -Tail 100
+Get-Content C:\logs\ExampleNodeApp\ExampleNodeApp.err.log -Tail 100
 ```
 
 Linux hızlı kontrol:
@@ -430,6 +512,7 @@ Linux hızlı kontrol:
 ```bash
 systemctl status example-node-app
 journalctl -u example-node-app -n 100 --no-pager
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --fail-on-critical
 sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 ```
 

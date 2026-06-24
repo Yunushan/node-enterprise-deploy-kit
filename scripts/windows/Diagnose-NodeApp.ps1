@@ -82,6 +82,54 @@ function Get-BackupDirectory($Config) {
     }
     return ""
 }
+function Get-ConfigString($Config, [string]$Name, [string]$Default = "") {
+    if ($Config.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
+        return [string]$Config.$Name
+    }
+    return $Default
+}
+function Get-ConfigBool($Config, [string]$Name, [bool]$Default) {
+    if (-not $Config.PSObject.Properties[$Name]) { return $Default }
+    $value = $Config.$Name
+    if ($value -is [bool]) { return [bool]$value }
+    switch -Regex ([string]$value) {
+        '^(true|1|yes)$' { return $true }
+        '^(false|0|no)$' { return $false }
+        default { return $Default }
+    }
+}
+function Normalize-Name([string]$Value) {
+    return $Value.ToLowerInvariant().Replace("_", "-")
+}
+function Test-SafeRelativePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $normalized = $Path.Replace("\", "/")
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $false }
+    foreach ($part in $normalized.Split("/")) {
+        if ($part -eq "..") { return $false }
+    }
+    return $true
+}
+function Split-ArgumentTokens([string]$Arguments) {
+    if ([string]::IsNullOrWhiteSpace($Arguments)) { return @() }
+    return @($Arguments -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+function Get-HostnameArgumentValue([string[]]$Tokens) {
+    for ($i = 0; $i -lt $Tokens.Count; $i++) {
+        $token = $Tokens[$i]
+        if ($token -eq "-H" -or $token -eq "--hostname") {
+            if (($i + 1) -lt $Tokens.Count) { return $Tokens[$i + 1] }
+            return ""
+        }
+        if ($token -like "--hostname=*") {
+            return $token.Substring("--hostname=".Length)
+        }
+        if ($token -like "-H=*") {
+            return $token.Substring("-H=".Length)
+        }
+    }
+    return ""
+}
 function Add-HealthLogSummary([string]$Path) {
     if (-not (Test-Path $Path)) {
         "No healthcheck.log found." | Out-File $out -Append -Encoding UTF8
@@ -96,6 +144,86 @@ function Add-HealthLogSummary([string]$Path) {
         Failed = @($lines | Where-Object { $_ -match '\sFAILED|FAILED_THRESHOLD|EXCEPTION|BAD_STATUS|SERVICE_NOT_RUNNING' }).Count
         Restarted = @($lines | Where-Object { $_ -match 'RESTARTING_SERVICE|SERVICE_NOT_RUNNING' }).Count
         RestartSuppressed = @($lines | Where-Object { $_ -match 'RESTART_SUPPRESSED_COOLDOWN' }).Count
+    } | Format-List | Out-File $out -Append -Encoding UTF8
+}
+function Add-NextJsRuntimeLayout {
+    $framework = Normalize-Name (Get-ConfigString $config "AppFramework" "node")
+    if ($framework -notin @("next", "nextjs", "next-js")) { return }
+
+    Add-Section "Next.js Runtime Layout"
+    $mode = Normalize-Name (Get-ConfigString $config "NextjsDeploymentMode" "standalone")
+    $appDirectory = Get-ConfigString $config "AppDirectory"
+    $startCommand = Get-ConfigString $config "StartCommand" "server.js"
+    $nodeArguments = Get-ConfigString $config "NodeArguments" ""
+    $bindAddress = Get-ConfigString $config "BindAddress" "127.0.0.1"
+    $requiresStatic = Get-ConfigBool $config "NextjsRequireStaticAssets" $true
+    $requiresPublic = Get-ConfigBool $config "NextjsRequirePublicDirectory" $false
+    $startHasArguments = $startCommand -match '\s'
+    $startPath = ""
+    $runtimeRoot = $appDirectory
+
+    if ([string]::IsNullOrWhiteSpace($appDirectory)) {
+        "AppDirectory is not configured." | Out-File $out -Append -Encoding UTF8
+        return
+    }
+
+    if ($mode -eq "standalone" -and -not $startHasArguments) {
+        if ([System.IO.Path]::IsPathRooted($startCommand)) {
+            $startPath = $startCommand
+        } elseif (Test-SafeRelativePath $startCommand) {
+            $startPath = Join-Path $appDirectory $startCommand
+        }
+        if ($startPath) {
+            $runtimeRoot = Split-Path -Parent $startPath
+        }
+    }
+
+    $serverPath = if ($startPath) { $startPath } else { Join-Path $runtimeRoot "server.js" }
+    $nextPath = Join-Path $runtimeRoot ".next"
+    $buildIdPath = Join-Path $nextPath "BUILD_ID"
+    $staticPath = Join-Path $nextPath "static"
+    $publicPath = Join-Path $runtimeRoot "public"
+    $nodeModulesPath = Join-Path $runtimeRoot "node_modules"
+    $nextPackagePath = Join-Path $appDirectory "node_modules\next"
+    $argumentTokens = @(Split-ArgumentTokens $nodeArguments)
+    $hostnameArgument = Get-HostnameArgumentValue $argumentTokens
+    $nextStartCommandPath = ""
+    $nextStartCommandUnderNextPackage = $true
+    if ($mode -eq "next-start") {
+        if (-not [string]::IsNullOrWhiteSpace($startCommand) -and -not $startHasArguments) {
+            if ([System.IO.Path]::IsPathRooted($startCommand)) {
+                $nextStartCommandPath = $startCommand
+            } elseif (Test-SafeRelativePath $startCommand) {
+                $nextStartCommandPath = Join-Path $appDirectory $startCommand
+            }
+        }
+        $nextStartCommandUnderNextPackage = (-not [string]::IsNullOrWhiteSpace($nextStartCommandPath) -and (($nextStartCommandPath -replace "\\", "/").ToLowerInvariant() -match '/node_modules/next/'))
+    }
+
+    [pscustomobject]@{
+        AppFramework = "nextjs"
+        Mode = $mode
+        AppDirectoryExists = (Test-Path -LiteralPath $appDirectory -PathType Container)
+        RuntimeRoot = $runtimeRoot
+        StartCommand = $startCommand
+        StartCommandHasArguments = $startHasArguments
+        NextStartCommandPath = $nextStartCommandPath
+        NextStartCommandUnderNextPackage = $nextStartCommandUnderNextPackage
+        NodeArguments = $nodeArguments
+        BindAddress = $bindAddress
+        NextStartCommandStartsWithStart = ($mode -ne "next-start" -or ($argumentTokens.Count -gt 0 -and $argumentTokens[0] -eq "start"))
+        NextStartHostnameArgument = $hostnameArgument
+        NextStartHostnameMatchesBindAddress = ($mode -ne "next-start" -or $hostnameArgument -eq $bindAddress)
+        RequiresStaticAssets = $requiresStatic
+        RequiresPublicDirectory = $requiresPublic
+        ServerJsExists = (Test-Path -LiteralPath $serverPath -PathType Leaf)
+        DotNextExists = (Test-Path -LiteralPath $nextPath -PathType Container)
+        BuildIdExists = (Test-Path -LiteralPath $buildIdPath -PathType Leaf)
+        StaticAssetsExist = (Test-Path -LiteralPath $staticPath -PathType Container)
+        PublicDirectoryExists = (Test-Path -LiteralPath $publicPath -PathType Container)
+        NodeModulesExists = (Test-Path -LiteralPath $nodeModulesPath -PathType Container)
+        PackageJsonExists = (Test-Path -LiteralPath (Join-Path $appDirectory "package.json") -PathType Leaf)
+        NextPackageExists = (Test-Path -LiteralPath $nextPackagePath -PathType Container)
     } | Format-List | Out-File $out -Append -Encoding UTF8
 }
 "Diagnostics generated $(Get-Date -Format o)" | Out-File $out -Encoding UTF8
@@ -143,6 +271,7 @@ if ($portConnections.Count -gt 0) {
         ConfiguredServiceProcessIds = ($serviceProcessIds -join ", ")
     } | Format-List | Out-File $out -Append -Encoding UTF8
 }
+Add-NextJsRuntimeLayout
 Add-Section "HTTP Health"
 try {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()

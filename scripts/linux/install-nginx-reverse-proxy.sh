@@ -29,6 +29,7 @@ fi
 OUT="${NGINX_CONFIG_DIR}/${NGINX_SITE_NAME}.conf"
 mkdir -p "$LOG_DIR" "$NGINX_CONFIG_DIR"
 render_template_file "$TEMPLATE" "$OUT" \
+  APP_NAME "$APP_NAME" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
   PROXY_LISTEN_PORT "$PROXY_LISTEN_PORT" \
   APP_PORT "$APP_PORT" \
@@ -36,7 +37,7 @@ render_template_file "$TEMPLATE" "$OUT" \
   LOG_DIR "$LOG_DIR" \
   FORWARDED_PROTO "$FORWARDED_PROTO" \
   FORWARDED_PORT "$FORWARDED_PORT"
-backup_path="$LAST_BACKUP_PATH"
+backup_path="$(get_last_backup_path)"
 if ! nginx -t; then
   restore_file_from_backup "$backup_path" "$OUT"
   exit 1

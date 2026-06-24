@@ -1,3 +1,4 @@
+# Managed by node-enterprise-deploy-kit for {{APP_NAME}}.
 http:
   routers:
     {{TRAEFIK_ROUTER_NAME}}:

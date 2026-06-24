@@ -3,13 +3,21 @@ node_deploy_project_name: example-node-app
 node_deploy_display_name: Example Node App
 node_deploy_description: Example Node.js production service
 node_deploy_mode: reverse_proxy
+node_deploy_app_framework: nextjs
+node_deploy_nextjs_deployment_mode: standalone
+node_deploy_nextjs_require_static_assets: true
+node_deploy_nextjs_require_public_directory: false
+node_deploy_nextjs_require_server_actions_encryption_key: false
+node_deploy_nextjs_require_deployment_id: false
 node_deploy_app_runtime: node
 node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
 node_deploy_app_dir_linux: /opt/example-node-app
 node_deploy_package_path_windows: ""
 node_deploy_package_path_linux: ""
-node_deploy_package_expected_files:
-  - server.js
+# Leave empty to use the mode-aware default:
+# standalone -> server.js, .next/BUILD_ID, .next/static
+# next-start -> package.json, .next/BUILD_ID, .next, node_modules/next
+node_deploy_package_expected_files: []
 node_deploy_package_strip_single_top_level_directory: true
 node_deploy_skip_package_import: false
 node_deploy_start_script: server.js
@@ -18,6 +26,8 @@ node_deploy_bind_address: 127.0.0.1
 node_deploy_health_url: http://127.0.0.1:3000/health
 node_deploy_install_command: npm ci --omit=dev
 node_deploy_build_command: npm run build
+# Leave empty for standalone. In next-start mode, roles default this to:
+# start -H <node_deploy_bind_address>
 node_deploy_node_arguments: ""
 node_deploy_skip_preflight: false
 node_deploy_allow_port_in_use: false
@@ -109,3 +119,7 @@ node_deploy_environment:
   NODE_ENV: production
   APP_NAME: example-node-app
   PORT: "3000"
+  APP_PORT: "3000"
+  BIND_ADDRESS: 127.0.0.1
+  HOST: 127.0.0.1
+  HOSTNAME: 127.0.0.1

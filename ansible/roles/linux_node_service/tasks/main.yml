@@ -4,6 +4,8 @@
     node_deploy_linux_service_manager_normalized: "{{ node_deploy_linux_service_manager | default('systemd') | lower | regex_replace('_', '-') }}"
     node_deploy_linux_reverse_proxy_normalized: "{{ node_deploy_linux_reverse_proxy | default('none') | lower | regex_replace('_', '-') }}"
     node_deploy_app_runtime_normalized: "{{ node_deploy_app_runtime | default('node') | lower | regex_replace('_', '-') }}"
+    node_deploy_app_framework_normalized: "{{ node_deploy_app_framework | default('nextjs') | lower | regex_replace('_', '-') }}"
+    node_deploy_nextjs_deployment_mode_normalized: "{{ node_deploy_nextjs_deployment_mode | default('standalone') | lower | regex_replace('_', '-') }}"
 
 - name: Validate Linux service manager
   ansible.builtin.fail:
@@ -19,6 +21,25 @@
   ansible.builtin.fail:
     msg: "Unsupported node_deploy_app_runtime={{ node_deploy_app_runtime | default('node') }}. Use node or tomcat."
   when: node_deploy_app_runtime_normalized not in ['node', 'tomcat', 'apache-tomcat']
+
+- name: Validate application framework
+  ansible.builtin.fail:
+    msg: "Unsupported node_deploy_app_framework={{ node_deploy_app_framework | default('nextjs') }}. Use node or nextjs."
+  when: node_deploy_app_framework_normalized not in ['node', 'next', 'nextjs', 'next-js']
+
+- name: Validate Next.js runtime selection
+  ansible.builtin.fail:
+    msg: "APP_FRAMEWORK=nextjs requires node_deploy_app_runtime=node."
+  when:
+    - node_deploy_app_framework_normalized in ['next', 'nextjs', 'next-js']
+    - node_deploy_app_runtime_normalized != 'node'
+
+- name: Validate Next.js deployment mode
+  ansible.builtin.fail:
+    msg: "Unsupported node_deploy_nextjs_deployment_mode={{ node_deploy_nextjs_deployment_mode | default('standalone') }}. Use standalone or next-start."
+  when:
+    - node_deploy_app_framework_normalized in ['next', 'nextjs', 'next-js']
+    - node_deploy_nextjs_deployment_mode_normalized not in ['standalone', 'next-start']
 
 - name: Ensure Linux deployment support directories exist
   ansible.builtin.file:

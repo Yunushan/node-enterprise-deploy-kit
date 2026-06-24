@@ -34,6 +34,15 @@ function Get-ConfigString {
     return $Default
 }
 
+function Get-ConfigEnvironmentString {
+    param($Config, [string]$Name, [string]$Default = "")
+    if (-not $Config.PSObject.Properties["Environment"] -or -not $Config.Environment) { return $Default }
+    if ($Config.Environment.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Config.Environment.$Name)) {
+        return [string]$Config.Environment.$Name
+    }
+    return $Default
+}
+
 function Get-ConfigBool {
     param($Config, [string]$Name, [bool]$Default)
     if (-not $Config.PSObject.Properties[$Name] -or [string]::IsNullOrWhiteSpace([string]$Config.$Name)) {
@@ -44,6 +53,10 @@ function Get-ConfigBool {
         '^(false|0|no)$' { return $false }
         default { throw "$Name must be true or false." }
     }
+}
+
+function Normalize-Name([string]$Value) {
+    return ([string]$Value).Trim().ToLowerInvariant().Replace("_", "-").Replace(" ", "-")
 }
 
 function Get-BackupDirectory($Config) {
@@ -126,10 +139,44 @@ function Assert-ExpectedFiles {
             throw "PackageExpectedFiles contains an unsafe relative path: $relative"
         }
         $candidate = Join-Path $SourceRoot ($relative -replace '/', '\')
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            throw "Imported package is missing expected file: $relative"
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            throw "Imported package is missing expected path: $relative"
         }
     }
+}
+
+function Test-NextJsPackageIfNeeded {
+    param(
+        $Config,
+        [string]$Path,
+        [bool]$StripSingleTopLevelDirectory
+    )
+
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+    $mode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "standalone")
+    if ($framework -notin @("next", "nextjs", "next-js")) {
+        return
+    }
+    if ($mode -notin @("standalone", "next-start")) {
+        throw "NextjsDeploymentMode must be standalone or next-start."
+    }
+
+    $validator = Join-Path $PSScriptRoot "Test-NextJsStandalonePackage.ps1"
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        throw "Next.js package validator not found: $validator"
+    }
+
+    $arguments = @{
+        PackagePath = $Path
+        Mode = $mode
+    }
+    if ($StripSingleTopLevelDirectory) {
+        $arguments.StripSingleTopLevelDirectory = $true
+    }
+    if (Get-ConfigBool $Config "NextjsRequirePublicDirectory" $false) {
+        $arguments.RequirePublicDirectory = $true
+    }
+    & $validator @arguments
 }
 
 function Stop-AppServiceIfPresent {
@@ -141,6 +188,62 @@ function Stop-AppServiceIfPresent {
         Stop-Service -Name $Name -Force -ErrorAction Stop
         $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(60))
     }
+}
+
+function Get-FirstLineFromFile {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
+    try {
+        return [string](Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop)
+    } catch {
+        return ""
+    }
+}
+
+function Get-NextBuildIdFromDirectory {
+    param([string]$AppDirectory)
+    $candidate = Join-Path $AppDirectory ".next\BUILD_ID"
+    $value = Get-FirstLineFromFile $candidate
+    if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+    return ""
+}
+
+function Get-DeploymentIdFromConfig {
+    param($Config)
+    $deploymentId = Get-ConfigString $Config "DeploymentId" ""
+    if ([string]::IsNullOrWhiteSpace($deploymentId)) {
+        $deploymentId = Get-ConfigEnvironmentString $Config "NEXT_DEPLOYMENT_ID" ""
+    }
+    if ([string]::IsNullOrWhiteSpace($deploymentId)) {
+        $deploymentId = Get-ConfigEnvironmentString $Config "DEPLOYMENT_ID" ""
+    }
+    return $deploymentId
+}
+
+function Write-DeploymentManifest {
+    param(
+        $Config,
+        [string]$AppDirectory,
+        [string]$PackagePath
+    )
+
+    $manifestPath = Join-Path $AppDirectory ".node-enterprise-deploy.json"
+    $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifest = [ordered]@{
+        schema = "node-enterprise-deploy-kit/import-manifest/v1"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        appName = [string]$Config.AppName
+        appFramework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+        nextjsMode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "")
+        packageName = [System.IO.Path]::GetFileName($PackagePath)
+        packageSha256 = $packageHash
+        deploymentId = Get-DeploymentIdFromConfig $Config
+        nextBuildId = Get-NextBuildIdFromDirectory $AppDirectory
+    }
+    $manifest |
+        ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Write-Host "Deployment manifest written: $manifestPath"
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -175,6 +278,7 @@ if ($backupDirectory.StartsWith($appDirectory.TrimEnd('\') + '\', [System.String
 }
 
 Assert-ZipPackageSafe -Path $PackagePath
+Test-NextJsPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-package-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
@@ -202,6 +306,7 @@ try {
             foreach ($item in Get-ChildItem -LiteralPath $sourceRoot -Force) {
                 Copy-Item -LiteralPath $item.FullName -Destination $appDirectory -Recurse -Force
             }
+            Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackagePath $PackagePath
         }
         catch {
             if (Test-Path -LiteralPath $appDirectory) {

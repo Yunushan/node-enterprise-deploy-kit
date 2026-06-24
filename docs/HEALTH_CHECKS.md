@@ -14,19 +14,32 @@ app.get('/health', (req, res) => {
 });
 ```
 
-For Next.js API route:
+For Next.js App Router, create `app/health/route.ts`:
 
-```js
-export default function handler(req, res) {
+```ts
+export function GET() {
+  return Response.json({ status: 'ok' });
+}
+```
+
+For Next.js Pages Router, create `pages/api/health.ts`:
+
+```ts
+export default function handler(_req, res) {
   res.status(200).json({ status: 'ok' });
 }
 ```
+
+Point `HealthUrl` or `HEALTH_URL` at the route that actually exists in the
+deployed app. For example, use `/health` for the App Router example or
+`/api/health` for the Pages Router example.
 
 ## Health Check Layers
 
 | Layer | Purpose |
 |---|---|
 | Service status | Confirms service manager sees the app as running |
+| Boot enablement | Confirms service manager is configured to start the app after reboot |
 | Port check | Confirms process listens on expected port |
 | HTTP check | Confirms app can actually respond |
 
@@ -53,13 +66,33 @@ without printing health-check log contents:
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
+.\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -JsonPath .\evidence\windows-status.json -FailOnCritical
 ```
 
 It reports scheduled task last run, next run, last result, consecutive failure
 state, last successful check, last failed check, summarized health log event
-counts, and a final operational verdict. It also verifies that the configured
-port is owned by the configured service process tree, which helps distinguish a
-proper service deployment from a manually started `node.exe`.
+counts, service startup mode, and a final operational verdict. It also verifies
+that the configured port is owned by the configured service process tree, which
+helps distinguish a proper service deployment from a manually started
+`node.exe`.
+
+Use `-JsonPath` when you need auditable post-deploy evidence. The JSON output
+contains the verdict, counts, safe health URL, port ownership proof,
+structured HTTP health proof, uptime proof, recurring health monitor proof,
+deployment/build identity, and findings only; it does not include environment
+values or raw log contents.
+It also avoids raw host identity and full filesystem paths by using file or
+directory basenames in machine-readable evidence.
+For IIS reverse-proxy deployments, status evidence also probes the configured
+health proxy path. Set `ProxyHealthUrl` when the default local probe is not the
+right endpoint for your topology. IIS evidence additionally records whether the
+configured site exists, points at the configured deployment path, owns the
+expected public binding, and has no duplicate binding conflict.
+Status evidence emits the configured deployment ID, private runtime deployment
+ID, or Next.js `.next/BUILD_ID` when one is available.
+Validate collected evidence with
+[`Test-HostEvidence.ps1`](../scripts/dev/Test-HostEvidence.ps1) as described in
+[Host Verification Evidence](HOST_VERIFICATION.md).
 
 For long-running confidence after days of uptime, check these signals together:
 
@@ -75,11 +108,17 @@ For long-running confidence after days of uptime, check these signals together:
 
 ## Linux
 
-On systemd hosts, the systemd timer runs `/usr/local/sbin/<app-name>-healthcheck.sh`.
+On systemd hosts, the systemd timer runs
+`/usr/local/sbin/<app-name>-healthcheck.sh`. On macOS, a launchd job runs the
+same script. On System V, OpenRC, or BSD rc hosts, a managed root crontab entry
+runs the same script.
 
-On System V, OpenRC, launchd, or BSD rc hosts, use
-`scripts/linux/node-healthcheck.sh` from cron or your external monitoring
-platform.
+The deploy flow installs the right scheduler automatically unless
+`SKIP_HEALTH_CHECK="true"`. You can also install only the scheduler:
+
+```bash
+sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
+```
 
 Recommended controls:
 
@@ -96,8 +135,43 @@ The Linux health check writes `healthcheck.log` under `LOG_DIR` and writes
 root-run health-check control state. Use diagnostics for a safe summary:
 
 ```bash
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --fail-on-critical
+sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --json-output ./evidence/unix-status.json --fail-on-critical
 sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 ```
+
+The status command prints an operational verdict and can fail automation when
+critical findings exist. It checks service status, configured port listener,
+boot enablement, HTTP health, health-check state, health-check log summary, and
+the Next.js runtime layout when `APP_FRAMEWORK="nextjs"`.
+
+Use `--json-output` to write safe machine-readable evidence for Linux, macOS,
+and BSD hosts. The file is suitable for release records and support reviews
+because it captures the operational verdict without dumping secrets, raw logs,
+raw host identity, full filesystem paths, or HTTP response bodies.
+It also includes structured configured-port evidence: checked/listening state,
+whether owner PIDs were readable, and whether the listener is owned by the
+configured service process.
+It includes structured HTTP health evidence too: checked state, sanitized URL,
+status, status code, response time, and timeout.
+It also records service process uptime and whether the requested
+`-MinimumUptimeHours` window was satisfied.
+The JSON also includes `healthMonitor` evidence. For a fully proven host this
+should show `status=ok`, a recent successful monitor run, zero consecutive
+failures, an existing recent log summary, and zero recent monitor failures or
+service restarts. On systemd hosts it records whether the
+`<app-name>-healthcheck.timer` scheduler was checked, exists, is active, and is
+enabled for boot. On macOS it records the launchd healthcheck job. On
+cron-based hosts it records the managed crontab entry and best-effort cron
+daemon activity.
+For reverse-proxy deployments, status evidence probes `PROXY_HEALTH_URL` when
+configured, otherwise it probes `http://127.0.0.1:<PROXY_LISTEN_PORT>/<HEALTHCHECK_PATH>`.
+For Nginx, Apache, HAProxy, and Traefik, JSON evidence also records whether the
+expected managed proxy config file exists and contains this kit's marker for
+the app, using only safe file and directory basenames.
+Validate collected evidence with
+[`Test-HostEvidence.ps1`](../scripts/dev/Test-HostEvidence.ps1) as described in
+[Host Verification Evidence](HOST_VERIFICATION.md).
 
 Linux diagnostics omit raw service logs, process command lines, and HTTP
 response bodies by default. Use `--include-raw-details` only when the output can

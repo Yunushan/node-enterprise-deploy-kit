@@ -104,15 +104,15 @@ bash deploy.sh config/linux/app.env
 ```
 
 `deploy.sh` runs preflight unless `SKIP_PREFLIGHT="true"`, installs or updates
-the service, applies the selected reverse proxy, and installs the systemd health
-timer when `SERVICE_MANAGER="systemd"`.
+the service, applies the selected reverse proxy, and installs the matching
+health-check scheduler: systemd timer, launchd job, or managed root crontab.
 
 To deploy a built archive before service setup, set `PACKAGE_PATH` in
 `config/linux/app.env`:
 
 ```bash
 PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
-PACKAGE_EXPECTED_FILES="server.js"
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
 bash deploy.sh config/linux/app.env
 ```
@@ -120,9 +120,92 @@ bash deploy.sh config/linux/app.env
 Linux package import supports `.tar.gz`, `.tgz`, `.tar`, and `.zip`. It
 validates archive member paths before extraction, extracts to a temporary
 directory, checks `PACKAGE_EXPECTED_FILES`, stops the existing service when
-present, backs up `APP_DIR`, then imports the new contents. `.rar` and `.7z`
-are intentionally unsupported in this first implementation because they require
+present, backs up `APP_DIR`, then imports the new contents.
+`PACKAGE_EXPECTED_FILES` may name files or directories, so Next.js standalone
+packages can require `server.js`, `.next/BUILD_ID`, and `.next/static`. `.rar` and `.7z` are
+intentionally unsupported in this first implementation because they require
 external tooling.
+Tar packages with symlink or hardlink entries are rejected, and extracted
+symlinks from any supported archive are rejected before the app directory is
+replaced. Keep deployable artifacts as regular files and directories.
+
+For Next.js standalone deployments, build with `output: 'standalone'`, package
+the contents of `.next/standalone`, and copy `.next/static` to
+`.next/standalone/.next/static` before creating the archive. Copy `public` to
+`.next/standalone/public` too when the app uses public files. Use:
+
+```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz
+```
+
+The package helper blocks obvious private files such as `.env`, private keys,
+and certificates from the staged artifact before it creates the archive.
+Configure the deployment with:
+
+```bash
+bash scripts/linux/validate-nextjs-standalone-package.sh \
+  --package-path /opt/releases/example-node-app.tar.gz
+```
+
+For full-app `next-start` packages, add `--mode next-start`. Run that validator
+on any archive that did not come directly from the helper. The Unix package
+import flow also runs this validator automatically when `APP_FRAMEWORK="nextjs"`
+and `NEXTJS_DEPLOYMENT_MODE` is `standalone` or `next-start`.
+
+```bash
+APP_RUNTIME="node"
+APP_FRAMEWORK="nextjs"
+NEXTJS_DEPLOYMENT_MODE="standalone"
+NEXTJS_REQUIRE_STATIC_ASSETS="true"
+NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
+NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
+START_SCRIPT="server.js"
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
+```
+
+The Unix-like preflight validates the selected Next.js mode and the deployed
+runtime layout before replacing service/proxy configuration. See
+[Next.js Deployment](NEXTJS_DEPLOYMENT.md) for build, packaging, and
+multi-instance notes.
+
+To check only the live Next.js folder structure after package import or manual
+copy, run:
+
+```bash
+bash scripts/linux/test-nextjs-runtime-layout.sh config/linux/app.env
+```
+
+For CI/static validation of a macOS or BSD config on a non-target runner, pass
+`--skip-service-manager-check` to skip only the local `systemctl`/`launchctl`/
+`rc-service` command probe. Run the normal preflight without that flag on the
+actual target host before deploying.
+
+After deployment, `scripts/linux/diagnose-node-app.sh` includes a safe Next.js
+runtime layout section when `APP_FRAMEWORK="nextjs"`. Use it to confirm the
+live folder contains the expected standalone or `next-start` files on Linux,
+macOS, or BSD without printing private environment values.
+
+Use `scripts/linux/status-node-app.sh --json-output` for post-deploy evidence.
+The JSON includes structured configured-port proof, including whether the port
+is listening and whether ownership can be tied to the configured service
+process. It also includes structured HTTP health proof so release evidence can
+show the app responded successfully, not only that a process existed. Uptime
+evidence records service process uptime and whether the requested
+`--minimum-uptime-hours` window was satisfied.
+It also includes `healthMonitor` proof from the root-owned health-check state
+file and recent health-check log summary, so release evidence can show that the
+recurring monitor has been succeeding over time instead of only proving a
+single live HTTP response. On systemd hosts, the same evidence also proves the
+`<app-name>-healthcheck.timer` unit exists, is active, and is enabled for boot.
+On macOS it proves the launchd job, and on System V/OpenRC/BSD rc hosts it
+proves the managed cron entry plus best-effort cron daemon activity.
+When `REVERSE_PROXY` is `nginx`, `apache`, `haproxy`, or `traefik`, the JSON
+evidence includes a safe `reverseProxy.config` section. It proves the expected
+proxy config file exists and contains this kit's managed marker for the app
+without writing full filesystem paths to the evidence file.
 
 Managed file updates create timestamped backups in `BACKUP_DIR` before
 replacing existing env files, service units/init scripts, reverse proxy configs,
@@ -197,15 +280,15 @@ sudo bash scripts/linux/install-tomcat-app.sh config/linux/app.env
 Tomcat mode deploys the WAR and restarts the configured `TOMCAT_SERVICE`. The
 Node service installer is skipped when `APP_RUNTIME="tomcat"`.
 
-14. Optional systemd health check timer:
+14. Optional health check scheduler:
 
 ```bash
-sudo bash scripts/linux/install-healthcheck-timer.sh config/linux/app.env
+sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 ```
 
-For `systemv`, `openrc`, `launchd`, and `bsdrc`, use `scripts/linux/node-healthcheck.sh` from cron
-or your external monitoring platform. The health check understands `systemd`,
-`systemv`, `openrc`, `launchd`, and `bsdrc` service managers.
+The scheduler installer delegates to the existing systemd timer installer for
+`SERVICE_MANAGER="systemd"`, installs a launchd job for macOS, and installs a
+managed root crontab entry for `systemv`, `openrc`, and `bsdrc`.
 
 15. Verify:
 
