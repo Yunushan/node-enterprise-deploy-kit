@@ -175,6 +175,8 @@ DEPLOYMENT_IDENTITY_PACKAGE_NAME=""
 DEPLOYMENT_IDENTITY_PACKAGE_SHA256=""
 DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC=""
 DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID=""
+NODE_RUNTIME_VERSION=""
+NEXT_PACKAGE_VERSION=""
 
 findings=()
 add_finding() {
@@ -219,6 +221,40 @@ safe_evidence_text() {
   done
   printf '%s\n' "$text" |
     sed -E 's#(^|[[:space:]])/[[:alnum:]_.@%+=:,/-]+#\1<path>#g; s#[A-Za-z]:\\[^[:space:],;:"<>|]+#<path>#g'
+}
+
+safe_runtime_version_text() {
+  local value="${1:-}"
+  value="${value:0:80}"
+  printf '%s' "$value" | sed 's/[^A-Za-z0-9._+:-]/-/g; s/^-*//; s/-*$//'
+}
+
+node_runtime_version() {
+  local node_bin="${NODE_BIN:-node}" output
+  output="$("$node_bin" --version 2>/dev/null || true)"
+  safe_runtime_version_text "$output"
+}
+
+package_json_version() {
+  local package_json="${1:-}"
+  [[ -f "$package_json" ]] || return 0
+  sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$package_json" 2>/dev/null |
+    head -n 1 |
+    while IFS= read -r version; do safe_runtime_version_text "$version"; done
+}
+
+next_package_version() {
+  local candidate version
+  for candidate in \
+    "${APP_DIR:-}/node_modules/next/package.json" \
+    "${APP_DIR:-}/.next/standalone/node_modules/next/package.json"; do
+    version="$(package_json_version "$candidate")"
+    if [[ -n "$version" ]]; then
+      printf '%s' "$version"
+      return 0
+    fi
+  done
+  return 0
 }
 
 support_target_id() {
@@ -474,6 +510,51 @@ json_escape() {
   value="${value//$'\r'/\\r}"
   value="${value//$'\t'/\\t}"
   printf '%s' "$value"
+}
+
+safe_ci_path_value() {
+  printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._/-'
+}
+
+safe_ci_token_value() {
+  printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._-'
+}
+
+safe_ci_digits_value() {
+  printf '%s' "${1:-}" | tr -cd '0-9'
+}
+
+safe_ci_hex_value() {
+  printf '%s' "${1:-}" | tr -cd 'A-Fa-f0-9'
+}
+
+collector_file_sha256() {
+  local script_path hash
+  script_path="${BASH_SOURCE[0]:-$0}"
+  hash=""
+  if [[ -r "$script_path" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      hash="$(sha256sum "$script_path" 2>/dev/null | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      hash="$(shasum -a 256 "$script_path" 2>/dev/null | awk '{print $1}')"
+    elif command -v sha256 >/dev/null 2>&1; then
+      hash="$(sha256 -q "$script_path" 2>/dev/null || sha256 "$script_path" 2>/dev/null | awk '{print $NF}')"
+    fi
+  fi
+  if printf '%s' "$hash" | grep -Eq '^[A-Fa-f0-9]{64}$'; then
+    printf '%s' "$hash" | tr 'A-F' 'a-f'
+  else
+    printf ''
+  fi
+}
+
+is_env_true() {
+  local value
+  value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    true|1|yes) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 os_release_value() {
@@ -1005,6 +1086,8 @@ write_json_output() {
   local finding
   local severity
   local message
+  local ci_is_ci
+  local ci_provider
 
   output_dir="$(dirname "$output")"
   if [[ "$output_dir" != "." ]]; then
@@ -1012,6 +1095,15 @@ write_json_output() {
   fi
   generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   safe_health_url="$(safe_url "${HEALTH_URL:-}")"
+  ci_is_ci="false"
+  ci_provider=""
+  if is_env_true "${GITHUB_ACTIONS:-}"; then
+    ci_is_ci="true"
+    ci_provider="github-actions"
+  elif is_env_true "${CI:-}"; then
+    ci_is_ci="true"
+    ci_provider="ci"
+  fi
 
   {
     printf '{\n'
@@ -1020,10 +1112,21 @@ write_json_output() {
     printf '    "source": "node-enterprise-deploy-kit/status-node-app.sh",\n'
     printf '    "collector": "scripts/linux/status-node-app.sh",\n'
     printf '    "collectorVersion": 1,\n'
+    printf '    "collectorSha256": "%s",\n' "$(json_escape "$(collector_file_sha256)")"
     printf '    "liveHost": true,\n'
     printf '    "synthetic": false,\n'
     printf '    "mock": false,\n'
-    printf '    "sample": false\n'
+    printf '    "sample": false,\n'
+    printf '    "ci": {\n'
+    printf '      "isCi": %s,\n' "$ci_is_ci"
+    printf '      "provider": "%s",\n' "$(json_escape "$ci_provider")"
+    printf '      "workflowName": "%s",\n' "$(json_escape "$(safe_ci_path_value "${GITHUB_WORKFLOW:-}")")"
+    printf '      "runId": "%s",\n' "$(json_escape "$(safe_ci_digits_value "${GITHUB_RUN_ID:-}")")"
+    printf '      "runAttempt": "%s",\n' "$(json_escape "$(safe_ci_digits_value "${GITHUB_RUN_ATTEMPT:-}")")"
+    printf '      "eventName": "%s",\n' "$(json_escape "$(safe_ci_token_value "${GITHUB_EVENT_NAME:-}")")"
+    printf '      "refName": "%s",\n' "$(json_escape "$(safe_ci_path_value "${GITHUB_REF_NAME:-}")")"
+    printf '      "sha": "%s"\n' "$(json_escape "$(safe_ci_hex_value "${GITHUB_SHA:-}")")"
+    printf '    }\n'
     printf '  },\n'
     printf '  "supportTargetId": "%s",\n' "$(json_escape "$SUPPORT_TARGET_ID")"
     printf '  "generatedAtUtc": "%s",\n' "$(json_escape "$generated_at")"
@@ -1115,6 +1218,8 @@ write_json_output() {
     printf '    "status": "%s",\n' "$(json_escape "$NEXTJS_LAYOUT_STATUS")"
     printf '    "appFramework": "%s",\n' "$(json_escape "$APP_FRAMEWORK_NORMALIZED")"
     printf '    "mode": "%s",\n' "$(json_escape "$NEXTJS_DEPLOYMENT_MODE_NORMALIZED")"
+    printf '    "nodeVersion": "%s",\n' "$(json_escape "$NODE_RUNTIME_VERSION")"
+    printf '    "nextVersion": "%s",\n' "$(json_escape "$NEXT_PACKAGE_VERSION")"
     printf '    "runtimeRootName": "%s"\n' "$(json_escape "$(safe_path_name "${APP_DIR:-}")")"
     printf '  },\n'
     printf '  "reverseProxy": {\n'
@@ -1187,6 +1292,8 @@ write_json_output() {
 
 run_nextjs_layout_check() {
   local output exit_code
+  NODE_RUNTIME_VERSION="$(node_runtime_version)"
+  NEXT_PACKAGE_VERSION="$(next_package_version)"
   case "$APP_FRAMEWORK_NORMALIZED" in
     next|nextjs|next-js)
       NEXTJS_LAYOUT_APPLICABLE="true"

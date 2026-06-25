@@ -105,11 +105,36 @@ function Get-BooleanValue {
   return $Default
 }
 
+function Get-ArrayValue {
+  param($Value)
+  if ($null -eq $Value) { return @() }
+  return @($Value)
+}
+
 function Normalize-ReverseProxy {
   param([string]$Value)
   $normalized = Normalize-Token $Value
   if ($normalized -eq "httpd") { return "apache" }
   return $normalized
+}
+
+function Test-WorkflowDispatchSupported {
+  param([string]$Category)
+  return ($Category -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Get-MatrixTargetsById {
+  param([string]$Path)
+
+  $matrix = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  $targetsById = @{}
+  foreach ($target in @(Get-ArrayValue $matrix.targets)) {
+    $targetId = Normalize-Token ([string]$target.id)
+    if ($targetId) {
+      $targetsById[$targetId] = $target
+    }
+  }
+  return $targetsById
 }
 
 function Get-SupportTargetId {
@@ -136,6 +161,16 @@ function Get-NextJsMode {
     $mode = Get-StringValue -Object $Evidence -Names @("NextjsDeploymentMode", "nextjsDeploymentMode", "NextJsDeploymentMode")
   }
   return Normalize-Token $mode
+}
+
+function Get-NextJsRuntimeValue {
+  param(
+    [object]$Evidence,
+    [string[]]$Names
+  )
+
+  $nextJs = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+  return Get-StringValue -Object $nextJs -Names $Names
 }
 
 function Get-ServiceManager {
@@ -178,14 +213,26 @@ function Get-EvidenceCollectionEvidence {
   param([object]$Evidence)
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
     CollectorVersion = Get-IntegerValue -Object $collection -Names @("CollectorVersion", "collectorVersion")
+    CollectorSha256 = (Get-StringValue -Object $collection -Names @("CollectorSha256", "collectorSha256")).Trim().ToLowerInvariant()
     LiveHost = Get-BooleanValue -Object $collection -Names @("LiveHost", "liveHost", "CapturedFromLiveHost", "capturedFromLiveHost") -Default $null
     Synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
     Mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
     Sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+    Ci = [pscustomobject]@{
+      IsCi = Get-BooleanValue -Object $ci -Names @("IsCi", "isCi") -Default $null
+      Provider = Get-StringValue -Object $ci -Names @("Provider", "provider")
+      WorkflowName = Get-StringValue -Object $ci -Names @("WorkflowName", "workflowName")
+      RunId = Get-StringValue -Object $ci -Names @("RunId", "runId")
+      RunAttempt = Get-StringValue -Object $ci -Names @("RunAttempt", "runAttempt")
+      EventName = Get-StringValue -Object $ci -Names @("EventName", "eventName")
+      RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
+      Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
+    }
   }
 }
 
@@ -201,6 +248,81 @@ function Get-RelativePath {
     return $pathFull.Substring($baseFull.Length).TrimStart('\', '/').Replace("\", "/")
   }
   return [System.IO.Path]::GetFileName($Path)
+}
+
+function Invoke-GitText {
+  param([string[]]$Arguments)
+
+  try {
+    $output = & git -C $RepoRoot @Arguments 2>$null
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return (($output | Out-String).Trim())
+  } catch {
+    return ""
+  }
+}
+
+function Get-SourceControlProvenance {
+  $repoName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/'))
+  $insideGit = (Invoke-GitText -Arguments @("rev-parse", "--is-inside-work-tree")).Trim().ToLowerInvariant()
+  $isGitRepository = ($insideGit -eq "true")
+  $commitSha = ""
+  $branchName = ""
+  $trackedDirty = $false
+
+  if ($isGitRepository) {
+    $gitRoot = Invoke-GitText -Arguments @("rev-parse", "--show-toplevel")
+    if (-not [string]::IsNullOrWhiteSpace($gitRoot)) {
+      $repoName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($gitRoot).TrimEnd('\', '/'))
+    }
+
+    $commitSha = Invoke-GitText -Arguments @("rev-parse", "--verify", "HEAD")
+    $branchName = Invoke-GitText -Arguments @("branch", "--show-current")
+    if ([string]::IsNullOrWhiteSpace($branchName)) {
+      $branchName = Invoke-GitText -Arguments @("rev-parse", "--abbrev-ref", "HEAD")
+      if ($branchName -eq "HEAD") {
+        $branchName = ""
+      }
+    }
+
+    $dirtyOutput = Invoke-GitText -Arguments @("status", "--porcelain", "--untracked-files=no")
+    $trackedDirty = -not [string]::IsNullOrWhiteSpace($dirtyOutput)
+  }
+
+  return [ordered]@{
+    repositoryName = ($repoName -replace '[^A-Za-z0-9._-]', '-')
+    isGitRepository = $isGitRepository
+    commitSha = $commitSha.Trim().ToLowerInvariant()
+    branchName = ($branchName.Trim() -replace '[^A-Za-z0-9._/-]', '-')
+    trackedDirty = $trackedDirty
+  }
+}
+
+function Get-SafeCiValue {
+  param(
+    [string]$Value,
+    [string]$Pattern = '[^A-Za-z0-9._/-]'
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  return ($Value.Trim() -replace $Pattern, "-")
+}
+
+function Get-CiProvenance {
+  $isGitHubActions = ([string]$env:GITHUB_ACTIONS).Trim().ToLowerInvariant() -eq "true"
+  $isCi = $isGitHubActions -or (([string]$env:CI).Trim().ToLowerInvariant() -eq "true")
+  $provider = if ($isGitHubActions) { "github-actions" } elseif ($isCi) { "ci" } else { "" }
+
+  return [ordered]@{
+    isCi = $isCi
+    provider = $provider
+    workflowName = Get-SafeCiValue -Value ([string]$env:GITHUB_WORKFLOW)
+    runId = Get-SafeCiValue -Value ([string]$env:GITHUB_RUN_ID) -Pattern '[^0-9]'
+    runAttempt = Get-SafeCiValue -Value ([string]$env:GITHUB_RUN_ATTEMPT) -Pattern '[^0-9]'
+    eventName = Get-SafeCiValue -Value ([string]$env:GITHUB_EVENT_NAME) -Pattern '[^A-Za-z0-9._-]'
+    refName = Get-SafeCiValue -Value ([string]$env:GITHUB_REF_NAME)
+    sha = Get-SafeCiValue -Value ([string]$env:GITHUB_SHA) -Pattern '[^A-Fa-f0-9]'
+  }
 }
 
 function Copy-EvidenceFile {
@@ -228,6 +350,7 @@ function New-SelfTestEvidence {
     Source = "node-enterprise-deploy-kit/status.ps1"
     Collector = "status.ps1"
     CollectorVersion = 1
+    CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     LiveHost = $true
     Synthetic = $false
     Mock = $false
@@ -237,6 +360,7 @@ function New-SelfTestEvidence {
     source = "node-enterprise-deploy-kit/status-node-app.sh"
     collector = "scripts/linux/status-node-app.sh"
     collectorVersion = 1
+    collectorSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     liveHost = $true
     synthetic = $false
     mock = $false
@@ -305,6 +429,8 @@ function New-SelfTestEvidence {
       Status = "ok"
       AppFramework = "nextjs"
       Mode = "standalone"
+      NodeVersion = "v20.11.1"
+      NextVersion = "14.2.3"
       RuntimeRootName = "example-next-app"
     }
     ReverseProxy = [ordered]@{
@@ -402,6 +528,8 @@ function New-SelfTestEvidence {
       status = "ok"
       appFramework = "nextjs"
       mode = "standalone"
+      nodeVersion = "v20.11.1"
+      nextVersion = "14.2.3"
       runtimeRootName = "example-next-app"
     }
     reverseProxy = [ordered]@{
@@ -534,15 +662,21 @@ if ($files.Count -eq 0) {
 }
 
 $manifestFiles = New-Object System.Collections.Generic.List[object]
+$matrixTargetsById = Get-MatrixTargetsById -Path $MatrixPath
 foreach ($file in $files) {
   $relative = Copy-EvidenceFile -SourcePath $file.FullName -EvidenceRoot $EvidencePath -BundleEvidenceRoot $bundleEvidenceRoot
   $bundleFile = Join-Path $bundleEvidenceRoot ($relative -replace '/', '\')
   $sha256 = (Get-FileHash -LiteralPath $bundleFile -Algorithm SHA256).Hash.ToLowerInvariant()
   $parseError = ""
   $target = ""
+  $targetCategory = ""
+  $workflowDispatchSupported = $null
+  $localCommandOnly = $null
   $mode = ""
   $serviceManager = ""
   $reverseProxy = ""
+  $nodeVersion = ""
+  $nextVersion = ""
   $generatedAt = ""
   $verdict = ""
   $critical = $null
@@ -553,16 +687,32 @@ foreach ($file in $files) {
   $collectorSource = ""
   $collector = ""
   $collectorVersion = $null
+  $collectorSha256 = ""
   $liveHost = $null
   $synthetic = $null
   $mock = $null
   $sample = $null
+  $collectionCiIsCi = $null
+  $collectionCiProvider = ""
+  $collectionCiWorkflowName = ""
+  $collectionCiRunId = ""
+  $collectionCiRunAttempt = ""
+  $collectionCiEventName = ""
+  $collectionCiRefName = ""
+  $collectionCiSha = ""
   try {
     $evidence = Get-Content -LiteralPath $bundleFile -Raw | ConvertFrom-Json
     $target = Get-SupportTargetId -Evidence $evidence
+    if ($target -and $matrixTargetsById.ContainsKey($target)) {
+      $targetCategory = [string]$matrixTargetsById[$target].category
+      $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $targetCategory
+      $localCommandOnly = -not [bool]$workflowDispatchSupported
+    }
     $mode = Get-NextJsMode -Evidence $evidence
     $serviceManager = Get-ServiceManager -Evidence $evidence
     $reverseProxy = Get-ReverseProxyMode -Evidence $evidence
+    $nodeVersion = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersion", "nodeVersion")
+    $nextVersion = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NextVersion", "nextVersion")
     $generatedAt = Get-StringValue -Object $evidence -Names @("GeneratedAtUtc", "generatedAtUtc")
     $verdict = Get-StringValue -Object $evidence -Names @("Verdict", "verdict")
     $critical = Get-IntegerValue -Object $evidence -Names @("Critical", "critical")
@@ -574,10 +724,19 @@ foreach ($file in $files) {
     $collectorSource = $collection.Source
     $collector = $collection.Collector
     $collectorVersion = $collection.CollectorVersion
+    $collectorSha256 = $collection.CollectorSha256
     $liveHost = $collection.LiveHost
     $synthetic = $collection.Synthetic
     $mock = $collection.Mock
     $sample = $collection.Sample
+    $collectionCiIsCi = $collection.Ci.IsCi
+    $collectionCiProvider = $collection.Ci.Provider
+    $collectionCiWorkflowName = $collection.Ci.WorkflowName
+    $collectionCiRunId = $collection.Ci.RunId
+    $collectionCiRunAttempt = $collection.Ci.RunAttempt
+    $collectionCiEventName = $collection.Ci.EventName
+    $collectionCiRefName = $collection.Ci.RefName
+    $collectionCiSha = $collection.Ci.Sha
   } catch {
     $parseError = $_.Exception.Message
   }
@@ -587,9 +746,14 @@ foreach ($file in $files) {
     sha256 = $sha256
     bytes = (Get-Item -LiteralPath $bundleFile).Length
     supportTargetId = $target
+    targetCategory = $targetCategory
+    workflowDispatchSupported = $workflowDispatchSupported
+    localCommandOnly = $localCommandOnly
     nextJsMode = $mode
     serviceManager = $serviceManager
     reverseProxy = $reverseProxy
+    nodeVersion = $nodeVersion
+    nextVersion = $nextVersion
     generatedAtUtc = $generatedAt
     verdict = $verdict
     critical = $critical
@@ -600,10 +764,19 @@ foreach ($file in $files) {
     collectorSource = $collectorSource
     collector = $collector
     collectorVersion = $collectorVersion
+    collectorSha256 = $collectorSha256
     liveHost = $liveHost
     synthetic = $synthetic
     mock = $mock
     sample = $sample
+    collectionCiIsCi = $collectionCiIsCi
+    collectionCiProvider = $collectionCiProvider
+    collectionCiWorkflowName = $collectionCiWorkflowName
+    collectionCiRunId = $collectionCiRunId
+    collectionCiRunAttempt = $collectionCiRunAttempt
+    collectionCiEventName = $collectionCiEventName
+    collectionCiRefName = $collectionCiRefName
+    collectionCiSha = $collectionCiSha
     parseError = $parseError
   }) | Out-Null
 }
@@ -620,6 +793,9 @@ $manifest = [ordered]@{
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
   bundleName = $safeName
   matrixPath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
+  matrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  sourceControl = Get-SourceControlProvenance
+  ci = Get-CiProvenance
   sourceEvidencePathName = [System.IO.Path]::GetFileName(([System.IO.Path]::GetFullPath($EvidencePath)).TrimEnd('\', '/'))
   maxEvidenceAgeDays = $MaxEvidenceAgeDays
   allowWarnings = [bool]$AllowWarnings

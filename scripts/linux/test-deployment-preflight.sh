@@ -438,6 +438,17 @@ if [[ "$APP_RUNTIME_NORMALIZED" =~ ^(tomcat|apache-tomcat)$ ]]; then
 fi
 
 if ! is_true "$SKIP_HEALTH_CHECK"; then
+  case "$SERVICE_MANAGER_NORMALIZED" in
+    systemd)
+      command -v systemctl >/dev/null 2>&1 || add_error "Healthcheck scheduler requires systemctl for SERVICE_MANAGER=systemd."
+      ;;
+    launchd)
+      command -v launchctl >/dev/null 2>&1 || add_error "Healthcheck scheduler requires launchctl for SERVICE_MANAGER=launchd."
+      ;;
+    systemv|sysv|sysvinit|initd|init-d|openrc|bsdrc|bsd-rc|rcd|rc.d)
+      command -v crontab >/dev/null 2>&1 || add_error "Healthcheck scheduler requires crontab for SERVICE_MANAGER=${SERVICE_MANAGER:-}."
+      ;;
+  esac
   if [[ -n "${LOG_DIR:-}" ]]; then
     log_dir_normalized="${LOG_DIR%/}"
     healthcheck_state_dir_normalized="${HEALTHCHECK_STATE_DIR%/}"

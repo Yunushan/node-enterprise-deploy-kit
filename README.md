@@ -66,7 +66,7 @@ Recommended default:
 
 ```text
 Windows: IIS + WinSW Windows Service + scheduled health check
-Linux:   Nginx, Apache, HAProxy, or Traefik + systemd service + systemd timer health check
+Unix:    Nginx, Apache, HAProxy, or Traefik + managed service + health-check scheduler
 ```
 
 This repository contains no private hostnames, secrets, credentials, IP addresses, or customer data. All sensitive values are variables.
@@ -117,7 +117,7 @@ To validate real host evidence collected from deployed Windows, Linux, macOS,
 or BSD machines:
 
 ```powershell
-.\scripts\dev\Test-HostEvidence.ps1 -EvidencePath .\evidence -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
+.\scripts\dev\Test-HostEvidence.ps1 -EvidencePath .\evidence -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity -RequireCollectorSha256 -RequireMinimumUptimeHours 72
 ```
 
 Status JSON includes a normalized `supportTargetId` / `SupportTargetId` such
@@ -137,7 +137,13 @@ reverse proxy inputs from the generated support evidence plan so collected
 artifacts are rejected when they do not match the matrix combination being
 claimed. The workflow choices are limited to declared matrix vocabulary for
 Next.js modes, service managers, and reverse-proxy modes, then validated
-against the exact target row in `config/support-matrix.example.json`.
+against the exact target row in `config/support-matrix.example.json`. Use a
+safe relative `config_path` inside the runner workspace, such as
+`config/windows/app.config.json` or `config/linux/app.env`. Those local config
+files are ignored by git; the collection checkout preserves them with
+`clean: false` and fails early if the selected config is missing. Do not put
+absolute server paths, hostnames, customer names, or secrets in workflow inputs.
+Set `upload_retention_days` between 1 and 90 days.
 
 The support matrix is machine-readable and checked by CI:
 
@@ -183,6 +189,24 @@ and run it with `-Run` only after the runner labels match your real hosts:
 .\evidence\Invoke-HostEvidenceDispatch.ps1
 ```
 
+After downloading `host-evidence` workflow artifacts into a local folder,
+validate and import them into the canonical evidence tree. `ArtifactPath` can
+be an extracted artifact folder, a single `.zip` artifact, or a folder
+containing downloaded `.zip` artifacts:
+
+```powershell
+.\scripts\dev\Import-HostEvidenceArtifacts.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence
+```
+
+The importer validates each downloaded `status.json` against the support matrix
+and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
+`workflow_dispatch` provenance by default, derives the target/mode/service/proxy
+key, writes the canonical evidence filename, and refuses changed overwrites
+unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+local-command evidence.
+
 To report which declared matrix combinations are still missing collected
 evidence:
 
@@ -192,6 +216,41 @@ evidence:
   -IncludeServiceOnly `
   -IncludeFallback
 ```
+
+To create a review-friendly missing-coverage report without failing the
+command, or to audit a saved bundle directly:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback `
+  -ReportOnly `
+  -Format Markdown `
+  -OutputPath .\release-evidence\coverage-report.md
+```
+
+Missing rows in Markdown, JSON, and CSV output include the expected evidence
+file plus the local collector command and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence.
+
+For the final operator handoff, run the combined release workflow. It can
+optionally import downloaded workflow artifacts, writes JSON and Markdown
+coverage reports, fails if matrix evidence is incomplete, creates the evidence
+bundle, verifies the bundle, and writes release readiness JSON:
+
+```powershell
+.\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+Add `-StrictCiRelease` only for final CI-controlled signoff from a clean,
+committed revision with workflow-collected evidence.
 
 To create a private release evidence bundle with per-file SHA256 hashes:
 
@@ -209,6 +268,26 @@ To create a private release evidence bundle with per-file SHA256 hashes:
   -IncludeFallback
 ```
 
+The bundle manifest records safe Node.js runtime and Next.js package version
+strings when available, the collector SHA256 digest, the support matrix SHA256,
+and safe source-control provenance, plus safe CI run provenance when built in CI.
+The bundle verifier rejects internally inconsistent CI/source commit SHAs.
+When individual evidence files contain safe collection CI provenance, the
+manifest records and verifies it per file so workflow-collected status evidence
+keeps its collection run identity after bundling.
+`Test-ReleaseSupportReadiness.ps1` rejects a bundle if it was built against a
+different support matrix than the current repository. Use `-StrictCiRelease`
+for final CI-controlled signoff. It requires a clean source revision, current
+commit match, bundle CI provenance, collection CI provenance, collection SHA
+matching the bundle source commit, and collection through the controlled
+`host-evidence` workflow dispatch for workflow-capable evidence rows. Targets
+marked local-command-only, such as the BSD rows in the example matrix, are
+accepted without workflow collection only when the bundle manifest explicitly
+marks them local-only; they must still prove live Node.js and Next.js runtime
+versions, collector SHA256, and the matrix-required minimum uptime window. The
+example matrix sets that window to 72 hours with
+`requiredMinimumUptimeHours`.
+
 To verify a saved evidence bundle later:
 
 ```powershell
@@ -223,7 +302,8 @@ support claim:
 .\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
   -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
   -IncludeServiceOnly `
-  -IncludeFallback
+  -IncludeFallback `
+  -StrictCiRelease
 ```
 
 The support-claim gate also has a self-test:
@@ -386,7 +466,8 @@ want a safe machine-readable release evidence file without environment values
 or raw log contents. If the app was installed from a package import, the
 evidence also includes the safe deployment manifest summary: package file name,
 package SHA256, import timestamp, Next.js build ID, and live status collector
-metadata for release evidence validation.
+metadata for release evidence validation. For Next.js apps, status evidence also
+records safe Node.js runtime and Next.js package version strings when available.
 
 6. Restart or uninstall through the top-level wrappers when needed:
 
@@ -457,6 +538,9 @@ sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./
 the service, reverse proxy, and health check. If the configured port is already
 owned by the current service during an intentional update, set
 `ALLOW_PORT_IN_USE="true"` in `config/linux/app.env`.
+When health checks are enabled, Unix preflight also checks the selected
+scheduler command before deployment changes are made: `systemctl` for systemd,
+`launchctl` for macOS, and `crontab` for System V, OpenRC, or BSD rc.
 
 5. Or run the pieces manually:
 

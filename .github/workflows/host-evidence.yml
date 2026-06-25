@@ -89,17 +89,41 @@ jobs:
       - name: Validate self-hosted runner labels
         shell: pwsh
         env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          EVIDENCE_NAME: ${{ inputs.evidence_name }}
           EXPECTED_NEXTJS_MODE: ${{ inputs.expected_nextjs_mode }}
           EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
           EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
           EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+          MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
           PLATFORM: ${{ inputs.platform }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
+          UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
         run: |
           $ErrorActionPreference = "Stop"
           function Get-NormalizedArray {
             param($Values)
             @($Values | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+          }
+          function Assert-SafeRelativeConfigPath {
+            param([string]$Value)
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+              throw "config_path is required and must be a relative path inside the repository workspace."
+            }
+            $pathText = $Value.Trim()
+            if ($pathText.Length -gt 240) {
+              throw "config_path must be 240 characters or less."
+            }
+            if ($pathText -match '[\x00-\x1F\x7F:*?"<>|]') {
+              throw "config_path must not contain control characters, drive letters, wildcards, or shell metacharacters."
+            }
+            if ($pathText -match '^[A-Za-z]:[\\/]' -or $pathText -match '^[\\/]' -or $pathText -match '^\\\\' -or $pathText -match '^//') {
+              throw "config_path must be a relative path inside the repository workspace."
+            }
+            $normalizedPath = $pathText.Replace('\', '/')
+            if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
+              throw "config_path must not contain parent traversal, empty path segments, or a trailing slash."
+            }
           }
 
           $expectedDimensions = [ordered]@{
@@ -147,6 +171,32 @@ jobs:
           $targetReverseProxies = @(Get-NormalizedArray $target.reverseProxies)
           if ($targetReverseProxies -notcontains $expectedReverseProxy) {
             throw "expected_reverse_proxy '$expectedReverseProxy' is not declared for support matrix target '$expectedTarget'."
+          }
+          Assert-SafeRelativeConfigPath -Value $env:CONFIG_PATH
+          if ($env:EVIDENCE_NAME -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "evidence_name must contain only letters, numbers, dot, underscore, or dash."
+          }
+          if ($env:MINIMUM_UPTIME_HOURS -notmatch '^\d+$') {
+            throw "minimum_uptime_hours must be a non-negative integer."
+          }
+          $minimumUptimeHours = [int]$env:MINIMUM_UPTIME_HOURS
+          try {
+            $requiredMinimumUptimeHours = [int]$matrix.requiredMinimumUptimeHours
+          } catch {
+            throw "support matrix requiredMinimumUptimeHours must be a positive integer."
+          }
+          if ($requiredMinimumUptimeHours -lt 1) {
+            throw "support matrix requiredMinimumUptimeHours must be a positive integer."
+          }
+          if ($minimumUptimeHours -lt $requiredMinimumUptimeHours) {
+            throw "minimum_uptime_hours must be greater than or equal to support matrix requiredMinimumUptimeHours."
+          }
+          if ($env:UPLOAD_RETENTION_DAYS -notmatch '^\d+$') {
+            throw "upload_retention_days must be an integer from 1 to 90."
+          }
+          $retentionDays = [int]$env:UPLOAD_RETENTION_DAYS
+          if ($retentionDays -lt 1 -or $retentionDays -gt 90) {
+            throw "upload_retention_days must be an integer from 1 to 90."
           }
           $targetCategory = ([string]$target.category).Trim().ToLowerInvariant()
           $expectedPlatform = if ($targetCategory -in @("windows-client", "windows-server")) { "windows" } else { "unix" }
@@ -203,13 +253,40 @@ jobs:
       FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
       MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository without deleting local private config
+        uses: actions/checkout@v7
+        with:
+          clean: false
 
       - name: Validate inputs for Windows collection
         if: ${{ inputs.platform == 'windows' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          function Assert-SafeRelativeConfigPath {
+            param([string]$Value)
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+              throw "config_path is required and must be a relative path inside the repository workspace."
+            }
+            $pathText = $Value.Trim()
+            if ($pathText.Length -gt 240) {
+              throw "config_path must be 240 characters or less."
+            }
+            if ($pathText -match '[\x00-\x1F\x7F:*?"<>|]') {
+              throw "config_path must not contain control characters, drive letters, wildcards, or shell metacharacters."
+            }
+            if ($pathText -match '^[A-Za-z]:[\\/]' -or $pathText -match '^[\\/]' -or $pathText -match '^\\\\' -or $pathText -match '^//') {
+              throw "config_path must be a relative path inside the repository workspace."
+            }
+            $normalizedPath = $pathText.Replace('\', '/')
+            if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
+              throw "config_path must not contain parent traversal, empty path segments, or a trailing slash."
+            }
+          }
+          Assert-SafeRelativeConfigPath -Value $env:CONFIG_PATH
+          if (-not (Test-Path -LiteralPath $env:CONFIG_PATH -PathType Leaf)) {
+            throw "config_path was not found on the self-hosted runner workspace."
+          }
           if ($env:EVIDENCE_NAME -notmatch '^[A-Za-z0-9._-]+$') {
             throw "evidence_name must contain only letters, numbers, dot, underscore, or dash."
           }
@@ -228,6 +305,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "$CONFIG_PATH" || ${#CONFIG_PATH} -gt 240 ]]; then
+            echo "config_path is required, must be 240 characters or less, and must be a relative path inside the repository workspace." >&2
+            exit 1
+          fi
+          if [[ "$CONFIG_PATH" == /* || "$CONFIG_PATH" == \\* || "$CONFIG_PATH" == *:* || "$CONFIG_PATH" == *//* || "$CONFIG_PATH" == */ ]]; then
+            echo "config_path must be a relative path inside the repository workspace." >&2
+            exit 1
+          fi
+          if [[ "$CONFIG_PATH" == "../"* || "$CONFIG_PATH" == *"/../"* || "$CONFIG_PATH" == *"/.." ]]; then
+            echo "config_path must not contain parent traversal, empty path segments, or a trailing slash." >&2
+            exit 1
+          fi
+          if [[ "$CONFIG_PATH" =~ [[:cntrl:]] || "$CONFIG_PATH" == *"*"* || "$CONFIG_PATH" == *"?"* || "$CONFIG_PATH" == *"'"* || "$CONFIG_PATH" == *'"'* || "$CONFIG_PATH" == *"<"* || "$CONFIG_PATH" == *">"* || "$CONFIG_PATH" == *"|"* ]]; then
+            echo "config_path must not contain control characters, drive letters, wildcards, or shell metacharacters." >&2
+            exit 1
+          fi
+          if [[ ! -f "$CONFIG_PATH" ]]; then
+            echo "config_path was not found on the self-hosted runner workspace." >&2
+            exit 1
+          fi
           case "$EVIDENCE_NAME" in
             *[!A-Za-z0-9._-]*|'') echo "evidence_name must contain only letters, numbers, dot, underscore, or dash." >&2; exit 1 ;;
           esac
@@ -266,7 +363,16 @@ jobs:
           if [[ "$FAIL_ON_WARNINGS" == "true" ]]; then
             extra+=(--fail-on-warnings)
           fi
-          sudo bash scripts/linux/status-node-app.sh \
+          sudo env \
+            CI="${CI:-}" \
+            GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" \
+            GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
+            GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-}" \
+            GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
+            GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
+            GITHUB_SHA="${GITHUB_SHA:-}" \
+            bash scripts/linux/status-node-app.sh \
             "$CONFIG_PATH" \
             --minimum-uptime-hours "$MINIMUM_UPTIME_HOURS" \
             --json-output "evidence/$EVIDENCE_NAME/status.json" \
@@ -304,6 +410,7 @@ jobs:
           EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
           EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
           FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
+          MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
           REQUIRE_REVERSE_PROXY: ${{ inputs.require_reverse_proxy }}
         run: |
           $ErrorActionPreference = "Stop"
@@ -311,6 +418,8 @@ jobs:
             "-EvidencePath", (Join-Path "evidence" $env:EVIDENCE_NAME),
             "-RequireNextJs",
             "-RequireDeploymentIdentity",
+            "-RequireCollectorSha256",
+            "-RequireMinimumUptimeHours", $env:MINIMUM_UPTIME_HOURS,
             "-MaxEvidenceAgeDays", "1"
           )
           $requireReverseProxy = ($env:REQUIRE_REVERSE_PROXY -eq "true")

@@ -51,11 +51,15 @@ sudo bash scripts/linux/status-node-app.sh \
 
 The evidence JSON contains safe operational metadata only: app name, service
 name, verdict, finding counts, sanitized health URL, deployment/build identity,
-path basenames, platform metadata, normalized `supportTargetId`, live collector
-metadata in `evidenceCollection`, explicit `synthetic: false`, `mock: false`,
-and `sample: false` provenance markers, and redacted finding messages. It does
-not include runtime environment values, raw host identity, full filesystem
-paths, raw logs, or HTTP response bodies.
+path basenames, platform metadata, normalized `supportTargetId`, safe Node.js
+runtime and Next.js package version strings when available, live collector
+metadata in `evidenceCollection`, the collector SHA256 digest when available,
+explicit `synthetic: false`, `mock: false`, and `sample: false` provenance
+markers, optional safe CI collection provenance, and redacted finding messages.
+CI collection provenance is limited to provider, workflow name, run ID, run
+attempt, event name, ref name, and commit SHA; it does not include runtime
+environment values, raw host identity, full filesystem paths, raw logs, HTTP
+response bodies, secrets, or runner hostnames.
 
 ### Self-Hosted Runner Collection
 
@@ -63,13 +67,24 @@ The manual `host-evidence` GitHub Actions workflow can collect evidence from an
 already deployed Windows, Linux, or macOS self-hosted runner and upload the safe
 `status.json` as a workflow artifact. Use runner labels that point at the real
 target host, set `platform` to `windows` or `unix`, and set `config_path` to the
-deployed app config on that runner.
+deployed app config on that runner. The workflow accepts only a safe relative
+workspace path such as `config/windows/app.config.json` or
+`config/linux/app.env`; do not put absolute server paths, hostnames, customer
+names, or secrets in workflow inputs.
 
 The workflow validates `runner_labels` and expected collection dimensions before
 collection. Labels must be a JSON array containing `self-hosted` and the exact
 `expected_target_id` label. GitHub-hosted labels such as `ubuntu-latest`,
 `windows-latest`, and `macos-latest` are rejected because they cannot prove
 real-host support.
+
+The local config files `config/windows/app.config.json` and
+`config/linux/app.env` are ignored by git. On self-hosted runners, create the
+target-specific private config in the runner workspace before dispatching the
+workflow. The collection job checks out the repository with `clean: false` so
+those ignored local config files are preserved, then it fails early if the
+selected `config_path` is missing.
+Set `upload_retention_days` between 1 and 90 days.
 
 For matrix-level support claims, set all expected collection dimensions:
 `expected_target_id`, `expected_nextjs_mode`, `expected_service_manager`, and
@@ -141,6 +156,24 @@ commands first. The generated script only dispatches workflows when run with
 .\evidence\Invoke-HostEvidenceDispatch.ps1
 ```
 
+After downloading `host-evidence` workflow artifacts into a local folder,
+validate and import them into the canonical evidence tree. `ArtifactPath` can
+be an extracted artifact folder, a single `.zip` artifact, or a folder
+containing downloaded `.zip` artifacts:
+
+```powershell
+.\scripts\dev\Import-HostEvidenceArtifacts.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence
+```
+
+The importer validates each downloaded `status.json` against the support matrix
+and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
+`workflow_dispatch` provenance by default, derives the target/mode/service/proxy
+key, writes the canonical evidence filename, and refuses changed overwrites
+unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+local-command evidence.
+
 After collecting evidence, audit the folder against the full matrix to see
 which expected host/service/proxy combinations are still missing:
 
@@ -150,6 +183,42 @@ which expected host/service/proxy combinations are still missing:
   -IncludeServiceOnly `
   -IncludeFallback
 ```
+
+For a saved release evidence bundle, audit the zip directly and write a
+reviewable Markdown report. `-ReportOnly` keeps the report command from failing
+when gaps are expected during evidence collection:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback `
+  -ReportOnly `
+  -Format Markdown `
+  -OutputPath .\release-evidence\coverage-report.md
+```
+
+Missing rows in Markdown, JSON, and CSV output include the expected evidence
+file plus the local collector command and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence.
+
+For a single operator command after artifacts are downloaded, use the combined
+release workflow. It imports optional artifacts, writes coverage reports, fails
+when declared evidence is still missing, creates and verifies the evidence
+bundle, and writes release readiness JSON:
+
+```powershell
+.\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+Use `-StrictCiRelease` only for final CI-controlled release signoff from a
+clean committed revision.
 
 Create a private evidence bundle for the release record after validation:
 
@@ -170,9 +239,20 @@ Create a private evidence bundle for the release record after validation:
 The bundle contains the safe evidence JSON files plus
 `support-evidence-manifest.json`, which records SHA256, size, target ID,
 Next.js mode, service manager, reverse proxy, deployment ID, build ID, and
-package SHA256 for each evidence file. It also records the status collector,
-collector version, live-host flag, and explicit synthetic/mock/sample flags so
-archived evidence cannot silently lose provenance.
+package SHA256 for each evidence file. It also records safe Node.js runtime and
+Next.js package version strings when available, the status collector, collector
+version, collector SHA256 digest, live-host flag, and explicit
+synthetic/mock/sample flags so archived evidence cannot silently lose
+provenance. The manifest also records the support
+matrix SHA256 and safe source-control provenance, including
+repository name, commit SHA when git metadata is available, branch name, and
+whether tracked files were dirty when the bundle was created. When the bundle
+is created in CI, it also records safe CI provenance such as provider, workflow
+name, run ID, run attempt, event name, ref name, and commit SHA. If both CI SHA
+and source-control commit SHA are present, they must match. Each manifest row
+also records safe collection CI provenance when it exists in the source evidence
+file, so workflow-collected evidence keeps its collection run identity after
+bundling.
 
 Verify a saved bundle before using it in a support review:
 
@@ -188,13 +268,31 @@ support claim:
 .\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
   -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
   -IncludeServiceOnly `
-  -IncludeFallback
+  -IncludeFallback `
+  -StrictCiRelease
 ```
 
 The verifier recalculates every evidence file hash, checks manifest byte sizes,
 proves manifest fields still match the JSON content, verifies live collector
 provenance, requires explicit non-synthetic/non-mock/non-sample evidence
-markers, and rejects unlisted evidence files inside the bundle.
+markers, verifies source-control and support-matrix provenance, and rejects
+unlisted evidence files inside the bundle. It also validates CI provenance when
+present, including CI/source commit consistency. The release readiness gate also
+rejects bundles whose recorded support matrix SHA256 does not match the current
+support matrix. Use `-StrictCiRelease` for CI-controlled final release signoff.
+It enables the clean-source, current-commit, bundle CI, collection CI,
+collection source commit, controlled `host-evidence` workflow for
+workflow-capable rows, and runtime version plus collector SHA256 evidence
+checks, with the matrix-required minimum uptime window, so
+bundles created from uncommitted tracked source changes, a different source
+commit, a non-CI bundle path, evidence files without CI/workflow collection
+provenance for workflow-capable rows, evidence collected from a different
+source commit, evidence collected outside the controlled `host-evidence`
+workflow dispatch where that workflow route is supported, or evidence without
+safe Node.js and Next.js version strings, collector SHA256 digests, or the
+required minimum uptime proof are rejected;
+omit it only for explicitly provisional evidence reviews. The example support
+matrix sets `requiredMinimumUptimeHours` to 72 hours.
 
 For release signoff, prefer the support-claim gate because it derives the
 required evidence aliases from the support matrix:
@@ -218,6 +316,8 @@ For a stricter support claim across the expanded matrix:
   -RequireNextJs `
   -RequireReverseProxy `
   -RequireDeploymentIdentity `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72 `
   -MaxEvidenceAgeDays 30 `
   -FailOnWarnings
 ```

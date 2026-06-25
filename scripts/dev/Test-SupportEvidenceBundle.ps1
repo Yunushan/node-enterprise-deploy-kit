@@ -109,6 +109,16 @@ function Get-NextJsMode {
   return Normalize-Token $mode
 }
 
+function Get-NextJsRuntimeValue {
+  param(
+    [object]$Evidence,
+    [string[]]$Names
+  )
+
+  $nextJs = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+  return Get-StringValue -Object $nextJs -Names $Names
+}
+
 function Get-ServiceManager {
   param([object]$Evidence)
 
@@ -149,14 +159,26 @@ function Get-EvidenceCollectionEvidence {
   param([object]$Evidence)
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
     CollectorVersion = Get-IntegerValue -Object $collection -Names @("CollectorVersion", "collectorVersion")
+    CollectorSha256 = (Get-StringValue -Object $collection -Names @("CollectorSha256", "collectorSha256")).Trim().ToLowerInvariant()
     LiveHost = Get-BooleanValue -Object $collection -Names @("LiveHost", "liveHost", "CapturedFromLiveHost", "capturedFromLiveHost") -Default $null
     Synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
     Mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
     Sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+    Ci = [pscustomobject]@{
+      IsCi = Get-BooleanValue -Object $ci -Names @("IsCi", "isCi") -Default $null
+      Provider = Get-StringValue -Object $ci -Names @("Provider", "provider")
+      WorkflowName = Get-StringValue -Object $ci -Names @("WorkflowName", "workflowName")
+      RunId = Get-StringValue -Object $ci -Names @("RunId", "runId")
+      RunAttempt = Get-StringValue -Object $ci -Names @("RunAttempt", "runAttempt")
+      EventName = Get-StringValue -Object $ci -Names @("EventName", "eventName")
+      RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
+      Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
+    }
   }
 }
 
@@ -279,6 +301,65 @@ function Test-DateValueEqual {
   return ($actualDate -eq $expectedDate)
 }
 
+function Test-Sha256Text {
+  param([string]$Value)
+  return (-not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '^[A-Fa-f0-9]{64}$')
+}
+
+function Assert-CollectionCiProvenance {
+  param(
+    [object]$Ci,
+    [string]$Context
+  )
+
+  if ($null -eq $Ci -or $null -eq $Ci.IsCi) { return }
+
+  if ($Ci.Provider -and $Ci.Provider -notmatch '^[A-Za-z0-9._-]+$') {
+    throw "$Context collection ci.provider contains unsupported characters."
+  }
+  if ($Ci.WorkflowName -and $Ci.WorkflowName -notmatch '^[A-Za-z0-9._/-]+$') {
+    throw "$Context collection ci.workflowName contains unsupported characters."
+  }
+  if ($Ci.RunId -and $Ci.RunId -notmatch '^[0-9]+$') {
+    throw "$Context collection ci.runId must be numeric when present."
+  }
+  if ($Ci.RunAttempt -and $Ci.RunAttempt -notmatch '^[0-9]+$') {
+    throw "$Context collection ci.runAttempt must be numeric when present."
+  }
+  if ($Ci.EventName -and $Ci.EventName -notmatch '^[A-Za-z0-9._-]+$') {
+    throw "$Context collection ci.eventName contains unsupported characters."
+  }
+  if ($Ci.RefName -and $Ci.RefName -notmatch '^[A-Za-z0-9._/-]+$') {
+    throw "$Context collection ci.refName contains unsupported characters."
+  }
+  if ($Ci.Sha -and $Ci.Sha -notmatch '^[A-Fa-f0-9]{40}$') {
+    throw "$Context collection ci.sha must be a 40-character git SHA when present."
+  }
+  if ($Ci.IsCi -and -not $Ci.Provider) {
+    throw "$Context collection ci.provider is required when ci.isCi is true."
+  }
+  if ($Ci.Provider -eq "github-actions") {
+    if (-not $Ci.WorkflowName) {
+      throw "$Context collection ci.workflowName is required for github-actions provenance."
+    }
+    if (-not $Ci.RunId) {
+      throw "$Context collection ci.runId is required for github-actions provenance."
+    }
+    if (-not $Ci.RunAttempt) {
+      throw "$Context collection ci.runAttempt is required for github-actions provenance."
+    }
+    if (-not $Ci.EventName) {
+      throw "$Context collection ci.eventName is required for github-actions provenance."
+    }
+    if (-not $Ci.RefName) {
+      throw "$Context collection ci.refName is required for github-actions provenance."
+    }
+    if (-not $Ci.Sha) {
+      throw "$Context collection ci.sha is required for github-actions provenance."
+    }
+  }
+}
+
 function Resolve-BundleRoot {
   param([string]$Path)
 
@@ -325,6 +406,99 @@ function Test-Bundle {
     if ([int]$manifest.schemaVersion -ne 1) {
       throw "support-evidence-manifest.json schemaVersion must be 1."
     }
+    $matrixSha256 = Get-StringValue -Object $manifest -Names @("matrixSha256")
+    if (-not (Test-Sha256Text -Value $matrixSha256)) {
+      throw "support-evidence-manifest.json matrixSha256 is required and must be a SHA256 hash."
+    }
+    $sourceControl = Get-PropertyValue -Object $manifest -Names @("sourceControl")
+    if ($null -eq $sourceControl) {
+      throw "support-evidence-manifest.json sourceControl is required."
+    }
+    $repositoryName = Get-StringValue -Object $sourceControl -Names @("repositoryName")
+    if ($repositoryName -notmatch '^[A-Za-z0-9._-]+$') {
+      throw "sourceControl.repositoryName must contain only letters, numbers, dot, underscore, or dash."
+    }
+    $isGitRepository = Get-BooleanValue -Object $sourceControl -Names @("isGitRepository") -Default $null
+    if ($null -eq $isGitRepository) {
+      throw "sourceControl.isGitRepository must be true or false."
+    }
+    $trackedDirty = Get-BooleanValue -Object $sourceControl -Names @("trackedDirty") -Default $null
+    if ($null -eq $trackedDirty) {
+      throw "sourceControl.trackedDirty must be true or false."
+    }
+    $commitSha = Get-StringValue -Object $sourceControl -Names @("commitSha")
+    if ($commitSha -and $commitSha -notmatch '^[A-Fa-f0-9]{40}$') {
+      throw "sourceControl.commitSha must be a 40-character git SHA when present."
+    }
+    if ($isGitRepository -and -not $commitSha) {
+      throw "sourceControl.commitSha is required for git repository bundles."
+    }
+    $branchName = Get-StringValue -Object $sourceControl -Names @("branchName")
+    if ($branchName -and $branchName -notmatch '^[A-Za-z0-9._/-]+$') {
+      throw "sourceControl.branchName contains unsupported characters."
+    }
+    $ci = Get-PropertyValue -Object $manifest -Names @("ci")
+    if ($null -eq $ci) {
+      throw "support-evidence-manifest.json ci provenance is required."
+    }
+    $isCi = Get-BooleanValue -Object $ci -Names @("isCi") -Default $null
+    if ($null -eq $isCi) {
+      throw "ci.isCi must be true or false."
+    }
+    $ciProvider = Get-StringValue -Object $ci -Names @("provider")
+    if ($ciProvider -and $ciProvider -notmatch '^[A-Za-z0-9._-]+$') {
+      throw "ci.provider contains unsupported characters."
+    }
+    $ciWorkflowName = Get-StringValue -Object $ci -Names @("workflowName")
+    if ($ciWorkflowName -and $ciWorkflowName -notmatch '^[A-Za-z0-9._/-]+$') {
+      throw "ci.workflowName contains unsupported characters."
+    }
+    $ciRunId = Get-StringValue -Object $ci -Names @("runId")
+    if ($ciRunId -and $ciRunId -notmatch '^[0-9]+$') {
+      throw "ci.runId must be numeric when present."
+    }
+    $ciRunAttempt = Get-StringValue -Object $ci -Names @("runAttempt")
+    if ($ciRunAttempt -and $ciRunAttempt -notmatch '^[0-9]+$') {
+      throw "ci.runAttempt must be numeric when present."
+    }
+    $ciEventName = Get-StringValue -Object $ci -Names @("eventName")
+    if ($ciEventName -and $ciEventName -notmatch '^[A-Za-z0-9._-]+$') {
+      throw "ci.eventName contains unsupported characters."
+    }
+    $ciRefName = Get-StringValue -Object $ci -Names @("refName")
+    if ($ciRefName -and $ciRefName -notmatch '^[A-Za-z0-9._/-]+$') {
+      throw "ci.refName contains unsupported characters."
+    }
+    $ciSha = Get-StringValue -Object $ci -Names @("sha")
+    if ($ciSha -and $ciSha -notmatch '^[A-Fa-f0-9]{40}$') {
+      throw "ci.sha must be a 40-character git SHA when present."
+    }
+    if ($ciSha -and $commitSha -and $ciSha.ToLowerInvariant() -ne $commitSha.ToLowerInvariant()) {
+      throw "ci.sha must match sourceControl.commitSha when both are present."
+    }
+    if ($isCi -and -not $ciProvider) {
+      throw "ci.provider is required when ci.isCi is true."
+    }
+    if ($ciProvider -eq "github-actions") {
+      if (-not $ciWorkflowName) {
+        throw "ci.workflowName is required for github-actions provenance."
+      }
+      if (-not $ciRunId) {
+        throw "ci.runId is required for github-actions provenance."
+      }
+      if (-not $ciRunAttempt) {
+        throw "ci.runAttempt is required for github-actions provenance."
+      }
+      if (-not $ciEventName) {
+        throw "ci.eventName is required for github-actions provenance."
+      }
+      if (-not $ciRefName) {
+        throw "ci.refName is required for github-actions provenance."
+      }
+      if (-not $ciSha) {
+        throw "ci.sha is required for github-actions provenance."
+      }
+    }
 
     $manifestRows = @($manifest.files)
     if ($manifestRows.Count -eq 0) {
@@ -365,6 +539,24 @@ function Test-Bundle {
       if ([string]$row.supportTargetId -ne (Get-SupportTargetId -Evidence $evidence)) {
         throw "supportTargetId manifest mismatch for $relative."
       }
+      $targetCategory = ([string]$row.targetCategory).Trim().ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($targetCategory)) {
+        throw "targetCategory manifest value is required for $relative."
+      }
+      $workflowDispatchSupported = Get-BooleanValue -Object $row -Names @("workflowDispatchSupported") -Default $null
+      $localCommandOnly = Get-BooleanValue -Object $row -Names @("localCommandOnly") -Default $null
+      if ($null -eq $workflowDispatchSupported -or $null -eq $localCommandOnly) {
+        throw "workflowDispatchSupported and localCommandOnly manifest values are required for $relative."
+      }
+      if ($workflowDispatchSupported -eq $localCommandOnly) {
+        throw "workflowDispatchSupported and localCommandOnly manifest values disagree for $relative."
+      }
+      if ($targetCategory -eq "bsd" -and ($workflowDispatchSupported -ne $false -or $localCommandOnly -ne $true)) {
+        throw "BSD evidence must be marked local-command-only in the manifest for $relative."
+      }
+      if ($targetCategory -in @("windows-client", "windows-server", "linux", "macos") -and ($workflowDispatchSupported -ne $true -or $localCommandOnly -ne $false)) {
+        throw "Workflow-capable evidence is not marked correctly in the manifest for $relative."
+      }
       if ([string]$row.nextJsMode -ne (Get-NextJsMode -Evidence $evidence)) {
         throw "nextJsMode manifest mismatch for $relative."
       }
@@ -373,6 +565,12 @@ function Test-Bundle {
       }
       if ([string]$row.reverseProxy -ne (Get-ReverseProxyMode -Evidence $evidence)) {
         throw "reverseProxy manifest mismatch for $relative."
+      }
+      if ([string]$row.nodeVersion -ne (Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersion", "nodeVersion"))) {
+        throw "nodeVersion manifest mismatch for $relative."
+      }
+      if ([string]$row.nextVersion -ne (Get-NextJsRuntimeValue -Evidence $evidence -Names @("NextVersion", "nextVersion"))) {
+        throw "nextVersion manifest mismatch for $relative."
       }
       $evidenceGeneratedAt = Get-StringValue -Object $evidence -Names @("GeneratedAtUtc", "generatedAtUtc")
       if (-not (Test-DateValueEqual -Actual $row.generatedAtUtc -Expected $evidenceGeneratedAt)) {
@@ -409,6 +607,9 @@ function Test-Bundle {
       if ($null -eq $collectorVersion -or $collectorVersion -ne $collection.CollectorVersion) {
         throw "collectorVersion manifest mismatch for $relative."
       }
+      if ([string]$row.collectorSha256 -ne $collection.CollectorSha256) {
+        throw "collectorSha256 manifest mismatch for $relative."
+      }
       $liveHost = Get-BooleanValue -Object $row -Names @("liveHost") -Default $null
       if ($liveHost -ne $collection.LiveHost) {
         throw "liveHost manifest mismatch for $relative."
@@ -436,6 +637,61 @@ function Test-Bundle {
       }
       if ($sample -ne $false) {
         throw "Bundle evidence declares sample collection for $relative."
+      }
+      $rowCollectionCiIsCi = Get-BooleanValue -Object $row -Names @("collectionCiIsCi") -Default $null
+      $rowCollectionCiProvider = Get-StringValue -Object $row -Names @("collectionCiProvider")
+      $rowCollectionCiWorkflowName = Get-StringValue -Object $row -Names @("collectionCiWorkflowName")
+      $rowCollectionCiRunId = Get-StringValue -Object $row -Names @("collectionCiRunId")
+      $rowCollectionCiRunAttempt = Get-StringValue -Object $row -Names @("collectionCiRunAttempt")
+      $rowCollectionCiEventName = Get-StringValue -Object $row -Names @("collectionCiEventName")
+      $rowCollectionCiRefName = Get-StringValue -Object $row -Names @("collectionCiRefName")
+      $rowCollectionCiSha = Get-StringValue -Object $row -Names @("collectionCiSha")
+      $rowHasCollectionCi = (
+        $null -ne $rowCollectionCiIsCi -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiProvider) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiWorkflowName) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiRunId) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiRunAttempt) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiEventName) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiRefName) -or
+        -not [string]::IsNullOrWhiteSpace($rowCollectionCiSha)
+      )
+      $evidenceHasCollectionCi = (
+        $null -ne $collection.Ci.IsCi -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.Provider) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.WorkflowName) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.RunId) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.RunAttempt) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.EventName) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.RefName) -or
+        -not [string]::IsNullOrWhiteSpace($collection.Ci.Sha)
+      )
+      if ($rowHasCollectionCi -or $evidenceHasCollectionCi) {
+        if ($rowCollectionCiIsCi -ne $collection.Ci.IsCi) {
+          throw "collectionCiIsCi manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiProvider -ne $collection.Ci.Provider) {
+          throw "collectionCiProvider manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiWorkflowName -ne $collection.Ci.WorkflowName) {
+          throw "collectionCiWorkflowName manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiRunId -ne $collection.Ci.RunId) {
+          throw "collectionCiRunId manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiRunAttempt -ne $collection.Ci.RunAttempt) {
+          throw "collectionCiRunAttempt manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiEventName -ne $collection.Ci.EventName) {
+          throw "collectionCiEventName manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiRefName -ne $collection.Ci.RefName) {
+          throw "collectionCiRefName manifest mismatch for $relative."
+        }
+        if ($rowCollectionCiSha -ne $collection.Ci.Sha) {
+          throw "collectionCiSha manifest mismatch for $relative."
+        }
+        Assert-CollectionCiProvenance -Ci $collection.Ci -Context $relative
       }
     }
 
@@ -482,6 +738,142 @@ if ($SelfTest) {
   Copy-Item -LiteralPath (Join-Path $unlistedRoot "evidence\ubuntu-systemd-nginx.json") -Destination (Join-Path $unlistedRoot "evidence\unlisted-copy.json") -Force
   Invoke-ExpectBundleFailure -ExpectedMessage "not listed in manifest" -Action {
     Test-Bundle -Path $unlistedRoot
+  }
+
+  $missingMatrixRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-matrix-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $missingMatrixRoot
+  $missingMatrixManifestPath = Join-Path $missingMatrixRoot "support-evidence-manifest.json"
+  $missingMatrixManifest = Get-Content -LiteralPath $missingMatrixManifestPath -Raw | ConvertFrom-Json
+  $missingMatrixManifest.PSObject.Properties.Remove("matrixSha256")
+  ($missingMatrixManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingMatrixManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "matrixSha256 is required" -Action {
+    Test-Bundle -Path $missingMatrixRoot
+  }
+
+  $missingSourceRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-source-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $missingSourceRoot
+  $missingSourceManifestPath = Join-Path $missingSourceRoot "support-evidence-manifest.json"
+  $missingSourceManifest = Get-Content -LiteralPath $missingSourceManifestPath -Raw | ConvertFrom-Json
+  $missingSourceManifest.PSObject.Properties.Remove("sourceControl")
+  ($missingSourceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingSourceManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "sourceControl is required" -Action {
+    Test-Bundle -Path $missingSourceRoot
+  }
+
+  $missingCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-ci-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $missingCiRoot
+  $missingCiManifestPath = Join-Path $missingCiRoot "support-evidence-manifest.json"
+  $missingCiManifest = Get-Content -LiteralPath $missingCiManifestPath -Raw | ConvertFrom-Json
+  $missingCiManifest.PSObject.Properties.Remove("ci")
+  ($missingCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingCiManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "ci provenance is required" -Action {
+    Test-Bundle -Path $missingCiRoot
+  }
+
+  $badCiShaRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-ci-sha-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $badCiShaRoot
+  $badCiShaManifestPath = Join-Path $badCiShaRoot "support-evidence-manifest.json"
+  $badCiShaManifest = Get-Content -LiteralPath $badCiShaManifestPath -Raw | ConvertFrom-Json
+  $badCiShaManifest.ci.sha = "not-a-sha"
+  ($badCiShaManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $badCiShaManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "ci.sha must be a 40-character git SHA" -Action {
+    Test-Bundle -Path $badCiShaRoot
+  }
+
+  $mismatchCiShaRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-ci-source-sha-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $mismatchCiShaRoot
+  $mismatchCiShaManifestPath = Join-Path $mismatchCiShaRoot "support-evidence-manifest.json"
+  $mismatchCiShaManifest = Get-Content -LiteralPath $mismatchCiShaManifestPath -Raw | ConvertFrom-Json
+  $mismatchCiShaManifest.ci.sha = ("0" * 40)
+  ($mismatchCiShaManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $mismatchCiShaManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "ci.sha must match sourceControl.commitSha" -Action {
+    Test-Bundle -Path $mismatchCiShaRoot
+  }
+
+  $completeGithubCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-complete-github-ci-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $completeGithubCiRoot
+  $completeGithubCiManifestPath = Join-Path $completeGithubCiRoot "support-evidence-manifest.json"
+  $completeGithubCiManifest = Get-Content -LiteralPath $completeGithubCiManifestPath -Raw | ConvertFrom-Json
+  $completeGithubCiManifest.ci.isCi = $true
+  $completeGithubCiManifest.ci.provider = "github-actions"
+  $completeGithubCiManifest.ci.workflowName = "selftest"
+  $completeGithubCiManifest.ci.runId = "123456"
+  $completeGithubCiManifest.ci.runAttempt = "1"
+  $completeGithubCiManifest.ci.eventName = "workflow_dispatch"
+  $completeGithubCiManifest.ci.refName = "main"
+  $completeGithubCiManifest.ci.sha = $completeGithubCiManifest.sourceControl.commitSha
+  ($completeGithubCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $completeGithubCiManifestPath -Encoding UTF8
+  Test-Bundle -Path $completeGithubCiRoot
+
+  $collectionCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-collection-ci-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $collectionCiRoot
+  $collectionCiFile = Join-Path $collectionCiRoot "evidence\ubuntu-systemd-nginx.json"
+  $collectionCiEvidence = Get-Content -LiteralPath $collectionCiFile -Raw | ConvertFrom-Json
+  $collectionCiEvidence.evidenceCollection | Add-Member -NotePropertyName "ci" -NotePropertyValue ([pscustomobject]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = "123456"
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = $completeGithubCiManifest.sourceControl.commitSha
+    }) -Force
+  ($collectionCiEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $collectionCiFile -Encoding UTF8
+  $collectionCiManifestPath = Join-Path $collectionCiRoot "support-evidence-manifest.json"
+  $collectionCiManifest = Get-Content -LiteralPath $collectionCiManifestPath -Raw | ConvertFrom-Json
+  foreach ($row in @($collectionCiManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $collectionCiFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $collectionCiFile).Length
+      $row.collectionCiIsCi = $true
+      $row.collectionCiProvider = "github-actions"
+      $row.collectionCiWorkflowName = "host-evidence"
+      $row.collectionCiRunId = "123456"
+      $row.collectionCiRunAttempt = "1"
+      $row.collectionCiEventName = "workflow_dispatch"
+      $row.collectionCiRefName = "main"
+      $row.collectionCiSha = $completeGithubCiManifest.sourceControl.commitSha
+    }
+  }
+  ($collectionCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $collectionCiManifestPath -Encoding UTF8
+  Test-Bundle -Path $collectionCiRoot
+
+  $badCollectionCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-collection-ci-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $collectionCiRoot -Destination $badCollectionCiRoot
+  $badCollectionCiFile = Join-Path $badCollectionCiRoot "evidence\ubuntu-systemd-nginx.json"
+  $badCollectionCiEvidence = Get-Content -LiteralPath $badCollectionCiFile -Raw | ConvertFrom-Json
+  $badCollectionCiEvidence.evidenceCollection.ci.runId = ""
+  ($badCollectionCiEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $badCollectionCiFile -Encoding UTF8
+  $badCollectionCiManifestPath = Join-Path $badCollectionCiRoot "support-evidence-manifest.json"
+  $badCollectionCiManifest = Get-Content -LiteralPath $badCollectionCiManifestPath -Raw | ConvertFrom-Json
+  foreach ($row in @($badCollectionCiManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $badCollectionCiFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $badCollectionCiFile).Length
+      $row.collectionCiRunId = ""
+    }
+  }
+  ($badCollectionCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $badCollectionCiManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "collection ci.runId is required for github-actions provenance" -Action {
+    Test-Bundle -Path $badCollectionCiRoot
+  }
+
+  $incompleteGithubCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-github-ci-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $incompleteGithubCiRoot
+  $incompleteGithubCiManifestPath = Join-Path $incompleteGithubCiRoot "support-evidence-manifest.json"
+  $incompleteGithubCiManifest = Get-Content -LiteralPath $incompleteGithubCiManifestPath -Raw | ConvertFrom-Json
+  $incompleteGithubCiManifest.ci.isCi = $true
+  $incompleteGithubCiManifest.ci.provider = "github-actions"
+  $incompleteGithubCiManifest.ci.workflowName = "selftest"
+  $incompleteGithubCiManifest.ci.runId = ""
+  $incompleteGithubCiManifest.ci.runAttempt = "1"
+  $incompleteGithubCiManifest.ci.eventName = "workflow_dispatch"
+  $incompleteGithubCiManifest.ci.refName = "main"
+  $incompleteGithubCiManifest.ci.sha = $incompleteGithubCiManifest.sourceControl.commitSha
+  ($incompleteGithubCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $incompleteGithubCiManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "ci.runId is required for github-actions provenance" -Action {
+    Test-Bundle -Path $incompleteGithubCiRoot
   }
 
   Write-Host "Support evidence bundle verification OK"

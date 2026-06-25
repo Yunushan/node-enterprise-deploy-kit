@@ -43,6 +43,8 @@ $script:nextJsRuntimeEvidence = [pscustomobject]@{
     AppFramework = "node"
     Mode = ""
     RuntimeRoot = ""
+    NodeVersion = ""
+    NextVersion = ""
 }
 $script:reverseProxyEvidence = [pscustomobject]@{
     Applicable = $false
@@ -298,10 +300,86 @@ function Get-SafeEvidenceText([string]$Text) {
     $safe = $safe -replace '\\\\[^\s,;:"<>|]+', '<unc-path>'
     return $safe
 }
+function Get-SafeCiValue {
+    param(
+        [string] $Value,
+        [string] $Pattern = '[^A-Za-z0-9._/-]'
+    )
+    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+    return (($Value.Trim() -replace $Pattern, "-").Trim("-"))
+}
+function Get-SafeEvidenceCollectionCi {
+    $isGitHubActions = ([string]$env:GITHUB_ACTIONS).Trim().ToLowerInvariant() -eq "true"
+    $isCi = $isGitHubActions -or (([string]$env:CI).Trim().ToLowerInvariant() -eq "true")
+    $provider = if ($isGitHubActions) { "github-actions" } elseif ($isCi) { "ci" } else { "" }
+
+    return [pscustomobject]@{
+        IsCi = $isCi
+        Provider = $provider
+        WorkflowName = Get-SafeCiValue -Value ([string]$env:GITHUB_WORKFLOW)
+        RunId = Get-SafeCiValue -Value ([string]$env:GITHUB_RUN_ID) -Pattern '[^0-9]'
+        RunAttempt = Get-SafeCiValue -Value ([string]$env:GITHUB_RUN_ATTEMPT) -Pattern '[^0-9]'
+        EventName = Get-SafeCiValue -Value ([string]$env:GITHUB_EVENT_NAME) -Pattern '[^A-Za-z0-9._-]'
+        RefName = Get-SafeCiValue -Value ([string]$env:GITHUB_REF_NAME)
+        Sha = Get-SafeCiValue -Value ([string]$env:GITHUB_SHA) -Pattern '[^A-Fa-f0-9]'
+    }
+}
+function Get-CollectorFileSha256 {
+    try {
+        $scriptPath = [string]$PSCommandPath
+        if ([string]::IsNullOrWhiteSpace($scriptPath) -or -not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+            return ""
+        }
+        $hash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -match '^[a-f0-9]{64}$') { return $hash }
+        return ""
+    } catch {
+        return ""
+    }
+}
 function Get-ObjectPropertyValue($Object, [string]$Name, $Default = $null) {
     if ($null -eq $Object) { return $Default }
     if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
     return $Default
+}
+function Get-SafeRuntimeVersionText([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+    $text = $Value.Trim()
+    if ($text.Length -gt 80) { $text = $text.Substring(0, 80) }
+    return (($text -replace '[^A-Za-z0-9._+:-]', "-").Trim("-"))
+}
+function Get-NodeRuntimeVersion([string]$NodeExe) {
+    $candidate = if ([string]::IsNullOrWhiteSpace($NodeExe)) { "node" } else { $NodeExe }
+    try {
+        $output = & $candidate --version 2>$null
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return Get-SafeRuntimeVersionText ([string](@($output)[0]))
+    } catch {
+        return ""
+    }
+}
+function Get-PackageJsonVersion([string]$PackageJsonPath) {
+    if ([string]::IsNullOrWhiteSpace($PackageJsonPath) -or -not (Test-Path -LiteralPath $PackageJsonPath -PathType Leaf)) {
+        return ""
+    }
+    try {
+        $package = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
+        return Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $package "version" ""))
+    } catch {
+        return ""
+    }
+}
+function Get-NextPackageVersion([string]$AppDirectory, [string]$RuntimeRoot) {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($root in @($RuntimeRoot, $AppDirectory)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidates.Add((Join-Path $root "node_modules\next\package.json")) | Out-Null
+    }
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        $version = Get-PackageJsonVersion $candidate
+        if ($version) { return $version }
+    }
+    return ""
 }
 function Get-SafeNextJsRuntimeEvidence($Evidence) {
     $runtimeRoot = [string](Get-ObjectPropertyValue $Evidence "RuntimeRoot" "")
@@ -310,6 +388,8 @@ function Get-SafeNextJsRuntimeEvidence($Evidence) {
         Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
         AppFramework = [string](Get-ObjectPropertyValue $Evidence "AppFramework" "")
         Mode = [string](Get-ObjectPropertyValue $Evidence "Mode" "")
+        NodeVersion = Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $Evidence "NodeVersion" ""))
+        NextVersion = Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $Evidence "NextVersion" ""))
         RuntimeRootName = Get-SafePathLeaf $runtimeRoot
         AppDirectoryExists = Get-ObjectPropertyValue $Evidence "AppDirectoryExists" $null
         StartCommand = Get-SafeEvidenceText ([string](Get-ObjectPropertyValue $Evidence "StartCommand" ""))
@@ -620,12 +700,15 @@ function Get-HealthLogSummary([string]$Path) {
 }
 function Show-NextJsRuntimeLayout {
     $framework = Normalize-Name (Get-ConfigString $config "AppFramework" "node")
+    $nodeVersion = Get-NodeRuntimeVersion (Get-ConfigString $config "NodeExe" "node")
     $script:nextJsRuntimeEvidence = [pscustomobject]@{
         Applicable = $false
         Status = "not-applicable"
         AppFramework = $framework
         Mode = ""
         RuntimeRoot = ""
+        NodeVersion = $nodeVersion
+        NextVersion = ""
     }
     if ($framework -notin @("next", "nextjs", "next-js")) { return }
 
@@ -652,6 +735,8 @@ function Show-NextJsRuntimeLayout {
             Status = "failed"
             AppFramework = "nextjs"
             Mode = $mode
+            NodeVersion = $nodeVersion
+            NextVersion = ""
             AppDirectoryExists = $false
             RuntimeRoot = ""
             StartCommand = $startCommand
@@ -693,12 +778,15 @@ function Show-NextJsRuntimeLayout {
     $nodeModulesPath = Join-Path $runtimeRoot "node_modules"
     $packagePath = Join-Path $appDirectory "package.json"
     $nextPackagePath = Join-Path $appDirectory "node_modules\next"
+    $nextVersion = Get-NextPackageVersion -AppDirectory $appDirectory -RuntimeRoot $runtimeRoot
 
     $script:nextJsRuntimeEvidence = [pscustomobject]@{
         Applicable = $true
         Status = "pending"
         AppFramework = "nextjs"
         Mode = $mode
+        NodeVersion = $nodeVersion
+        NextVersion = $nextVersion
         AppDirectoryExists = (Test-Path -LiteralPath $appDirectory -PathType Container)
         RuntimeRoot = $runtimeRoot
         StartCommand = $startCommand
@@ -1196,10 +1284,12 @@ $statusEvidence = [pscustomobject]@{
         Source = "node-enterprise-deploy-kit/status.ps1"
         Collector = "status.ps1"
         CollectorVersion = 1
+        CollectorSha256 = Get-CollectorFileSha256
         LiveHost = $true
         Synthetic = $false
         Mock = $false
         Sample = $false
+        Ci = Get-SafeEvidenceCollectionCi
     }
     SupportTargetId = $supportTargetId
     GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString("o")

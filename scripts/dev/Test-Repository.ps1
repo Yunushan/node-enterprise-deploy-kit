@@ -278,6 +278,14 @@ function Test-SupportEvidenceCoverageSelfTest {
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") -SelfTest
 }
 
+function Test-HostEvidenceArtifactImportSelfTest {
+  & (Join-Path $ScriptDir "Import-HostEvidenceArtifacts.ps1") -SelfTest
+}
+
+function Test-SupportEvidenceReleaseWorkflowSelfTest {
+  & (Join-Path $ScriptDir "Invoke-SupportEvidenceReleaseWorkflow.ps1") -SelfTest
+}
+
 function Test-ReleaseSupportReadinessSelfTest {
   & (Join-Path $ScriptDir "Test-ReleaseSupportReadiness.ps1") -SelfTest
 }
@@ -304,6 +312,8 @@ Test-SupportEvidencePlanSelfTest
 Test-SupportEvidenceBundleSelfTest
 Test-SupportEvidenceBundleVerifierSelfTest
 Test-SupportEvidenceCoverageSelfTest
+Test-HostEvidenceArtifactImportSelfTest
+Test-SupportEvidenceReleaseWorkflowSelfTest
 Test-ReleaseSupportReadinessSelfTest
 Test-DocsConsistency
 Test-NoObviousSecrets

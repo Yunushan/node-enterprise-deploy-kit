@@ -107,6 +107,53 @@ expect_failure() {
   fi
 }
 
+copy_command_to_fake_path() {
+  local fake_bin="$1" command_name="$2" source_path
+  source_path="$(type -P "$command_name" 2>/dev/null || true)"
+  if [[ -z "$source_path" ]]; then
+    echo "Could not find required test command: $command_name" >&2
+    exit 1
+  fi
+  cp "$source_path" "$fake_bin/$command_name"
+  chmod 0755 "$fake_bin/$command_name"
+}
+
+new_fake_preflight_path_without_schedulers() {
+  local fake_bin="$1"
+  mkdir -p "$fake_bin"
+  for command_name in dirname pwd uname tr grep sed basename tail; do
+    copy_command_to_fake_path "$fake_bin" "$command_name"
+  done
+}
+
+run_preflight_with_path() {
+  local fake_path="$1" env_file="$2"
+  PATH="$fake_path" "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$env_file" --skip-reverse-proxy --skip-service-manager-check
+}
+
+test_health_scheduler_preflight_requirements() {
+  local fake_bin="$TEST_ROOT/fake-bin-no-schedulers"
+  new_fake_preflight_path_without_schedulers "$fake_bin"
+
+  local systemd_root="$TEST_ROOT/preflight-health-systemd"
+  mkdir -p "$systemd_root"
+  new_standalone_layout "$systemd_root/app"
+  write_env "$systemd_root/app.env" "$systemd_root" 39214 "standalone" "server.js" "systemd"
+  expect_failure "systemd health scheduler preflight" "Healthcheck scheduler requires systemctl" run_preflight_with_path "$fake_bin" "$systemd_root/app.env"
+
+  local launchd_root="$TEST_ROOT/preflight-health-launchd"
+  mkdir -p "$launchd_root"
+  new_standalone_layout "$launchd_root/app"
+  write_env "$launchd_root/app.env" "$launchd_root" 39215 "standalone" "server.js" "launchd"
+  expect_failure "launchd health scheduler preflight" "Healthcheck scheduler requires launchctl" run_preflight_with_path "$fake_bin" "$launchd_root/app.env"
+
+  local bsdrc_root="$TEST_ROOT/preflight-health-bsdrc"
+  mkdir -p "$bsdrc_root"
+  new_standalone_layout "$bsdrc_root/app"
+  write_env "$bsdrc_root/app.env" "$bsdrc_root" 39216 "standalone" "server.js" "bsdrc"
+  expect_failure "bsdrc health scheduler preflight" "Healthcheck scheduler requires crontab" run_preflight_with_path "$fake_bin" "$bsdrc_root/app.env"
+}
+
 assert_contains() {
   local path="$1" expected="$2"
   if ! grep -Fq -- "$expected" "$path"; then
@@ -401,6 +448,7 @@ test_env_assignment_quoting
 test_service_template_rendering
 test_reverse_proxy_template_rendering
 test_node_runtime_smoke
+test_health_scheduler_preflight_requirements
 
 OK_ROOT="$TEST_ROOT/standalone-ok"
 mkdir -p "$OK_ROOT"

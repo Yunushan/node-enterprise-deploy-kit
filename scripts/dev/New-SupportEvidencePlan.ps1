@@ -45,6 +45,20 @@ function Get-OptionalPropertyValue {
   return $null
 }
 
+function Get-MatrixRequiredMinimumUptimeHours {
+  param([object]$Matrix)
+
+  try {
+    $value = [int]$Matrix.requiredMinimumUptimeHours
+    if ($value -lt 1) {
+      throw "requiredMinimumUptimeHours must be positive."
+    }
+    return $value
+  } catch {
+    throw "Support matrix requiredMinimumUptimeHours must be a positive integer."
+  }
+}
+
 function Get-ConcreteReverseProxies {
   param([object]$Target)
   @(Get-ArrayValue $Target.reverseProxies |
@@ -77,13 +91,14 @@ function Get-EvidenceFile {
 function Get-CollectionCommand {
   param(
     [string]$Category,
-    [string]$EvidenceFile
+    [string]$EvidenceFile,
+    [int]$RequiredMinimumUptimeHours
   )
   if ($Category -in @("windows-client", "windows-server")) {
     $windowsPath = $EvidenceFile.Replace("/", "\")
-    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\$windowsPath -FailOnCritical"
+    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours $RequiredMinimumUptimeHours -JsonPath .\$windowsPath -FailOnCritical"
   }
-  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --json-output ./$EvidenceFile --fail-on-critical"
+  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours $RequiredMinimumUptimeHours --json-output ./$EvidenceFile --fail-on-critical"
 }
 
 function Get-WorkflowPlatform {
@@ -183,7 +198,8 @@ function New-PlanEntry {
     [string]$ServiceManager,
     [string]$ReverseProxy,
     [string]$Kind,
-    [string]$Notes
+    [string]$Notes,
+    [int]$RequiredMinimumUptimeHours
   )
 
   $targetId = Normalize-Token ([string]$Target.id)
@@ -206,7 +222,7 @@ function New-PlanEntry {
       expected_nextjs_mode = $modeValue
       expected_service_manager = $serviceManagerValue
       expected_reverse_proxy = $reverseProxyValue
-      minimum_uptime_hours = "72"
+      minimum_uptime_hours = [string]$RequiredMinimumUptimeHours
       require_reverse_proxy = "true"
       fail_on_warnings = "false"
       upload_retention_days = "30"
@@ -223,8 +239,9 @@ function New-PlanEntry {
     nextJsMode = $modeValue
     serviceManager = $serviceManagerValue
     reverseProxy = $reverseProxyValue
+    requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
-    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile
+    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
     workflowDispatchSupported = $workflowDispatchSupported
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
@@ -257,6 +274,7 @@ function ConvertTo-PlanMarkdown {
   $lines.Add("| Strict real-host evidence entries | $($Plan.summary.strictEvidenceCount) |") | Out-Null
   $lines.Add("| Service-only evidence entries | $($Plan.summary.serviceOnlyEvidenceCount) |") | Out-Null
   $lines.Add("| Fallback evidence entries | $($Plan.summary.fallbackEvidenceCount) |") | Out-Null
+  $lines.Add("| Required minimum uptime hours | $($Plan.requiredMinimumUptimeHours) |") | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add('Strict entries are the combinations enforced by `Test-SupportClaim.ps1 -RequireBothNextJsModes -RequireDeclaredServiceManagers -RequireDeclaredReverseProxies`.') | Out-Null
   $lines.Add('Service-only entries cover `ReverseProxy=none` and are tracked separately because there is no concrete reverse-proxy implementation to probe.') | Out-Null
@@ -476,6 +494,7 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
 
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
+$requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
 $targets = @(Get-ArrayValue $matrix.targets)
 $strictEvidence = New-Object System.Collections.Generic.List[object]
 $serviceOnlyEvidence = New-Object System.Collections.Generic.List[object]
@@ -491,15 +510,15 @@ foreach ($target in $targets) {
   foreach ($mode in $modes) {
     foreach ($serviceManager in $serviceManagers) {
       foreach ($proxy in $concreteProxies) {
-        $strictEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -Notes "Strict real-host evidence.")) | Out-Null
+        $strictEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -Notes "Strict real-host evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
       }
       foreach ($proxy in $serviceOnlyMarkers) {
-        $serviceOnlyEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -Notes "Service-only or external load-balancer evidence.")) | Out-Null
+        $serviceOnlyEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -Notes "Service-only or external load-balancer evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
       }
     }
     foreach ($fallbackManager in $fallbackManagers) {
       foreach ($proxy in $concreteProxies) {
-        $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback evidence; not a strict service-manager claim.")) | Out-Null
+        $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback evidence; not a strict service-manager claim." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
       }
     }
   }
@@ -514,6 +533,7 @@ $plan = [pscustomobject]@{
   schemaVersion = 1
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
   matrixFileName = $matrixFileName
+  requiredMinimumUptimeHours = $requiredMinimumUptimeHours
   summary = [pscustomobject]@{
     targetCount = [int]$targets.Count
     strictEvidenceCount = [int]$strictEvidenceArray.Count
@@ -619,6 +639,15 @@ if ($SelfTest) {
   if (-not $planMarkdown.Contains("Collection command")) {
     throw "Support evidence plan self-test failed: Markdown output is missing collection command guidance."
   }
+  if (-not $planMarkdown.Contains("Required minimum uptime hours")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing required minimum uptime summary."
+  }
+  if (-not $planMarkdown.Contains("-MinimumUptimeHours $requiredMinimumUptimeHours")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing Windows minimum uptime guidance."
+  }
+  if (-not $planMarkdown.Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing Unix minimum uptime guidance."
+  }
   $localOnlyStrict = @($parsed.strictEvidence | Where-Object { $_.workflowDispatchSupported -ne $true })
   if ($localOnlyStrict.Count -lt 1) {
     throw "Support evidence plan self-test failed: expected at least one local-command-only strict evidence entry."
@@ -635,6 +664,9 @@ if ($SelfTest) {
   }
   if ($dispatchMarkdown.Contains("expected_target_id=freebsd")) {
     throw "Support evidence plan self-test failed: DispatchMarkdown should not emit GitHub workflow commands for FreeBSD."
+  }
+  if (-not $dispatchMarkdown.Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
+    throw "Support evidence plan self-test failed: DispatchMarkdown is missing local minimum uptime guidance."
   }
   $dispatchPowerShell = ConvertTo-DispatchPowerShell -Plan $plan -WorkflowFile $WorkflowFile -WorkflowRef $WorkflowRef
   if (-not $dispatchPowerShell.Contains("[switch]`$Run")) {

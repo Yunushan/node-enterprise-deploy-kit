@@ -96,6 +96,16 @@ if (-not (Test-ContainsAll -Actual $matrixRequiredModes -Expected $requiredModes
   Add-Issue $issues "requiredNextJsModes must include standalone and next-start."
 }
 
+$requiredMinimumUptimeHours = $null
+try {
+  $requiredMinimumUptimeHours = [int]$matrix.requiredMinimumUptimeHours
+} catch {
+  $requiredMinimumUptimeHours = $null
+}
+if ($null -eq $requiredMinimumUptimeHours -or $requiredMinimumUptimeHours -lt 72) {
+  Add-Issue $issues "requiredMinimumUptimeHours must be an integer greater than or equal to 72."
+}
+
 $targets = @(Get-ArrayValue $matrix.targets)
 if ($targets.Count -eq 0) {
   Add-Issue $issues "targets must not be empty."

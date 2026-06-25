@@ -24,14 +24,14 @@ The verifier checks:
 - rendered XML validity for Windows templates
 - rendered shell syntax for Linux init templates with `bash`, plus POSIX `sh` checks for System V, OpenRC, and BSD rc templates when available
 - Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
-- Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/BSD rc static preflight/status evidence paths
+- Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
 - Local Node.js runtime smoke coverage for the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract used by standalone Next.js services
 - release package hygiene and required release files
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
 - support-claim gate self-test for strict Next.js mode, service-manager, and reverse-proxy evidence coverage
 - support evidence plan and workflow dispatch command generation from the machine-readable matrix
-- support evidence bundle generation with per-file SHA256 and collector provenance manifest
+- support evidence bundle generation with per-file SHA256, source-control provenance, CI provenance, support matrix SHA256, and collector provenance manifest
 - support evidence coverage auditing against strict, service-only, and fallback matrix entries
 - full-matrix release support readiness validation from a saved evidence bundle
 - normalized `supportTargetId` metadata in real host evidence for exact matrix target matching
@@ -94,6 +94,24 @@ then run it with `-Run` only after the runner labels match your real hosts:
 .\evidence\Invoke-HostEvidenceDispatch.ps1
 ```
 
+After downloading `host-evidence` workflow artifacts into a local folder,
+validate and import them into the canonical evidence tree. `ArtifactPath` can
+be an extracted artifact folder, a single `.zip` artifact, or a folder
+containing downloaded `.zip` artifacts:
+
+```powershell
+.\scripts\dev\Import-HostEvidenceArtifacts.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence
+```
+
+The importer validates each downloaded `status.json` against the support matrix
+and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
+`workflow_dispatch` provenance by default, derives the target/mode/service/proxy
+key, writes the canonical evidence filename, and refuses changed overwrites
+unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+local-command evidence.
+
 To audit the evidence folder for missing matrix combinations:
 
 ```powershell
@@ -102,6 +120,39 @@ To audit the evidence folder for missing matrix combinations:
   -IncludeServiceOnly `
   -IncludeFallback
 ```
+
+To audit an archived evidence bundle and produce a human review report:
+
+```powershell
+.\scripts\dev\Test-SupportEvidenceCoverage.ps1 `
+  -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
+  -IncludeServiceOnly `
+  -IncludeFallback `
+  -ReportOnly `
+  -Format Markdown `
+  -OutputPath .\release-evidence\coverage-report.md
+```
+
+Missing rows in Markdown, JSON, and CSV output include the expected evidence
+file plus the local collector command and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence.
+
+To run the complete release evidence workflow in one operator command, import
+optional downloaded artifacts, write coverage reports, fail on missing coverage,
+create and verify the bundle, and emit release readiness JSON:
+
+```powershell
+.\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
+  -ArtifactPath .\evidence-downloads `
+  -EvidencePath .\evidence `
+  -OutputDirectory .\release-evidence `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+Use `-StrictCiRelease` only from the clean, committed, CI-controlled final
+signoff path.
 
 To create a private release evidence bundle:
 
@@ -119,6 +170,32 @@ To create a private release evidence bundle:
   -IncludeFallback
 ```
 
+The bundle manifest records each evidence file hash plus safe Node.js runtime
+and Next.js package version strings when available, the collector SHA256 digest,
+the support matrix SHA256, and safe source-control provenance for the
+repository revision that created the bundle. When built in CI, it also records
+safe workflow/run/ref provenance.
+When source evidence files contain safe collection CI provenance, the manifest
+records and verifies it per file. The bundle verifier rejects
+internally inconsistent CI/source commit SHAs. Release readiness rejects
+bundles whose recorded support matrix SHA256 does not match the current
+`config/support-matrix.example.json`. For final
+CI-controlled release signoff, pass `-StrictCiRelease`. It enables the
+clean-source, current-commit, bundle CI, collection CI, collection source
+commit, controlled `host-evidence` workflow for workflow-capable rows, and
+runtime version plus collector SHA256 evidence checks, with the
+matrix-required minimum uptime window, so
+bundles created from uncommitted tracked source changes, a different source
+commit, a non-CI bundle path, evidence files without CI/workflow collection
+provenance for workflow-capable rows, evidence collected from a different
+source commit, evidence collected outside the controlled `host-evidence`
+workflow dispatch where that workflow route is supported, or evidence without
+safe Node.js and Next.js version strings, collector SHA256 digests, or the
+required minimum uptime proof fail. Local-command-only rows, such as BSD rows,
+must be explicitly marked local-only in the bundle manifest and still pass the
+runtime, collector, and uptime checks. The example support matrix sets
+`requiredMinimumUptimeHours` to 72 hours.
+
 To verify a saved evidence bundle before signoff:
 
 ```powershell
@@ -133,7 +210,8 @@ support claim:
 .\scripts\dev\Test-ReleaseSupportReadiness.ps1 `
   -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
   -IncludeServiceOnly `
-  -IncludeFallback
+  -IncludeFallback `
+  -StrictCiRelease
 ```
 
 To collect evidence through GitHub Actions, manually run the `host-evidence`
@@ -147,7 +225,11 @@ The workflow refuses GitHub-hosted labels and requires `runner_labels` to includ
 Those expected target/mode/service/proxy inputs are required for dispatch.
 The workflow accepts only declared matrix values for expected Next.js mode,
 service manager, and reverse proxy, then validates the full combination against
-the exact support matrix target row.
+the exact support matrix target row. Use a relative workspace `config_path`,
+such as `config/windows/app.config.json` or `config/linux/app.env`; those local
+private config files are git-ignored and preserved by the collection checkout
+with `clean: false`. The workflow rejects absolute paths, traversal, unsafe
+characters, missing config files, and artifact retention outside 1-90 days.
 It is not triggered by push or pull request events.
 
 To validate a release support claim against real host evidence:
@@ -347,7 +429,9 @@ status JSON from those actual hosts and validate it:
   -RequiredTargets windows-server,linux,macos,freebsd,openbsd,netbsd `
   -RequireNextJs `
   -RequireReverseProxy `
-  -RequireDeploymentIdentity
+  -RequireDeploymentIdentity `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72
 ```
 
 For stricter release gates, add `-MaxEvidenceAgeDays` and `-FailOnWarnings`.

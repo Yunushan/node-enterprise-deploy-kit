@@ -7,6 +7,8 @@ param(
   [switch]$RequireBothNextJsModes,
   [switch]$RequireDeclaredServiceManagers,
   [switch]$RequireDeclaredReverseProxies,
+  [switch]$RequireCollectorSha256,
+  [int]$RequireMinimumUptimeHours = 0,
   [switch]$AllowWarnings,
   [switch]$AllowReverseProxyNone,
   [string]$SelfTestEvidencePath = "",
@@ -27,6 +29,21 @@ if (-not [System.IO.Path]::IsPathRooted($MatrixPath)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($EvidencePath) -and -not [System.IO.Path]::IsPathRooted($EvidencePath)) {
   $EvidencePath = Join-Path (Get-Location) $EvidencePath
+}
+
+function Get-MatrixRequiredMinimumUptimeHours {
+  param([string]$Path)
+
+  $matrix = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  try {
+    $value = [int]$matrix.requiredMinimumUptimeHours
+    if ($value -lt 1) {
+      throw "requiredMinimumUptimeHours must be positive."
+    }
+    return $value
+  } catch {
+    throw "Support matrix requiredMinimumUptimeHours must be a positive integer."
+  }
 }
 
 function Normalize-Token {
@@ -300,6 +317,7 @@ function New-ClaimSelfTestEvidence {
     Source = "node-enterprise-deploy-kit/status.ps1"
     Collector = "status.ps1"
     CollectorVersion = 1
+    CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     LiveHost = $true
     Synthetic = $false
     Mock = $false
@@ -309,6 +327,7 @@ function New-ClaimSelfTestEvidence {
     source = "node-enterprise-deploy-kit/status-node-app.sh"
     collector = "scripts/linux/status-node-app.sh"
     collectorVersion = 1
+    collectorSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     liveHost = $true
     synthetic = $false
     mock = $false
@@ -509,6 +528,8 @@ function New-ClaimSelfTestEvidence {
               Status = "ok"
               AppFramework = "nextjs"
               Mode = $mode
+              NodeVersion = "v20.11.1"
+              NextVersion = "14.2.3"
               RuntimeRootName = "example-next-app"
             }
             ReverseProxy = [ordered]@{
@@ -585,6 +606,8 @@ function New-ClaimSelfTestEvidence {
               status = "ok"
               appFramework = "nextjs"
               mode = $mode
+              nodeVersion = "v20.11.1"
+              nextVersion = "14.2.3"
               runtimeRootName = "example-next-app"
             }
             reverseProxy = [ordered]@{
@@ -659,6 +682,10 @@ if ($SelfTest) {
   $RequireBothNextJsModes = $true
   $RequireDeclaredServiceManagers = $true
   $RequireDeclaredReverseProxies = $true
+  $RequireCollectorSha256 = $true
+  if ($RequireMinimumUptimeHours -le 0) {
+    $RequireMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
+  }
 }
 
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
@@ -707,6 +734,12 @@ $hostEvidenceArgs = @{
   RequireNextJs = $true
   RequireReverseProxy = $true
   RequireDeploymentIdentity = $true
+}
+if ($RequireCollectorSha256) {
+  $hostEvidenceArgs.RequireCollectorSha256 = $true
+}
+if ($RequireMinimumUptimeHours -gt 0) {
+  $hostEvidenceArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours
 }
 if (-not $AllowWarnings) {
   $hostEvidenceArgs.FailOnWarnings = $true

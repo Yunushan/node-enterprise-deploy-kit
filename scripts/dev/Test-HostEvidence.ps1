@@ -10,6 +10,8 @@ param(
   [switch]$RequireReverseProxy,
   [switch]$AllowReverseProxyNone,
   [switch]$RequireDeploymentIdentity,
+  [switch]$RequireCollectorSha256,
+  [int]$RequireMinimumUptimeHours = 0,
   [switch]$FailOnWarnings,
   [switch]$SelfTest
 )
@@ -385,12 +387,20 @@ function Get-NextJsEvidence {
     Status = if ($status) { $status } else { "unknown" }
     AppFramework = $appFramework
     Mode = $mode
+    NodeVersion = Get-StringValue -Object $nextJs -Names @("NodeVersion", "nodeVersion")
+    NextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
   }
 }
 
 function Test-NextJsFrameworkEvidence {
   param([string]$Value)
   return ((Normalize-Target $Value) -in @("next", "nextjs", "next-js"))
+}
+
+function Test-SafeRuntimeVersionEvidence {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+  return ($Value -match '^[A-Za-z0-9._+:-]{1,80}$')
 }
 
 function Get-ReverseProxyEvidence {
@@ -469,14 +479,26 @@ function Get-EvidenceCollectionEvidence {
   param([object]$Evidence)
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
     CollectorVersion = Get-IntegerValue -Object $collection -Names @("CollectorVersion", "collectorVersion")
+    CollectorSha256 = (Get-StringValue -Object $collection -Names @("CollectorSha256", "collectorSha256")).Trim().ToLowerInvariant()
     LiveHost = Get-BooleanValue -Object $collection -Names @("LiveHost", "liveHost", "CapturedFromLiveHost", "capturedFromLiveHost") -Default $null
     Synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
     Mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
     Sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+    Ci = [pscustomobject]@{
+      IsCi = Get-BooleanValue -Object $ci -Names @("IsCi", "isCi") -Default $null
+      Provider = Get-StringValue -Object $ci -Names @("Provider", "provider")
+      WorkflowName = Get-StringValue -Object $ci -Names @("WorkflowName", "workflowName")
+      RunId = Get-StringValue -Object $ci -Names @("RunId", "runId")
+      RunAttempt = Get-StringValue -Object $ci -Names @("RunAttempt", "runAttempt")
+      EventName = Get-StringValue -Object $ci -Names @("EventName", "eventName")
+      RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
+      Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
+    }
   }
 }
 
@@ -496,6 +518,51 @@ function Test-SupportedEvidenceCollector {
   return (($source -in $allowed) -or ($collector -in $allowed))
 }
 
+function Get-CollectionCiIssues {
+  param(
+    [object]$Ci,
+    [string]$FileName
+  )
+
+  $issues = New-Object System.Collections.Generic.List[string]
+  if ($null -eq $Ci -or $null -eq $Ci.IsCi) { return @() }
+
+  if ($Ci.Provider -and $Ci.Provider -notmatch '^[A-Za-z0-9._-]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.provider contains unsupported characters.") | Out-Null
+  }
+  if ($Ci.WorkflowName -and $Ci.WorkflowName -notmatch '^[A-Za-z0-9._/-]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.workflowName contains unsupported characters.") | Out-Null
+  }
+  if ($Ci.RunId -and $Ci.RunId -notmatch '^[0-9]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.runId must be numeric when present.") | Out-Null
+  }
+  if ($Ci.RunAttempt -and $Ci.RunAttempt -notmatch '^[0-9]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.runAttempt must be numeric when present.") | Out-Null
+  }
+  if ($Ci.EventName -and $Ci.EventName -notmatch '^[A-Za-z0-9._-]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.eventName contains unsupported characters.") | Out-Null
+  }
+  if ($Ci.RefName -and $Ci.RefName -notmatch '^[A-Za-z0-9._/-]+$') {
+    $issues.Add("$FileName evidenceCollection.ci.refName contains unsupported characters.") | Out-Null
+  }
+  if ($Ci.Sha -and $Ci.Sha -notmatch '^[A-Fa-f0-9]{40}$') {
+    $issues.Add("$FileName evidenceCollection.ci.sha must be a 40-character git SHA when present.") | Out-Null
+  }
+  if ($Ci.IsCi -and -not $Ci.Provider) {
+    $issues.Add("$FileName evidenceCollection.ci.provider is required when ci.isCi is true.") | Out-Null
+  }
+  if ($Ci.Provider -eq "github-actions") {
+    if (-not $Ci.WorkflowName) { $issues.Add("$FileName evidenceCollection.ci.workflowName is required for github-actions provenance.") | Out-Null }
+    if (-not $Ci.RunId) { $issues.Add("$FileName evidenceCollection.ci.runId is required for github-actions provenance.") | Out-Null }
+    if (-not $Ci.RunAttempt) { $issues.Add("$FileName evidenceCollection.ci.runAttempt is required for github-actions provenance.") | Out-Null }
+    if (-not $Ci.EventName) { $issues.Add("$FileName evidenceCollection.ci.eventName is required for github-actions provenance.") | Out-Null }
+    if (-not $Ci.RefName) { $issues.Add("$FileName evidenceCollection.ci.refName is required for github-actions provenance.") | Out-Null }
+    if (-not $Ci.Sha) { $issues.Add("$FileName evidenceCollection.ci.sha is required for github-actions provenance.") | Out-Null }
+  }
+
+  return @($issues | ForEach-Object { $_ })
+}
+
 function Test-UnsafeEvidenceText {
   param([string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
@@ -513,6 +580,7 @@ function New-SelfTestEvidence {
     Source = "node-enterprise-deploy-kit/status.ps1"
     Collector = "status.ps1"
     CollectorVersion = 1
+    CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     LiveHost = $true
     Synthetic = $false
     Mock = $false
@@ -522,6 +590,7 @@ function New-SelfTestEvidence {
     source = "node-enterprise-deploy-kit/status-node-app.sh"
     collector = "scripts/linux/status-node-app.sh"
     collectorVersion = 1
+    collectorSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     liveHost = $true
     synthetic = $false
     mock = $false
@@ -696,6 +765,8 @@ function New-SelfTestEvidence {
           Status = "ok"
           AppFramework = "nextjs"
           Mode = "standalone"
+          NodeVersion = "v20.11.1"
+          NextVersion = "14.2.3"
           RuntimeRootName = "example-next-app"
         }
         ReverseProxy = [ordered]@{
@@ -805,6 +876,8 @@ function New-SelfTestEvidence {
           Status = "ok"
           AppFramework = "nextjs"
           Mode = "standalone"
+          NodeVersion = "v20.11.1"
+          NextVersion = "14.2.3"
           RuntimeRootName = "example-next-app"
         }
         ReverseProxy = [ordered]@{
@@ -866,6 +939,8 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
+          nodeVersion = "v20.11.1"
+          nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -920,6 +995,8 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
+          nodeVersion = "v20.11.1"
+          nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -971,6 +1048,8 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
+          nodeVersion = "v20.11.1"
+          nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1022,6 +1101,8 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
+          nodeVersion = "v20.11.1"
+          nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1073,6 +1154,8 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
+          nodeVersion = "v20.11.1"
+          nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1186,6 +1269,12 @@ function Test-EvidenceFile {
   if ($null -eq $collectionEvidence.CollectorVersion -or $collectionEvidence.CollectorVersion -lt 1) {
     $Issues.Add("$($File.FullName) is missing a valid evidence collector version.") | Out-Null
   }
+  if ($collectionEvidence.CollectorSha256 -and $collectionEvidence.CollectorSha256 -notmatch '^[a-f0-9]{64}$') {
+    $Issues.Add("$($File.FullName) has an invalid evidence collector SHA256 digest.") | Out-Null
+  }
+  if ($RequireCollectorSha256 -and [string]::IsNullOrWhiteSpace($collectionEvidence.CollectorSha256)) {
+    $Issues.Add("$($File.FullName) is missing evidence collector SHA256 digest required for strict support claims.") | Out-Null
+  }
   if ($collectionEvidence.LiveHost -ne $true) {
     $Issues.Add("$($File.FullName) does not declare live-host collection.") | Out-Null
   }
@@ -1197,6 +1286,9 @@ function Test-EvidenceFile {
     $Issues.Add("$($File.FullName) is missing explicit evidenceCollection anti-synthetic marker(s): $($missingCollectionMarkers -join ', ').") | Out-Null
   } elseif ($collectionEvidence.Synthetic -ne $false -or $collectionEvidence.Mock -ne $false -or $collectionEvidence.Sample -ne $false -or $topLevelSynthetic -eq $true -or $topLevelMock -eq $true -or $topLevelSample -eq $true) {
     $Issues.Add("$($File.FullName) declares synthetic, mock, or sample evidence and cannot prove a real-host support claim.") | Out-Null
+  }
+  foreach ($ciIssue in @(Get-CollectionCiIssues -Ci $collectionEvidence.Ci -FileName $File.FullName)) {
+    $Issues.Add($ciIssue) | Out-Null
   }
   if (Test-PropertyExists -Object $evidence -Names @("ComputerName", "computerName", "HostName", "hostName", "MachineName", "machineName")) {
     $Issues.Add("$($File.FullName) contains a raw host identity field. Use a private evidence folder name or an external release record instead.") | Out-Null
@@ -1295,6 +1387,18 @@ function Test-EvidenceFile {
   if ($null -ne $uptimeEvidence.MinimumUptimeHours -and $uptimeEvidence.MinimumUptimeHours -gt 0 -and $uptimeEvidence.MinimumSatisfied -ne $true) {
     $Issues.Add("$($File.FullName) does not prove the requested minimum uptime window was satisfied.") | Out-Null
   }
+  if ($RequireMinimumUptimeHours -gt 0) {
+    $requiredMinimumSeconds = [int64]$RequireMinimumUptimeHours * 3600
+    if ($null -eq $uptimeEvidence.MinimumUptimeHours -or $uptimeEvidence.MinimumUptimeHours -lt $RequireMinimumUptimeHours) {
+      $Issues.Add("$($File.FullName) does not prove required minimum uptime evidence of $RequireMinimumUptimeHours hour(s).") | Out-Null
+    }
+    if ($uptimeEvidence.MinimumSatisfied -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the required minimum uptime window was satisfied.") | Out-Null
+    }
+    if ($null -eq $uptimeEvidence.ServiceUptimeSeconds -or $uptimeEvidence.ServiceUptimeSeconds -lt $requiredMinimumSeconds) {
+      $Issues.Add("$($File.FullName) does not prove service uptime reached the required $RequireMinimumUptimeHours hour window.") | Out-Null
+    }
+  }
   if ($healthMonitorEvidence.Status -ne "ok") {
     $Issues.Add("$($File.FullName) does not prove health monitor status ok (status: $($healthMonitorEvidence.Status)).") | Out-Null
   }
@@ -1388,6 +1492,12 @@ function Test-EvidenceFile {
     if ($nextJsEvidence.Status -ne "ok") {
       $Issues.Add("$($File.FullName) does not prove a successful Next.js runtime layout check (status: $($nextJsEvidence.Status)).") | Out-Null
     }
+    if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NodeVersion)) {
+      $Issues.Add("$($File.FullName) contains an unsafe Node.js runtime version value in Next.js evidence.") | Out-Null
+    }
+    if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
+      $Issues.Add("$($File.FullName) contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
+    }
   }
   if ($RequireReverseProxy) {
     $normalizedProxyMode = Normalize-Target $reverseProxyEvidence.Mode
@@ -1477,6 +1587,10 @@ if ($SelfTest) {
   if ($RequiredTargets.Count -eq 0) {
     $RequiredTargets = @("windows-11", "windows-server", "linux", "macos", "freebsd", "openbsd", "netbsd")
   }
+  $RequireCollectorSha256 = $true
+  if ($RequireMinimumUptimeHours -le 0) {
+    $RequireMinimumUptimeHours = 72
+  }
   New-SelfTestEvidence -Path $EvidencePath
 
   $syntheticEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-synthetic-$([Guid]::NewGuid().ToString('N'))"
@@ -1500,6 +1614,72 @@ if ($SelfTest) {
   $missingMarkerEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingMarkerFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "missing explicit evidenceCollection anti-synthetic marker" -Parameters @{
     EvidencePath = $missingMarkerEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $unsafeVersionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-runtime-version-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $unsafeVersionEvidencePath
+  $unsafeVersionFile = Join-Path $unsafeVersionEvidencePath "ubuntu.json"
+  $unsafeVersionEvidence = Get-Content -LiteralPath $unsafeVersionFile -Raw | ConvertFrom-Json
+  $unsafeVersionEvidence.nextJsRuntime.nodeVersion = "v20.11.1 C:\unsafe\path"
+  $unsafeVersionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $unsafeVersionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "unsafe Node.js runtime version" -Parameters @{
+    EvidencePath = $unsafeVersionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $missingCollectorDigestEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-collector-digest-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingCollectorDigestEvidencePath
+  $missingCollectorDigestFile = Join-Path $missingCollectorDigestEvidencePath "ubuntu.json"
+  $missingCollectorDigestEvidence = Get-Content -LiteralPath $missingCollectorDigestFile -Raw | ConvertFrom-Json
+  $missingCollectorDigestEvidence.evidenceCollection.PSObject.Properties.Remove("collectorSha256")
+  $missingCollectorDigestEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingCollectorDigestFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "missing evidence collector SHA256 digest" -Parameters @{
+    EvidencePath = $missingCollectorDigestEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+  }
+
+  $missingMinimumUptimeEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-minimum-uptime-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingMinimumUptimeEvidencePath
+  $missingMinimumUptimeFile = Join-Path $missingMinimumUptimeEvidencePath "ubuntu.json"
+  $missingMinimumUptimeEvidence = Get-Content -LiteralPath $missingMinimumUptimeFile -Raw | ConvertFrom-Json
+  $missingMinimumUptimeEvidence.uptime.minimumUptimeHours = "0"
+  $missingMinimumUptimeEvidence.uptime.minimumSatisfied = $false
+  $missingMinimumUptimeEvidence.uptime.serviceUptimeSeconds = 3600
+  $missingMinimumUptimeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingMinimumUptimeFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "does not prove required minimum uptime evidence" -Parameters @{
+    EvidencePath = $missingMinimumUptimeEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+  }
+
+  $badCollectionCiEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-collection-ci-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $badCollectionCiEvidencePath
+  $badCollectionCiFile = Join-Path $badCollectionCiEvidencePath "ubuntu.json"
+  $badCollectionCiEvidence = Get-Content -LiteralPath $badCollectionCiFile -Raw | ConvertFrom-Json
+  $badCollectionCiEvidence.evidenceCollection | Add-Member -NotePropertyName "ci" -NotePropertyValue ([pscustomobject]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = ""
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = ("a" * 40)
+    }) -Force
+  $badCollectionCiEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $badCollectionCiFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "evidenceCollection.ci.runId is required for github-actions provenance" -Parameters @{
+    EvidencePath = $badCollectionCiEvidencePath
     RequireNextJs = $true
     RequireReverseProxy = $true
     RequireDeploymentIdentity = $true

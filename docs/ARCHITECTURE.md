@@ -42,8 +42,7 @@ Recommended Unix-like components:
 - systemd, System V, OpenRC, launchd, or BSD rc service.
 - Nginx, Apache, HAProxy, or Traefik as TLS/reverse proxy frontend.
 - Optional Tomcat WAR deployment when `APP_RUNTIME=tomcat`.
-- systemd timer health check on systemd hosts.
-- Cron or external monitoring for health checks on non-systemd hosts.
+- Managed health-check scheduler: systemd timer, launchd job, or managed root crontab.
 - Logs under `/var/log/<app-name>`.
 - App under `/opt/<app-name>`.
 

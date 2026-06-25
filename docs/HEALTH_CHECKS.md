@@ -114,7 +114,10 @@ same script. On System V, OpenRC, or BSD rc hosts, a managed root crontab entry
 runs the same script.
 
 The deploy flow installs the right scheduler automatically unless
-`SKIP_HEALTH_CHECK="true"`. You can also install only the scheduler:
+`SKIP_HEALTH_CHECK="true"`. Unix preflight fails before deployment changes are
+made if the selected scheduler command is missing: `systemctl` for systemd,
+`launchctl` for macOS launchd, or `crontab` for System V, OpenRC, and BSD rc
+hosts. You can also install only the scheduler:
 
 ```bash
 sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env

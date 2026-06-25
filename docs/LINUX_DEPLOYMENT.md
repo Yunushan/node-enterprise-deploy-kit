@@ -106,6 +106,10 @@ bash deploy.sh config/linux/app.env
 `deploy.sh` runs preflight unless `SKIP_PREFLIGHT="true"`, installs or updates
 the service, applies the selected reverse proxy, and installs the matching
 health-check scheduler: systemd timer, launchd job, or managed root crontab.
+When health checks are enabled, preflight also verifies the matching scheduler
+command before deployment changes are made: `systemctl` for systemd timers,
+`launchctl` for macOS launchd jobs, and `crontab` for System V, OpenRC, or BSD
+rc cron entries.
 
 To deploy a built archive before service setup, set `PACKAGE_PATH` in
 `config/linux/app.env`:
