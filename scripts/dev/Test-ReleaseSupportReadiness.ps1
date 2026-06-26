@@ -569,6 +569,14 @@ if ($SelfTest) {
   $strictMissingCiManifestPath = Join-Path $strictMissingCiRoot "support-evidence-manifest.json"
   $strictMissingCiManifest = Get-Content -LiteralPath $strictMissingCiManifestPath -Raw | ConvertFrom-Json
   $strictMissingCiManifest.sourceControl.trackedDirty = $false
+  $strictMissingCiManifest.ci.isCi = $false
+  $strictMissingCiManifest.ci.provider = ""
+  $strictMissingCiManifest.ci.workflowName = ""
+  $strictMissingCiManifest.ci.runId = ""
+  $strictMissingCiManifest.ci.runAttempt = ""
+  $strictMissingCiManifest.ci.eventName = ""
+  $strictMissingCiManifest.ci.refName = ""
+  $strictMissingCiManifest.ci.sha = ""
   ($strictMissingCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $strictMissingCiManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle CI provenance is required" -Action {
     & $PSCommandPath -BundlePath $strictMissingCiRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease | Out-Null

@@ -251,8 +251,16 @@ function Test-ReactPackageIfNeeded {
 function Stop-AppServiceIfPresent {
     param([string]$Name)
 
+    if (-not (Get-Command Get-Service -ErrorAction SilentlyContinue)) {
+        Write-Host "Windows service cmdlets are unavailable; skipping service stop before package import."
+        return
+    }
+
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne "Stopped") {
+        if (-not (Get-Command Stop-Service -ErrorAction SilentlyContinue)) {
+            throw "Stop-Service cmdlet is required to stop running service before package import."
+        }
         Write-Host "Stopping service before package import: $Name"
         Stop-Service -Name $Name -Force -ErrorAction Stop
         $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(60))
