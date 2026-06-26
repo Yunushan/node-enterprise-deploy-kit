@@ -34,6 +34,27 @@ if (-not (Test-Path $ConfigPath)) {
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
+$effectivePackagePath = $PackagePath
+if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
+    $effectivePackagePath = [string]$config.PackagePath
+}
+
+if (-not $SkipPreflight) {
+    $preflightArgs = @{
+        ConfigPath = $ConfigPath
+        WinSWPath = $WinSWPath
+    }
+    if ($SkipReverseProxy) { $preflightArgs.SkipReverseProxy = $true }
+    if ($SkipHealthCheck) { $preflightArgs.SkipHealthCheck = $true }
+    if ($AllowPortInUse) { $preflightArgs.AllowPortInUse = $true }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $preflightArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
+    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $preflightArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
+    if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) { $preflightArgs.PackagePath = $effectivePackagePath }
+    if ($SkipPackageImport) { $preflightArgs.SkipPackageImport = $true }
+    if ($SkipWinSWDownload) { $preflightArgs.SkipWinSWDownload = $true }
+    & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
+}
+
 if ([string]$config.ServiceManager -eq "winsw") {
     $winswArgs = @{
         ConfigPath = $ConfigPath
@@ -50,36 +71,16 @@ if ([string]$config.ServiceManager -eq "winsw") {
     }
 }
 
-if (-not $SkipPackageImport) {
-    $effectivePackagePath = $PackagePath
-    if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
-        $effectivePackagePath = [string]$config.PackagePath
-    }
-    if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
-        $packageArgs = @{
-            ConfigPath = $ConfigPath
-            PackagePath = $effectivePackagePath
-        }
-        if ($WhatIfPreference) {
-            & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs -WhatIf
-        } else {
-            & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs
-        }
-    }
-}
-
-if (-not $SkipPreflight) {
-    $preflightArgs = @{
+if (-not $SkipPackageImport -and -not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
+    $packageArgs = @{
         ConfigPath = $ConfigPath
-        WinSWPath = $WinSWPath
+        PackagePath = $effectivePackagePath
     }
-    if ($SkipReverseProxy) { $preflightArgs.SkipReverseProxy = $true }
-    if ($SkipHealthCheck) { $preflightArgs.SkipHealthCheck = $true }
-    if ($AllowPortInUse) { $preflightArgs.AllowPortInUse = $true }
-    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $preflightArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
-    if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $preflightArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
-    if ($SkipWinSWDownload) { $preflightArgs.SkipWinSWDownload = $true }
-    & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
+    if ($WhatIfPreference) {
+        & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs -WhatIf
+    } else {
+        & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs
+    }
 }
 
 if (-not $SkipAppPreparation) {

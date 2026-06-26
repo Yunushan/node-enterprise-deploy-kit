@@ -5,7 +5,7 @@
 <h1 align="center">Node Enterprise Deploy Kit</h1>
 
 <p align="center">
-  <strong>Cross-platform, enterprise-style deployment kit for Node.js / Next.js applications on Windows and Unix-like hosts, with optional Tomcat WAR deployment, service management, reverse proxy templates, health checks, diagnostics, and Ansible automation.</strong>
+  <strong>Cross-platform, enterprise-style deployment kit for Node.js / Next.js / React applications on Windows and Unix-like hosts, with optional Tomcat WAR deployment, service management, reverse proxy templates, health checks, diagnostics, and Ansible automation.</strong>
 </p>
 
 <p align="center">
@@ -27,6 +27,7 @@
   <a href="#supported-platforms">Supported Platforms</a> •
   <a href="#deployment-modes">Deployment Modes</a> •
   <a href="docs/NEXTJS_DEPLOYMENT.md">Next.js</a> •
+  <a href="docs/REACT_DEPLOYMENT.md">React</a> •
   <a href="docs/ANSIBLE.md">Ansible</a> •
   <a href="docs/RUNBOOK.md">Runbook</a> •
   <a href="docs/HOST_VERIFICATION.md">Host Evidence</a> •
@@ -56,7 +57,7 @@ IIS / Nginx / Apache / HAProxy / Traefik / existing load balancer
 127.0.0.1:<APP_PORT>
   |
   v
-Node.js / Next.js app running as a real service, or a Tomcat WAR deployment
+Node.js / Next.js / React app running as a real service, or a Tomcat WAR deployment
   |
   v
 Rotated logs + health check + auto-restart + diagnostics
@@ -87,14 +88,20 @@ patterns, platform-family mapping for Linux/macOS/BSD targets, LF-only
 deployment files, example config shape, service and reverse-proxy template
 rendering, release package hygiene, docs consistency, Next.js standalone packaging plus
 standalone/next-start preflight behavior, a local Node.js runtime smoke for
-the managed `PORT`/`HOSTNAME` contract, obvious secret patterns, and `git diff
---check`. On Windows it needs Git Bash or another `bash` executable for the
-shell syntax and Unix Next.js smoke-test steps.
+the managed `PORT`/`HOSTNAME` contract, React static package validation,
+obvious secret patterns, and `git diff --check`. On Windows it needs Git Bash
+or another `bash` executable for the shell syntax and Unix smoke-test steps.
 
 To run only the Next.js support checks:
 
 ```powershell
 .\scripts\dev\Test-NextJsSupport.ps1
+```
+
+To run only the React support checks:
+
+```powershell
+.\scripts\dev\Test-ReactSupport.ps1
 ```
 
 On Unix-like hosts, including macOS CI runners, the Bash-only Next.js smoke
@@ -347,6 +354,7 @@ notepad .\config\windows\app.config.json
   "AppName": "ExampleNodeApp",
   "AppFramework": "nextjs",
   "NextjsDeploymentMode": "standalone",
+  "ReactDocumentRoot": "build",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "StartCommand": "server.js",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
@@ -366,9 +374,13 @@ tools\winsw\winsw-x64.exe
 
 No service wrapper binaries are bundled in this repository. By default,
 `AutoDownloadWinSW` downloads the pinned stable WinSW executable from the
-official WinSW GitHub release when the file is missing. Set
-`AutoDownloadWinSW` to `false` when servers are offline or your organization
-requires an internally approved artifact.
+official WinSW GitHub release when the file is missing, and
+`RequireWinSWDownloadSha256` requires `WinSWDownloadSha256` to verify the
+downloaded or existing executable. The sample config pins the official WinSW
+v2.12.0 x64 digest. Set `AutoDownloadWinSW` to `false` when servers are offline
+or your organization requires an internally approved artifact; set
+`RequireWinSWDownloadSha256` to `false` only when that internal source verifies
+WinSW outside this kit.
 
 4. Install with the recommended Windows entrypoint:
 
@@ -379,7 +391,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .\install.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 
-This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer can import a `.zip` package first, then runs a safe preflight check, configured `InstallCommand` and `BuildCommand`, and installs/updates the service, reverse proxy, and health check.
+This uses PowerShell for the real deployment logic and keeps the batch file as a small convenience wrapper. The installer runs safe preflight checks first, then imports a `.zip` package when configured, runs `InstallCommand` and `BuildCommand`, and installs/updates the service, reverse proxy, and health check.
 
 For built artifacts, import a package before service setup:
 
@@ -409,6 +421,18 @@ For full-app `next-start` packages, pass `-Mode next-start` on Windows or
 `--mode next-start` with the Unix validator. Package import runs the matching
 Next.js validator automatically before replacing the live app directory.
 
+For React deployments, ship the configured Node entrypoint plus the static
+build root containing `index.html`. Create React App usually uses
+`ReactDocumentRoot: "build"`; Vite usually uses `"dist"`. See
+[React Deployment](docs/REACT_DEPLOYMENT.md).
+
+```powershell
+.\scripts\windows\Test-ReactStaticPackage.ps1 `
+  -PackagePath C:\deploy\example-react-app.zip `
+  -ReactDocumentRoot build `
+  -StripSingleTopLevelDirectory
+```
+
 After import or manual copy, validate the live runtime folder without touching
 service state:
 
@@ -419,12 +443,17 @@ service state:
 
 Windows package import supports `.zip`. Linux package import supports `.zip`,
 `.tar.gz`, `.tgz`, and `.tar`. `.rar` and `.7z` are intentionally not supported
-by the built-in import flow because they require external tools.
+by the built-in import flow because they require external tools. Package import
+rejects symlinks, NTFS reparse points, and special-file entries; ship regular
+files and directories in deployment artifacts.
 
 For IIS deployments, install IIS URL Rewrite and Application Request Routing
 first. The IIS installer can enable ARR proxy mode, allow the URL Rewrite
 server variables needed for forwarded headers, render a dedicated health proxy
-path, and warn when WebSocket support is missing.
+path, and warn when WebSocket support is missing. `IisRequireUrlRewrite` and
+`IisRequireArrProxy` default to `true`, so preflight and direct IIS install stop
+instead of writing a broken reverse-proxy config when required IIS modules are
+missing.
 
 For artifact-only deployments where dependencies are already installed and the app is already built:
 
@@ -477,6 +506,11 @@ records safe Node.js runtime and Next.js package version strings when available.
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
+Windows uninstall follows `ServiceManager`: WinSW removes through the wrapper,
+NSSM removes through `nssm` with an `sc.exe` fallback, and PM2 removes the named
+process plus the generated ecosystem file. App files, logs, backups, and
+private config files are left in place.
+
 ### Linux quick start
 
 1. Copy the example env file:
@@ -490,11 +524,16 @@ nano config/linux/app.env
 
 ```bash
 APP_RUNTIME="node"          # node or tomcat
-APP_FRAMEWORK="nextjs"      # node or nextjs
+APP_FRAMEWORK="nextjs"      # node, nextjs, or reactjs
 NEXTJS_DEPLOYMENT_MODE="standalone"
+REACT_DOCUMENT_ROOT="build"
 SERVICE_MANAGER="systemd"   # systemd, systemv, openrc, launchd, or bsdrc
 REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 ```
+
+If `SERVICE_MANAGER` is omitted, Unix deploy, status, diagnostics, health
+checks, and uninstall resolve the host-aware default: launchd on macOS, BSD rc
+on FreeBSD/OpenBSD/NetBSD, OpenRC when available, otherwise systemd or System V.
 
 Linux proxy templates listen on `PROXY_LISTEN_PORT` and set forwarded headers
 from `FORWARDED_PROTO` and `FORWARDED_PORT`. For the common pattern where TLS
@@ -506,6 +545,11 @@ to the public HTTPS edge.
 ```bash
 sudo bash scripts/linux/install-dependencies.sh config/linux/app.env
 ```
+
+Use `sudo` or root for Linux and BSD hosts. On macOS, run the same script
+without `sudo` so Homebrew can manage packages safely. The bootstrap fails
+when the required package manager is missing instead of reporting a successful
+deployment with unknown dependencies.
 
 4. Run the recommended Linux entrypoint:
 
@@ -526,6 +570,15 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 ```
 
+For React deployments, validate the static build archive before import:
+
+```bash
+bash scripts/linux/validate-react-static-package.sh \
+  --package-path /opt/releases/example-react-app.tar.gz \
+  --react-document-root build \
+  --strip-single-top-level
+```
+
 After import or manual copy, validate the live runtime folder:
 
 ```bash
@@ -541,6 +594,9 @@ owned by the current service during an intentional update, set
 When health checks are enabled, Unix preflight also checks the selected
 scheduler command before deployment changes are made: `systemctl` for systemd,
 `launchctl` for macOS, and `crontab` for System V, OpenRC, or BSD rc.
+If a reverse proxy is selected, Unix preflight requires the matching proxy
+command (`nginx`, `apache2ctl`/`httpd`, `haproxy`, or `traefik`) before it
+renders or applies proxy configuration.
 
 5. Or run the pieces manually:
 
@@ -577,6 +633,13 @@ sudo bash scripts/linux/install-tomcat-app.sh config/linux/app.env
 
 ```bash
 sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
+```
+
+To uninstall the managed Unix service and its managed health-check scheduler
+without deleting app/log/backup/state directories:
+
+```bash
+sudo bash scripts/linux/uninstall-node-service.sh config/linux/app.env
 ```
 
 ---
@@ -723,6 +786,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "DisplayName": "Example Node App",
   "AppFramework": "nextjs",
   "NextjsDeploymentMode": "standalone",
+  "ReactDocumentRoot": "build",
   "NextjsRequireStaticAssets": true,
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
@@ -742,7 +806,8 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "ServiceManager": "winsw",
   "AutoDownloadWinSW": true,
   "WinSWDownloadUrl": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
-  "WinSWDownloadSha256": "",
+  "RequireWinSWDownloadSha256": true,
+  "WinSWDownloadSha256": "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA",
   "ReverseProxy": "iis",
   "IisSitePath": "C:\\inetpub\\wwwroot\\ExampleNodeApp",
   "IisSiteName": "ExampleNodeApp",
@@ -752,6 +817,8 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "TlsEnabled": true,
   "IisCertificateThumbprint": "",
   "IisEnableArrProxy": true,
+  "IisRequireUrlRewrite": true,
+  "IisRequireArrProxy": true,
   "IisSetForwardedHeaders": true,
   "IisHealthProxyPath": "health",
   "IisWebSocketSupport": true,
@@ -788,6 +855,7 @@ APP_DIR="/opt/example-node-app"
 APP_RUNTIME="node"
 APP_FRAMEWORK="nextjs"
 NEXTJS_DEPLOYMENT_MODE="standalone"
+REACT_DOCUMENT_ROOT="build"
 NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"

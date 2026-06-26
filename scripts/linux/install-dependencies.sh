@@ -27,6 +27,15 @@ TRAEFIK_PACKAGE="${TRAEFIK_PACKAGE:-traefik}"
 TOMCAT_PACKAGE="${TOMCAT_PACKAGE:-}"
 UNZIP_PACKAGE="${UNZIP_PACKAGE:-unzip}"
 
+require_command() {
+  local command_name="$1"
+  local message="$2"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "$message" >&2
+    exit 1
+  fi
+}
+
 case "$PLATFORM_FAMILY" in
   debian)
     APACHE_PACKAGE="${APACHE_PACKAGE:-apache2}"
@@ -92,6 +101,7 @@ add_package_import_package() {
 }
 
 if [[ "$PLATFORM_FAMILY" == "debian" ]]; then
+  require_command "apt-get" "apt-get was not found. Install dependencies manually or run this bootstrap on a Debian-compatible host."
   apt-get update
   packages=(curl ca-certificates)
   add_reverse_proxy_package
@@ -103,20 +113,30 @@ elif [[ "$PLATFORM_FAMILY" == "rhel" ]]; then
   add_reverse_proxy_package
   add_runtime_package
   add_package_import_package
-  if command -v dnf >/dev/null 2>&1; then dnf install -y "${packages[@]}"; else yum install -y "${packages[@]}"; fi
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y "${packages[@]}"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y "${packages[@]}"
+  else
+    echo "Neither dnf nor yum was found. Install dependencies manually or run this bootstrap on a RHEL-compatible host." >&2
+    exit 1
+  fi
 elif [[ "$PLATFORM_FAMILY" == "alpine" ]]; then
+  require_command "apk" "apk was not found. Install dependencies manually or run this bootstrap on an Alpine host."
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
   add_package_import_package
   apk add --no-cache "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "freebsd" ]]; then
+  require_command "pkg" "pkg was not found. Install dependencies manually or run this bootstrap on a FreeBSD host."
   packages=(curl ca_root_nss)
   add_reverse_proxy_package
   add_runtime_package
   add_package_import_package
   pkg install -y "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "openbsd" ]]; then
+  require_command "pkg_add" "pkg_add was not found. Install dependencies manually or run this bootstrap on an OpenBSD host."
   packages=(curl ca-certificates)
   add_reverse_proxy_package
   add_runtime_package
@@ -130,11 +150,13 @@ elif [[ "$PLATFORM_FAMILY" == "netbsd" ]]; then
   if command -v pkgin >/dev/null 2>&1; then
     pkgin -y install "${packages[@]}"
   else
-    echo "pkgin was not found. Install packages manually: ${packages[*]}" >&2
+    echo "pkgin was not found. Install dependencies manually or install pkgin first: ${packages[*]}" >&2
+    exit 1
   fi
 elif [[ "$PLATFORM_FAMILY" == "macos" ]]; then
   if ! command -v brew >/dev/null 2>&1; then
-    echo "Homebrew was not found. Install packages manually for macOS: curl ca-certificates ${REVERSE_PROXY} ${TOMCAT_PACKAGE}" >&2
+    echo "Homebrew was not found. Install dependencies manually or install Homebrew first: curl ca-certificates ${REVERSE_PROXY} ${TOMCAT_PACKAGE}" >&2
+    exit 1
   else
     packages=(curl ca-certificates)
     add_reverse_proxy_package
@@ -144,6 +166,7 @@ elif [[ "$PLATFORM_FAMILY" == "macos" ]]; then
   fi
 else
   echo "Unsupported/unknown OS family. Install curl, CA certificates, ${REVERSE_PROXY}, Tomcat if needed, and Node.js manually." >&2
+  exit 1
 fi
 if [[ "$APP_RUNTIME_NORMALIZED" == "tomcat" || "$APP_RUNTIME_NORMALIZED" == "apache-tomcat" ]]; then
   echo "Dependency bootstrap finished. Confirm Tomcat uses your company-approved Java runtime."

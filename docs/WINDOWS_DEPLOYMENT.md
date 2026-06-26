@@ -26,7 +26,7 @@ the double-click entrypoint:
 ```text
 install.bat     -> convenience wrapper for elevated/manual use
 install.ps1     -> install entrypoint; delegates to deploy.ps1
-deploy.ps1      -> preflight, app preparation, service, proxy, health check
+deploy.ps1      -> preflight, optional package import, app preparation, service, proxy, health check
 status.ps1      -> safe service/process/port/HTTP status check
 restart.ps1     -> restart service and re-run status
 uninstall.ps1   -> remove service and optional health check task
@@ -64,9 +64,13 @@ tools\winsw\winsw-x64.exe
 
 No service wrapper binaries are bundled in this repository. By default,
 `AutoDownloadWinSW` downloads the pinned stable WinSW executable from
-`WinSWDownloadUrl` if the local file is missing. Set `AutoDownloadWinSW` to
-`false` when the server is offline or your organization requires a trusted
-internal artifact source.
+`WinSWDownloadUrl` if the local file is missing, and
+`RequireWinSWDownloadSha256` requires `WinSWDownloadSha256` to verify the
+downloaded or existing executable. The sample config pins the official WinSW
+v2.12.0 x64 digest. Set `AutoDownloadWinSW` to `false` when the server is
+offline or your organization requires a trusted internal artifact source; set
+`RequireWinSWDownloadSha256` to `false` only when that internal source verifies
+WinSW outside this kit.
 
 5. Install using the one-command Windows wrapper:
 
@@ -82,7 +86,7 @@ operator can read the result.
 The default install flow is:
 
 ```text
-optional package import -> preflight -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
+preflight -> optional package import -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
 ```
 
 To deploy a built `.zip` artifact, set `PackagePath` in config or pass
@@ -96,12 +100,28 @@ To deploy a built `.zip` artifact, set `PackagePath` in config or pass
 
 Windows package import supports `.zip` with built-in .NET extraction. It
 validates archive paths before extraction, extracts to a temporary directory,
-checks `PackageExpectedFiles`, stops the service if it exists, backs up the
-current `AppDirectory`, then imports the new package contents.
+rejects symlink, reparse-point, and special-file entries, checks
+`PackageExpectedFiles`, stops the service if it exists, backs up the current
+`AppDirectory`, then imports the new package contents.
 `PackageExpectedFiles` may name files or directories, so Next.js standalone
 packages can require `server.js`, `.next/BUILD_ID`, and `.next/static`. `.rar` and `.7z` are
 intentionally unsupported because they require external tooling and a larger
 security surface.
+
+For React deployments, ship the Node entrypoint that serves the SPA plus the
+static build root containing `index.html`. Create React App commonly uses
+`ReactDocumentRoot: "build"` and Vite commonly uses `"dist"`. Validate the zip
+before deployment:
+
+```powershell
+.\scripts\windows\Test-ReactStaticPackage.ps1 `
+  -PackagePath C:\deploy\example-react-app.zip `
+  -ReactDocumentRoot build `
+  -StripSingleTopLevelDirectory
+```
+
+The Windows package import flow runs this validator automatically when
+`AppFramework` is `react`, `reactjs`, or `react-js`.
 
 For Next.js standalone deployments, build with `output: 'standalone'`, package
 the contents of `.next\standalone`, and copy `.next\static` to
@@ -230,8 +250,11 @@ you run those proxies on Windows, manage their configuration separately and keep
 
 For production IIS reverse proxy deployments, install IIS URL Rewrite and
 Application Request Routing before running the installer. By default,
-`IisEnableArrProxy` enables ARR proxy mode, preserves the original `Host`
-header, disables response host rewrites, and applies `IisProxyTimeoutSeconds`.
+`IisRequireUrlRewrite` and `IisRequireArrProxy` make preflight and direct IIS
+install fail if those required modules are missing. Set them to `false` only
+when IIS prerequisites are managed and verified separately. `IisEnableArrProxy`
+enables ARR proxy mode, preserves the original `Host` header, disables response
+host rewrites, and applies `IisProxyTimeoutSeconds`.
 `IisSetForwardedHeaders` writes `X-Forwarded-Host`,
 `X-Forwarded-Proto`, `X-Forwarded-Port`, and `X-Forwarded-For` from IIS URL
 Rewrite so frameworks such as Next.js and Express can understand the public
@@ -314,6 +337,12 @@ health-check task definition. If `BackupDirectory` is not set, the scripts use
 .\rollback.ps1 -ConfigPath .\config\windows\app.config.json -List
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
+
+The Windows uninstaller routes by `ServiceManager`: WinSW uses the service
+wrapper executable, NSSM uses `nssm remove` when available and falls back to
+`sc.exe stop/delete`, and PM2 removes the named process plus the generated PM2
+ecosystem file. It does not delete app files, logs, backups, or private config
+files.
 
 For managed config rollback, list available backups first, then restore a
 specific target:

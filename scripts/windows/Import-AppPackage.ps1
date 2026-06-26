@@ -59,6 +59,10 @@ function Normalize-Name([string]$Value) {
     return ([string]$Value).Trim().ToLowerInvariant().Replace("_", "-").Replace(" ", "-")
 }
 
+function Test-ReactFramework([string]$Framework) {
+    return (Normalize-Name $Framework) -in @("react", "reactjs", "react-js")
+}
+
 function Get-BackupDirectory($Config) {
     if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
         return [string]$Config.BackupDirectory
@@ -84,6 +88,20 @@ function Test-SafeArchiveEntryName {
     return $true
 }
 
+function Get-UnsafeZipEntryType {
+    param($Entry)
+
+    $rawAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$Entry.ExternalAttributes), 0)
+    $unixFileType = (($rawAttributes -shr 16) -band 0xF000)
+    if ($unixFileType -eq 0 -or $unixFileType -eq 0x4000 -or $unixFileType -eq 0x8000) {
+        return ""
+    }
+    if ($unixFileType -eq 0xA000) {
+        return "symlink"
+    }
+    return ("special Unix file type 0x{0:X4}" -f $unixFileType)
+}
+
 function Assert-ZipPackageSafe {
     param([string]$Path)
 
@@ -94,10 +112,24 @@ function Assert-ZipPackageSafe {
             if (-not (Test-SafeArchiveEntryName $entry.FullName)) {
                 throw "Unsafe archive entry path detected: $($entry.FullName)"
             }
+            $unsafeType = Get-UnsafeZipEntryType $entry
+            if (-not [string]::IsNullOrWhiteSpace($unsafeType)) {
+                throw "Unsafe archive entry type detected: $($entry.FullName) is $unsafeType. Symlinks and special files are intentionally unsupported in deployment archives."
+            }
         }
     }
     finally {
         $zip.Dispose()
+    }
+}
+
+function Assert-ExtractedTreeSafe {
+    param([string]$RootPath)
+
+    foreach ($item in Get-ChildItem -LiteralPath $RootPath -Force -Recurse) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Unsafe extracted reparse point detected: $($item.FullName). Symlinks and junctions are intentionally unsupported in deployment archives."
+        }
     }
 }
 
@@ -179,6 +211,43 @@ function Test-NextJsPackageIfNeeded {
     & $validator @arguments
 }
 
+function Get-ReactDocumentRoot {
+    param($Config)
+
+    $documentRoot = (Get-ConfigString $Config "ReactDocumentRoot" "build").Trim()
+    if ([string]::IsNullOrWhiteSpace($documentRoot)) {
+        $documentRoot = "build"
+    }
+    return ($documentRoot -replace "\\", "/").Trim("/")
+}
+
+function Test-ReactPackageIfNeeded {
+    param(
+        $Config,
+        [string]$Path,
+        [bool]$StripSingleTopLevelDirectory
+    )
+
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+    if (-not (Test-ReactFramework $framework)) {
+        return
+    }
+
+    $validator = Join-Path $PSScriptRoot "Test-ReactStaticPackage.ps1"
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        throw "React package validator not found: $validator"
+    }
+
+    $arguments = @{
+        PackagePath = $Path
+        ReactDocumentRoot = Get-ReactDocumentRoot $Config
+    }
+    if ($StripSingleTopLevelDirectory) {
+        $arguments.StripSingleTopLevelDirectory = $true
+    }
+    & $validator @arguments
+}
+
 function Stop-AppServiceIfPresent {
     param([string]$Name)
 
@@ -235,6 +304,7 @@ function Write-DeploymentManifest {
         appName = [string]$Config.AppName
         appFramework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
         nextjsMode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "")
+        reactDocumentRoot = Get-ReactDocumentRoot $Config
         packageName = [System.IO.Path]::GetFileName($PackagePath)
         packageSha256 = $packageHash
         deploymentId = Get-DeploymentIdFromConfig $Config
@@ -279,6 +349,7 @@ if ($backupDirectory.StartsWith($appDirectory.TrimEnd('\') + '\', [System.String
 
 Assert-ZipPackageSafe -Path $PackagePath
 Test-NextJsPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
+Test-ReactPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-package-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
@@ -286,6 +357,7 @@ $backupPath = ""
 
 try {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($PackagePath, $extractRoot)
+    Assert-ExtractedTreeSafe -RootPath $extractRoot
     $sourceRoot = Get-PackageSourceRoot -ExtractRoot $extractRoot -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
     Assert-ExpectedFiles -SourceRoot $sourceRoot -ExpectedFiles $expectedFiles
 

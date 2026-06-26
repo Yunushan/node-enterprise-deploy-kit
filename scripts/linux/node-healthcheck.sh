@@ -4,7 +4,34 @@ CONFIG_FILE="${1:-/etc/node-enterprise-deploy-kit/app.env}"
 if [[ ! -f "$CONFIG_FILE" ]]; then echo "Config not found: $CONFIG_FILE" >&2; exit 1; fi
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
-SERVICE_MANAGER="${SERVICE_MANAGER:-systemd}"
+
+normalize_service_manager() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-'
+}
+
+default_service_manager_for_current_host() {
+  local kernel
+  kernel="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  case "$kernel" in
+    darwin)
+      echo "launchd"
+      ;;
+    freebsd|openbsd|netbsd)
+      echo "bsdrc"
+      ;;
+    *)
+      if command -v systemctl >/dev/null 2>&1; then
+        echo "systemd"
+      elif command -v rc-service >/dev/null 2>&1; then
+        echo "openrc"
+      else
+        echo "systemv"
+      fi
+      ;;
+  esac
+}
+
+SERVICE_MANAGER="${SERVICE_MANAGER:-$(default_service_manager_for_current_host)}"
 APP_RUNTIME_NORMALIZED="$(echo "${APP_RUNTIME:-node}" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
 SERVICE_NAME="${SERVICE_NAME:-$APP_NAME}"
 if [[ "$APP_RUNTIME_NORMALIZED" == "tomcat" || "$APP_RUNTIME_NORMALIZED" == "apache-tomcat" ]]; then
@@ -57,7 +84,7 @@ retention_cleanup() {
   remove_old_files "$LOG_DIR/diagnostics" "$DIAGNOSTIC_RETENTION_DAYS" \( -name '*.txt' -o -name '*.log' \)
   remove_old_files "$BACKUP_DIR" "$BACKUP_RETENTION_DAYS" -name '*.bak'
 }
-service_manager_normalized="$(echo "$SERVICE_MANAGER" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
+service_manager_normalized="$(normalize_service_manager "$SERVICE_MANAGER")"
 CONSECUTIVE_FAILURES=0
 LAST_RESTART_EPOCH=0
 LAST_SUCCESS_EPOCH=0

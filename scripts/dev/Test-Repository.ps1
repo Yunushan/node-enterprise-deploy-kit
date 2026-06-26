@@ -234,6 +234,10 @@ function Test-NextJsSupport {
   & (Join-Path $ScriptDir "Test-NextJsSupport.ps1")
 }
 
+function Test-ReactSupport {
+  & (Join-Path $ScriptDir "Test-ReactSupport.ps1")
+}
+
 function Test-NextJsRuntimeSmoke {
   & (Join-Path $ScriptDir "Test-NextJsRuntimeSmoke.ps1")
 }
@@ -301,6 +305,7 @@ Test-UnixShellPortabilityPatterns
 Test-PlatformMatrix
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
+Test-ReactSupport
 Test-NextJsRuntimeSmoke
 Test-ReleasePackageHygiene
 Test-HostEvidenceSelfTest

@@ -102,6 +102,30 @@ safe_relative_path() {
   done
   return 0
 }
+is_react_framework() {
+  case "$(normalize_name "${1:-}")" in
+    react|reactjs|react-js) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+react_document_root() {
+  local root="${REACT_DOCUMENT_ROOT:-build}"
+  root="${root//\\//}"
+  root="${root#/}"
+  root="${root%/}"
+  [[ -n "$root" ]] || root="build"
+  printf '%s\n' "$root"
+}
+app_relative_path() {
+  local root="${1%/}" relative="${2//\\//}"
+  relative="${relative#/}"
+  relative="${relative%/}"
+  if [[ -z "$relative" || "$relative" == "." ]]; then
+    printf '%s\n' "$root"
+  else
+    printf '%s/%s\n' "$root" "$relative"
+  fi
+}
 is_user_runtime_path() {
   [[ "${1:-}" =~ ^/home/[^/]+/(Desktop|Downloads|Documents)(/|$) || "${1:-}" =~ ^/Users/[^/]+/(Desktop|Downloads|Documents)(/|$) ]]
 }
@@ -229,6 +253,31 @@ validate_nextjs_layout() {
       ;;
   esac
 }
+validate_react_layout() {
+  is_react_framework "$APP_FRAMEWORK_NORMALIZED" || return 0
+
+  if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
+    add_error "APP_FRAMEWORK=reactjs requires APP_RUNTIME=node."
+    return 0
+  fi
+
+  local document_root react_root
+  document_root="$(react_document_root)"
+  if ! safe_relative_path "$document_root"; then
+    add_error "REACT_DOCUMENT_ROOT must be a safe relative directory path."
+    return 0
+  fi
+
+  if [[ -z "${APP_DIR:-}" || ! -d "${APP_DIR:-}" ]]; then
+    return 0
+  fi
+
+  react_root="$(app_relative_path "$APP_DIR" "$document_root")"
+  [[ -f "$react_root/index.html" ]] || add_error "React deployment root is missing index.html: $react_root/index.html"
+  if [[ ! -d "$react_root/static" && ! -d "$react_root/assets" ]]; then
+    add_warning "React deployment root has no static or assets directory. This can be valid for tiny apps, but verify the built artifact contains browser assets."
+  fi
+}
 
 for key in APP_NAME APP_DISPLAY_NAME APP_PORT BIND_ADDRESS HEALTH_URL LOG_DIR SERVICE_MANAGER REVERSE_PROXY; do
   require_value "$key"
@@ -284,6 +333,7 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && -d "$APP_DIR" 
 fi
 
 validate_nextjs_layout
+validate_react_layout
 
 if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
   if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
@@ -406,23 +456,23 @@ if ! is_true "$SKIP_REVERSE_PROXY"; then
   fi
   case "$REVERSE_PROXY_NORMALIZED" in
     nginx)
-      command -v nginx >/dev/null 2>&1 || add_warning "REVERSE_PROXY=nginx but nginx was not found."
+      command -v nginx >/dev/null 2>&1 || add_error "REVERSE_PROXY=nginx but nginx was not found. Install nginx or run scripts/linux/install-dependencies.sh before deployment."
       [[ -n "${NGINX_SITE_NAME:-}" ]] || add_warning "NGINX_SITE_NAME is empty; scripts may use an empty config filename."
       ;;
     apache|httpd)
       if ! command -v apache2ctl >/dev/null 2>&1 && ! command -v httpd >/dev/null 2>&1; then
-        add_warning "REVERSE_PROXY=apache but apache2ctl/httpd was not found."
+        add_error "REVERSE_PROXY=apache but apache2ctl/httpd was not found. Install Apache/httpd or run scripts/linux/install-dependencies.sh before deployment."
       fi
       ;;
     haproxy)
-      command -v haproxy >/dev/null 2>&1 || add_warning "REVERSE_PROXY=haproxy but haproxy was not found."
+      command -v haproxy >/dev/null 2>&1 || add_error "REVERSE_PROXY=haproxy but haproxy was not found. Install haproxy or run scripts/linux/install-dependencies.sh before deployment."
       case "${HAPROXY_ALLOW_MAIN_CONFIG_REPLACE:-false}" in
         true|false|TRUE|FALSE|True|False|1|0|yes|no|YES|NO|Yes|No) ;;
         *) add_warning "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE should be true or false." ;;
       esac
       ;;
     traefik)
-      command -v traefik >/dev/null 2>&1 || add_warning "REVERSE_PROXY=traefik but traefik was not found."
+      command -v traefik >/dev/null 2>&1 || add_error "REVERSE_PROXY=traefik but traefik was not found. Install traefik or run scripts/linux/install-dependencies.sh before deployment."
       [[ -n "${TRAEFIK_DYNAMIC_DIR:-}" || -n "${TRAEFIK_DYNAMIC_FILE:-}" ]] || add_warning "TRAEFIK_DYNAMIC_DIR/TRAEFIK_DYNAMIC_FILE is empty; using /etc/traefik/dynamic."
       ;;
     none|"") ;;

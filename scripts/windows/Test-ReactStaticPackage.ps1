@@ -1,19 +1,18 @@
 <#
 .SYNOPSIS
-  Validate a Next.js zip package before Windows deployment.
+  Validate a React static build package before Windows deployment.
 .DESCRIPTION
-  Checks for unsafe archive paths, blocked private files, and the expected
-  Next.js runtime entries for standalone or next-start mode. This is a
-  read-only package validation helper.
+  Checks for unsafe archive paths, blocked private files, and index.html under
+  the configured ReactDocumentRoot. This is a read-only package validation
+  helper for React apps served by the configured Node.js service.
 .EXAMPLE
-  .\scripts\windows\Test-NextJsStandalonePackage.ps1 -PackagePath C:\deploy\example-node-app.zip
+  .\scripts\windows\Test-ReactStaticPackage.ps1 -PackagePath C:\deploy\react-app.zip -ReactDocumentRoot build
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string] $PackagePath,
-    [ValidateSet("standalone", "next-start")] [string] $Mode = "standalone",
-    [switch] $StripSingleTopLevelDirectory,
-    [switch] $RequirePublicDirectory
+    [string] $ReactDocumentRoot = "build",
+    [switch] $StripSingleTopLevelDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -30,6 +29,19 @@ function Test-SafeArchiveEntryName {
     foreach ($part in $parts) {
         if ($part -eq "." -or $part -eq "..") { return $false }
         if ($part.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    }
+    return $true
+}
+
+function Test-SafeRelativePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $false }
+    $normalized = $Path -replace "\\", "/"
+    foreach ($part in $normalized.Split("/")) {
+        if ([string]::IsNullOrWhiteSpace($part) -or $part -eq ".") { continue }
+        if ($part -eq "..") { return $false }
     }
     return $true
 }
@@ -89,14 +101,28 @@ function Get-SingleTopLevelDirectory {
     return ""
 }
 
-$modeNormalized = $Mode.Trim().ToLowerInvariant()
+function Get-ReactDocumentRootPath([string]$Path) {
+    $normalized = ($Path -replace "\\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        $normalized = "build"
+    }
+    return $normalized
+}
+
 if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
     throw "PackagePath not found: $PackagePath"
 }
 $PackagePath = [System.IO.Path]::GetFullPath($PackagePath)
 if ([System.IO.Path]::GetExtension($PackagePath).ToLowerInvariant() -ne ".zip") {
-    throw "Windows Next.js package validation supports .zip only."
+    throw "Windows React package validation supports .zip only."
 }
+
+$documentRoot = Get-ReactDocumentRootPath $ReactDocumentRoot
+if (-not (Test-SafeRelativePath $documentRoot)) {
+    throw "ReactDocumentRoot must be a safe relative directory path."
+}
+$indexEntry = if ($documentRoot -eq ".") { "index.html" } else { "$documentRoot/index.html" }
+$assetPrefix = if ($documentRoot -eq ".") { "" } else { "$documentRoot/" }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
@@ -132,36 +158,14 @@ try {
         throw "Package contains blocked private file(s): $($blocked -join ', ')"
     }
 
-    if ($modeNormalized -eq "standalone") {
-        if ($runtimeEntries -notcontains "server.js") {
-            throw "Package is missing server.js at the runtime root."
-        }
-        if ($runtimeEntries -notcontains ".next/BUILD_ID") {
-            throw "Package is missing .next/BUILD_ID at the runtime root."
-        }
-        if (-not ($runtimeEntries | Where-Object { $_ -like ".next/static/*" })) {
-            throw "Package is missing .next/static content."
-        }
-    } elseif ($modeNormalized -eq "next-start") {
-        if ($runtimeEntries -notcontains "package.json") {
-            throw "Package is missing package.json at the runtime root."
-        }
-        if ($runtimeEntries -notcontains ".next/BUILD_ID") {
-            throw "Package is missing .next/BUILD_ID at the runtime root."
-        }
-        if (-not ($runtimeEntries | Where-Object { $_ -like ".next/*" })) {
-            throw "Package is missing .next build output."
-        }
-        if (-not ($runtimeEntries | Where-Object { $_ -like "node_modules/next/*" })) {
-            throw "Package is missing node_modules/next content."
-        }
+    if ($runtimeEntries -notcontains $indexEntry) {
+        throw "Package is missing React index.html at $indexEntry."
+    }
+    if (-not ($runtimeEntries | Where-Object { $_ -like "${assetPrefix}static/*" -or $_ -like "${assetPrefix}assets/*" })) {
+        Write-Warning "Package has no React static/assets entries under $documentRoot. This can be valid for tiny apps, but verify browser assets are present."
     }
 
-    if ($RequirePublicDirectory -and -not ($runtimeEntries | Where-Object { $_ -like "public/*" })) {
-        throw "Package is missing public content, but RequirePublicDirectory was set."
-    }
-
-    Write-Host "Next.js $modeNormalized package OK: $PackagePath" -ForegroundColor Green
+    Write-Host "React static package OK: $PackagePath" -ForegroundColor Green
 }
 finally {
     $zip.Dispose()

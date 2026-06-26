@@ -1,5 +1,10 @@
 {% set nextjs_mode = node_deploy_nextjs_deployment_mode | default('standalone') | lower | replace('_', '-') %}
-{% set default_package_expected_files = ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next'] if nextjs_mode == 'next-start' else ['server.js', '.next/BUILD_ID', '.next/static'] %}
+{% set app_framework = node_deploy_app_framework | default('nextjs') | lower | replace('_', '-') %}
+{% set react_document_root = node_deploy_react_document_root | default('build') %}
+{% set react_index_path = 'index.html' if react_document_root in ['', '.'] else react_document_root ~ '/index.html' %}
+{% set nextjs_package_expected_files = ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next'] if nextjs_mode == 'next-start' else ['server.js', '.next/BUILD_ID', '.next/static'] %}
+{% set react_package_expected_files = [node_deploy_start_script | default('server.js'), react_index_path] %}
+{% set default_package_expected_files = react_package_expected_files if app_framework in ['react', 'reactjs', 'react-js'] else nextjs_package_expected_files %}
 {% set configured_package_expected_files = node_deploy_package_expected_files | default([]) %}
 {% set package_expected_files = configured_package_expected_files if configured_package_expected_files | length > 0 else default_package_expected_files %}
 {% set configured_node_arguments = node_deploy_node_arguments | default('') %}
@@ -12,6 +17,7 @@
   "DeploymentMode": {{ node_deploy_mode | to_json }},
   "AppFramework": {{ node_deploy_app_framework | default('nextjs') | to_json }},
   "NextjsDeploymentMode": {{ nextjs_mode | to_json }},
+  "ReactDocumentRoot": {{ react_document_root | to_json }},
   "NextjsRequireStaticAssets": {{ node_deploy_nextjs_require_static_assets | default(true) | bool | to_json }},
   "NextjsRequirePublicDirectory": {{ node_deploy_nextjs_require_public_directory | default(false) | bool | to_json }},
   "NextjsRequireServerActionsEncryptionKey": {{ node_deploy_nextjs_require_server_actions_encryption_key | default(false) | bool | to_json }},
@@ -20,7 +26,8 @@
   "ReverseProxy": {{ node_deploy_windows_reverse_proxy | to_json }},
   "AutoDownloadWinSW": {{ node_deploy_windows_auto_download_winsw | default(true) | bool | to_json }},
   "WinSWDownloadUrl": {{ node_deploy_windows_winsw_download_url | default('https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe') | to_json }},
-  "WinSWDownloadSha256": {{ node_deploy_windows_winsw_download_sha256 | default('') | to_json }},
+  "RequireWinSWDownloadSha256": {{ node_deploy_windows_require_winsw_download_sha256 | default(true) | bool | to_json }},
+  "WinSWDownloadSha256": {{ node_deploy_windows_winsw_download_sha256 | default('05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA') | to_json }},
   "AppDirectory": {{ node_deploy_app_dir_windows | to_json }},
   "PackagePath": {{ node_deploy_package_path_windows | default('') | to_json }},
   "PackageExpectedFiles": {{ package_expected_files | to_json }},
@@ -45,6 +52,8 @@
   "TlsEnabled": {{ node_deploy_tls_enabled | bool | to_json }},
   "IisCertificateThumbprint": {{ node_deploy_windows_iis_certificate_thumbprint | default('') | to_json }},
   "IisEnableArrProxy": {{ node_deploy_windows_iis_enable_arr_proxy | default(true) | bool | to_json }},
+  "IisRequireUrlRewrite": {{ node_deploy_windows_iis_require_url_rewrite | default(true) | bool | to_json }},
+  "IisRequireArrProxy": {{ node_deploy_windows_iis_require_arr_proxy | default(true) | bool | to_json }},
   "IisSetForwardedHeaders": {{ node_deploy_windows_iis_set_forwarded_headers | default(true) | bool | to_json }},
   "IisHealthProxyPath": {{ node_deploy_windows_iis_health_proxy_path | default('health') | to_json }},
   "IisWebSocketSupport": {{ node_deploy_windows_iis_websocket_support | default(true) | bool | to_json }},

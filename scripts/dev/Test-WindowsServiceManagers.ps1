@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+$PinnedWinSWSha256 = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
 
 function Write-Step {
   param([string]$Message)
@@ -40,6 +41,28 @@ function Assert-FileContainsText {
   }
 }
 
+function Assert-TextOrder {
+  param(
+    [string]$Path,
+    [string]$FirstText,
+    [string]$SecondText
+  )
+
+  $fullPath = Resolve-RepoFile $Path
+  $text = Get-Content -Path $fullPath -Raw
+  $firstIndex = $text.IndexOf($FirstText, [System.StringComparison]::Ordinal)
+  $secondIndex = $text.IndexOf($SecondText, [System.StringComparison]::Ordinal)
+  if ($firstIndex -lt 0) {
+    throw "$(Get-RepoRelativePath $fullPath) is missing expected text: $FirstText"
+  }
+  if ($secondIndex -lt 0) {
+    throw "$(Get-RepoRelativePath $fullPath) is missing expected text: $SecondText"
+  }
+  if ($firstIndex -gt $secondIndex) {
+    throw "$(Get-RepoRelativePath $fullPath) should contain '$FirstText' before '$SecondText'."
+  }
+}
+
 function Assert-ArrayContains {
   param(
     [object[]]$Values,
@@ -69,9 +92,16 @@ function Assert-DeployRouting {
     )) {
     Assert-FileContainsText -Path "deploy.ps1" -ExpectedText $expected
   }
+  Assert-FileContainsText -Path "deploy.ps1" -ExpectedText 'if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) { $preflightArgs.PackagePath = $effectivePackagePath }'
+  Assert-FileContainsText -Path "deploy.ps1" -ExpectedText 'if ($SkipPackageImport) { $preflightArgs.SkipPackageImport = $true }'
+  Assert-TextOrder -Path "deploy.ps1" -FirstText 'scripts\windows\Test-DeploymentPreflight.ps1' -SecondText 'scripts\windows\Import-AppPackage.ps1'
 
   foreach ($expected in @(
       '$serviceManager = ([string]$config.ServiceManager).ToLowerInvariant()',
+      '[string] $PackagePath = ""',
+      '[switch] $SkipPackageImport',
+      '$effectivePackagePath = $PackagePath',
+      'if ($SkipPackageImport)',
       '"winsw" {',
       '"nssm" {',
       '"pm2" {',
@@ -93,6 +123,16 @@ function Assert-WindowsReverseProxyRouting {
       'Unsupported Windows ReverseProxy: $($config.ReverseProxy). Use iis or none.'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Install-ReverseProxy.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      'Get-ConfigBool $config "IisRequireUrlRewrite" $true',
+      'Get-ConfigBool $config "IisRequireArrProxy" $true',
+      'IIS URL Rewrite module was not detected. Install URL Rewrite before using ReverseProxy=iis',
+      'IIS Application Request Routing module was not detected. Install ARR before using ReverseProxy=iis'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Test-DeploymentPreflight.ps1" -ExpectedText $expected
+    Assert-FileContainsText -Path "scripts/windows/Install-IISReverseProxy.ps1" -ExpectedText $expected
   }
 
   $tempRoot = Join-Path $RepoRoot ".tmp\windows-reverse-proxy-dispatcher"
@@ -196,6 +236,34 @@ function Assert-WindowsServiceEnvironmentContract {
   }
 }
 
+function Assert-WindowsUninstallRouting {
+  Write-Step "Windows uninstall service-manager routing"
+
+  foreach ($expected in @(
+      '[string] $NssmPath = "tools\nssm\nssm.exe"',
+      'switch ($serviceManager)',
+      '"winsw" { Uninstall-WinSWService $config }',
+      '"nssm"  { Uninstall-NssmService $config $resolvedNssmPath }',
+      '"pm2"   { Uninstall-Pm2Process $config }',
+      'Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2.',
+      'Invoke-NativeCommand $ResolvedNssmPath @("remove", $Config.AppName, "confirm") "NSSM remove" -IgnoreExitCode',
+      'Falling back to sc.exe stop/delete',
+      'Invoke-NativeCommand "pm2" @("delete", $Config.AppName) "pm2 delete" -IgnoreExitCode',
+      'Remove-Item -LiteralPath $ecosystemPath -Force -ErrorAction SilentlyContinue',
+      'Unregister-ScheduledTask -TaskName $taskName'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Uninstall-NodeService.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      '[string] $NssmPath = "tools\nssm\nssm.exe"',
+      'NssmPath = $NssmPath',
+      '$uninstallArgs.RemoveHealthCheckTask = $true'
+    )) {
+    Assert-FileContainsText -Path "uninstall.ps1" -ExpectedText $expected
+  }
+}
+
 function Assert-WindowsStatusEvidenceContract {
   Write-Step "Windows status evidence service-manager contract"
 
@@ -260,14 +328,40 @@ function Assert-WindowsExampleConfigContract {
   if ([string]$config.ReverseProxy -ne "iis") {
     throw "config/windows/app.config.example.json should default ReverseProxy to iis."
   }
+  if ($config.IisRequireUrlRewrite -ne $true) {
+    throw "config/windows/app.config.example.json should require IIS URL Rewrite by default."
+  }
+  if ($config.IisRequireArrProxy -ne $true) {
+    throw "config/windows/app.config.example.json should require IIS ARR by default."
+  }
+  if ($config.RequireWinSWDownloadSha256 -ne $true) {
+    throw "config/windows/app.config.example.json should require WinSW SHA256 verification by default."
+  }
+  if ([string]$config.WinSWDownloadSha256 -ne $PinnedWinSWSha256) {
+    throw "config/windows/app.config.example.json should pin the official WinSW v2.12.0 x64 SHA256."
+  }
   if ([string]$config.NextjsDeploymentMode -ne "standalone") {
     throw "config/windows/app.config.example.json should default NextjsDeploymentMode to standalone."
   }
+
+  foreach ($expected in @(
+      'Get-ConfigBool $config "RequireWinSWDownloadSha256" $true',
+      'WinSWDownloadSha256 is required when RequireWinSWDownloadSha256 is true'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Ensure-WinSW.ps1" -ExpectedText $expected
+    Assert-FileContainsText -Path "scripts/windows/Test-DeploymentPreflight.ps1" -ExpectedText $expected
+  }
+
+  Assert-FileContainsText -Path "config/ansible/group_vars_all.example.yml" -ExpectedText "node_deploy_windows_require_winsw_download_sha256: true"
+  Assert-FileContainsText -Path "config/ansible/group_vars_all.example.yml" -ExpectedText "node_deploy_windows_winsw_download_sha256: $PinnedWinSWSha256"
+  Assert-FileContainsText -Path "ansible/roles/windows_node_service/templates/app.config.json.j2" -ExpectedText '"RequireWinSWDownloadSha256": {{ node_deploy_windows_require_winsw_download_sha256 | default(true) | bool | to_json }}'
+  Assert-FileContainsText -Path "ansible/roles/windows_node_service/templates/app.config.json.j2" -ExpectedText $PinnedWinSWSha256
 }
 
 Assert-DeployRouting
 Assert-WindowsReverseProxyRouting
 Assert-WindowsServiceEnvironmentContract
+Assert-WindowsUninstallRouting
 Assert-WindowsStatusEvidenceContract
 Assert-WindowsSupportMatrixContract
 Assert-WindowsExampleConfigContract

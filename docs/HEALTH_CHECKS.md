@@ -117,11 +117,19 @@ The deploy flow installs the right scheduler automatically unless
 `SKIP_HEALTH_CHECK="true"`. Unix preflight fails before deployment changes are
 made if the selected scheduler command is missing: `systemctl` for systemd,
 `launchctl` for macOS launchd, or `crontab` for System V, OpenRC, and BSD rc
-hosts. You can also install only the scheduler:
+hosts. If `SERVICE_MANAGER` is omitted, the installed health-check script uses
+the same host-aware default as deploy/status/diagnostics so recovery calls the
+right service manager. You can also install only the scheduler:
 
 ```bash
 sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 ```
+
+`scripts/linux/uninstall-node-service.sh` removes the managed health-check
+scheduler for the selected service manager too: systemd timer units, the macOS
+launchd healthcheck plist, or the marked root crontab block used by System V,
+OpenRC, and BSD rc. It also removes the app-specific copied healthcheck script
+and config, but leaves logs, backups, and health-state history for audit.
 
 Recommended controls:
 
@@ -146,7 +154,7 @@ sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 The status command prints an operational verdict and can fail automation when
 critical findings exist. It checks service status, configured port listener,
 boot enablement, HTTP health, health-check state, health-check log summary, and
-the Next.js runtime layout when `APP_FRAMEWORK="nextjs"`.
+framework-specific runtime layout where available.
 
 Use `--json-output` to write safe machine-readable evidence for Linux, macOS,
 and BSD hosts. The file is suitable for release records and support reviews

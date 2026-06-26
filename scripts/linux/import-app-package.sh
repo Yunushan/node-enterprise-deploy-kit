@@ -35,6 +35,7 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
 SERVICE_MANAGER="${SERVICE_MANAGER:-$(default_service_manager "$(detect_platform_family)")}"
 APP_FRAMEWORK_NORMALIZED="$(normalize_name "${APP_FRAMEWORK:-node}")"
 NEXTJS_DEPLOYMENT_MODE_NORMALIZED="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-standalone}")"
+REACT_DOCUMENT_ROOT_NORMALIZED="${REACT_DOCUMENT_ROOT:-build}"
 
 safe_relative_path() {
   local path="${1//\\//}"
@@ -124,6 +125,18 @@ validate_nextjs_package_if_needed() {
   bash "$SCRIPT_DIR/validate-nextjs-standalone-package.sh" "${args[@]}"
 }
 
+validate_react_package_if_needed() {
+  if [[ "$APP_FRAMEWORK_NORMALIZED" != "react" && "$APP_FRAMEWORK_NORMALIZED" != "reactjs" && "$APP_FRAMEWORK_NORMALIZED" != "react-js" ]]; then
+    return 0
+  fi
+
+  local args=("--package-path" "$PACKAGE_PATH" "--react-document-root" "$REACT_DOCUMENT_ROOT_NORMALIZED")
+  if is_true "$PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR"; then
+    args+=("--strip-single-top-level")
+  fi
+  bash "$SCRIPT_DIR/validate-react-static-package.sh" "${args[@]}"
+}
+
 stop_app_service_if_present() {
   local manager
   manager="$(normalize_name "$SERVICE_MANAGER")"
@@ -192,6 +205,7 @@ write_deployment_manifest() {
     printf '  "appName": "%s",\n' "$(json_escape "${APP_NAME:-}")"
     printf '  "appFramework": "%s",\n' "$(json_escape "$APP_FRAMEWORK_NORMALIZED")"
     printf '  "nextjsMode": "%s",\n' "$(json_escape "$NEXTJS_DEPLOYMENT_MODE_NORMALIZED")"
+    printf '  "reactDocumentRoot": "%s",\n' "$(json_escape "$REACT_DOCUMENT_ROOT_NORMALIZED")"
     printf '  "packageName": "%s",\n' "$(json_escape "$package_name")"
     printf '  "packageSha256": "%s",\n' "$(json_escape "$package_hash")"
     printf '  "deploymentId": "%s",\n' "$(json_escape "$deployment_id")"
@@ -237,6 +251,7 @@ trap cleanup EXIT
 
 kind="$(archive_kind)"
 validate_nextjs_package_if_needed
+validate_react_package_if_needed
 case "$kind" in
   tar)
     require_command tar "Install tar before importing tar packages."

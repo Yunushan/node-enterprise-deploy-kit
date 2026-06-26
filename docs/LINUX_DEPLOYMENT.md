@@ -67,13 +67,17 @@ nano config/linux/app.env
 4. Select service manager and reverse proxy:
 
 ```bash
-SERVICE_MANAGER="systemd"   # systemd, systemv, or openrc
+SERVICE_MANAGER="systemd"   # systemd, systemv, openrc, launchd, or bsdrc
 REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 APP_RUNTIME="node"          # node or tomcat
 ```
 
 For macOS use `SERVICE_MANAGER="launchd"`; for FreeBSD, OpenBSD, or NetBSD use
 `SERVICE_MANAGER="bsdrc"`.
+If `SERVICE_MANAGER` is omitted, deploy, status, diagnostics, health checks,
+and uninstall resolve the default from the host: launchd on macOS, BSD rc on
+FreeBSD/OpenBSD/NetBSD, OpenRC when `rc-service` is present, otherwise systemd
+or System V.
 
 `TLS_ENABLED`, `PUBLIC_PORT`, `FORWARDED_PROTO`, and `FORWARDED_PORT` describe
 the public edge seen by the application through forwarded headers. The Linux
@@ -86,6 +90,11 @@ keep `PROXY_LISTEN_PORT="80"` and set `FORWARDED_PROTO="https"`.
 ```bash
 sudo bash scripts/linux/install-dependencies.sh config/linux/app.env
 ```
+
+Use root or `sudo` for Linux and BSD hosts. On macOS, run the dependency
+bootstrap without `sudo`; it uses Homebrew and will fail clearly if `brew` is
+not available. For locked-down servers, install the same packages through your
+approved software channel and skip this optional step.
 
 6. Run preflight checks:
 
@@ -110,6 +119,10 @@ When health checks are enabled, preflight also verifies the matching scheduler
 command before deployment changes are made: `systemctl` for systemd timers,
 `launchctl` for macOS launchd jobs, and `crontab` for System V, OpenRC, or BSD
 rc cron entries.
+When a reverse proxy is selected, preflight also requires the matching proxy
+binary to exist: `nginx`, `apache2ctl`/`httpd`, `haproxy`, or `traefik`.
+Install dependencies first or set `REVERSE_PROXY="none"` for service-only
+deployments.
 
 To deploy a built archive before service setup, set `PACKAGE_PATH` in
 `config/linux/app.env`:
@@ -132,6 +145,21 @@ external tooling.
 Tar packages with symlink or hardlink entries are rejected, and extracted
 symlinks from any supported archive are rejected before the app directory is
 replaced. Keep deployable artifacts as regular files and directories.
+
+For React deployments, ship the Node entrypoint that serves the SPA plus the
+static build root containing `index.html`. Create React App commonly uses
+`REACT_DOCUMENT_ROOT="build"` and Vite commonly uses `"dist"`. Validate the
+archive before deployment:
+
+```bash
+bash scripts/linux/validate-react-static-package.sh \
+  --package-path /opt/releases/example-react-app.tar.gz \
+  --react-document-root build \
+  --strip-single-top-level
+```
+
+The Unix package import flow runs this validator automatically when
+`APP_FRAMEWORK` is `react`, `reactjs`, or `react-js`.
 
 For Next.js standalone deployments, build with `output: 'standalone'`, package
 the contents of `.next/standalone`, and copy `.next/static` to
@@ -302,3 +330,15 @@ systemctl status example-node-app
 service example-node-app status
 rc-service example-node-app status
 ```
+
+To uninstall the managed Unix service without deleting app, log, backup, or
+health-state directories:
+
+```bash
+sudo bash scripts/linux/uninstall-node-service.sh config/linux/app.env
+```
+
+The uninstaller removes the managed service, app-specific health-check
+script/config files, and the matching managed scheduler artifact: systemd timer
+units, the launchd healthcheck plist, or the marked root crontab block used by
+System V, OpenRC, and BSD rc deployments.

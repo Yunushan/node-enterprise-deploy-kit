@@ -226,14 +226,22 @@ $backupDirectory = Get-BackupDirectory $config
 $enableArrProxy = Get-ConfigBool $config "IisEnableArrProxy" $true
 $setForwardedHeaders = Get-ConfigBool $config "IisSetForwardedHeaders" $true
 $webSocketSupport = Get-ConfigBool $config "IisWebSocketSupport" $true
+$requireUrlRewrite = Get-ConfigBool $config "IisRequireUrlRewrite" $true
+$requireArrProxy = Get-ConfigBool $config "IisRequireArrProxy" $true
 $proxyTimeoutSeconds = Get-ConfigInt $config "IisProxyTimeoutSeconds" 300 1
 $healthProxyPath = Get-NormalizedRelativePath ([string](Get-ConfigValue $config "IisHealthProxyPath" "health")) "health"
 $healthUrl = [string](Get-ConfigValue $config "HealthUrl" ("http://127.0.0.1:$($config.Port)/health"))
 
 if (-not (Test-WebGlobalModule "RewriteModule")) {
+    if ($requireUrlRewrite) {
+        throw "IIS URL Rewrite module was not detected. Install URL Rewrite before using ReverseProxy=iis, or set IisRequireUrlRewrite=false only when rewrite rules are managed and verified separately."
+    }
     Write-Warning "IIS URL Rewrite module was not detected. Reverse proxy rules in web.config will not work until it is installed."
 }
 if (-not (Test-WebGlobalModule "ApplicationRequestRouting")) {
+    if ($requireArrProxy) {
+        throw "IIS Application Request Routing module was not detected. Install ARR before using ReverseProxy=iis, or set IisRequireArrProxy=false only when proxy support is managed and verified separately."
+    }
     Write-Warning "IIS ARR module was not detected. Verify Application Request Routing is installed and proxy support is enabled."
 }
 if ($webSocketSupport -and -not (Test-WebSocketSupport)) {

@@ -125,6 +125,7 @@ function Test-WindowsExampleConfig {
     "DeploymentMode",
     "AppFramework",
     "NextjsDeploymentMode",
+    "ReactDocumentRoot",
     "NextjsRequireStaticAssets",
     "NextjsRequirePublicDirectory",
     "NextjsRequireServerActionsEncryptionKey",
@@ -133,6 +134,7 @@ function Test-WindowsExampleConfig {
     "ReverseProxy",
     "AutoDownloadWinSW",
     "WinSWDownloadUrl",
+    "RequireWinSWDownloadSha256",
     "AppDirectory",
     "StartCommand",
     "NodeExe",
@@ -143,6 +145,8 @@ function Test-WindowsExampleConfig {
     "LogDirectory",
     "BackupDirectory",
     "IisEnableArrProxy",
+    "IisRequireUrlRewrite",
+    "IisRequireArrProxy",
     "IisSetForwardedHeaders",
     "IisHealthProxyPath",
     "IisWebSocketSupport",
@@ -172,21 +176,29 @@ function Test-WindowsExampleConfig {
   Assert-IntegerAtLeast ([string]$config.BackupRetentionDays) "BackupRetentionDays"
   Assert-IntegerAtLeast ([string]$config.DiagnosticRetentionDays) "DiagnosticRetentionDays"
   Assert-IntegerAtLeast ([string]$config.IisProxyTimeoutSeconds) "IisProxyTimeoutSeconds"
-  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport", "NextjsRequireStaticAssets", "NextjsRequirePublicDirectory", "NextjsRequireServerActionsEncryptionKey", "NextjsRequireDeploymentId")) {
+  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport", "NextjsRequireStaticAssets", "NextjsRequirePublicDirectory", "NextjsRequireServerActionsEncryptionKey", "NextjsRequireDeploymentId", "RequireWinSWDownloadSha256")) {
     Assert-BoolString ([string]$config.$name) $name
   }
-  if ([string]$config.AppFramework -notin @("node", "nextjs")) {
-    throw "Windows AppFramework must be node or nextjs."
+  if ([string]$config.AppFramework -notin @("node", "nextjs", "reactjs")) {
+    throw "Windows AppFramework must be node, nextjs, or reactjs."
   }
   if ([string]$config.NextjsDeploymentMode -notin @("standalone", "next-start")) {
     throw "Windows NextjsDeploymentMode must be standalone or next-start."
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$config.ReactDocumentRoot) -or [string]$config.ReactDocumentRoot -match '(^|[\\/])\.\.($|[\\/])' -or [System.IO.Path]::IsPathRooted([string]$config.ReactDocumentRoot)) {
+    throw "Windows ReactDocumentRoot must be a safe relative directory path."
   }
   Assert-BoolString ([string]$config.AutoDownloadWinSW) "AutoDownloadWinSW"
   $winswUri = [Uri][string]$config.WinSWDownloadUrl
   if ($winswUri.Scheme -ne "https") {
     throw "Windows WinSWDownloadUrl must use https."
   }
-  if (-not [string]::IsNullOrWhiteSpace([string]$config.WinSWDownloadSha256) -and [string]$config.WinSWDownloadSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+  $winswSha256 = [string]$config.WinSWDownloadSha256
+  if ([string]::IsNullOrWhiteSpace($winswSha256)) {
+    if ([bool]$config.AutoDownloadWinSW -and [bool]$config.RequireWinSWDownloadSha256) {
+      throw "Windows WinSWDownloadSha256 must be configured when AutoDownloadWinSW and RequireWinSWDownloadSha256 are true."
+    }
+  } elseif ($winswSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
     throw "Windows WinSWDownloadSha256 must be empty or a 64-character SHA256 hex digest."
   }
   Assert-BoolString ([string]$config.PackageStripSingleTopLevelDirectory) "PackageStripSingleTopLevelDirectory"
@@ -244,6 +256,7 @@ function Test-LinuxExampleConfig {
     "DEPLOYMENT_MODE",
     "APP_FRAMEWORK",
     "NEXTJS_DEPLOYMENT_MODE",
+    "REACT_DOCUMENT_ROOT",
     "NEXTJS_REQUIRE_STATIC_ASSETS",
     "NEXTJS_REQUIRE_PUBLIC_DIR",
     "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY",
@@ -286,11 +299,14 @@ function Test-LinuxExampleConfig {
   foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "NEXTJS_REQUIRE_STATIC_ASSETS", "NEXTJS_REQUIRE_PUBLIC_DIR", "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY", "NEXTJS_REQUIRE_DEPLOYMENT_ID", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
   }
-  if ($env.APP_FRAMEWORK -notin @("node", "nextjs")) {
-    throw "Linux APP_FRAMEWORK must be node or nextjs."
+  if ($env.APP_FRAMEWORK -notin @("node", "nextjs", "reactjs")) {
+    throw "Linux APP_FRAMEWORK must be node, nextjs, or reactjs."
   }
   if ($env.NEXTJS_DEPLOYMENT_MODE -notin @("standalone", "next-start")) {
     throw "Linux NEXTJS_DEPLOYMENT_MODE must be standalone or next-start."
+  }
+  if ([string]::IsNullOrWhiteSpace($env.REACT_DOCUMENT_ROOT) -or $env.REACT_DOCUMENT_ROOT -match '(^|[\\/])\.\.($|[\\/])' -or [System.IO.Path]::IsPathRooted($env.REACT_DOCUMENT_ROOT)) {
+    throw "Linux REACT_DOCUMENT_ROOT must be a safe relative directory path."
   }
   if ($env.FORWARDED_PROTO -notin @("http", "https")) {
     throw "Linux FORWARDED_PROTO must be http or https."
@@ -346,6 +362,7 @@ function Test-AnsibleDefaults {
     "node_deploy_mode",
     "node_deploy_app_framework",
     "node_deploy_nextjs_deployment_mode",
+    "node_deploy_react_document_root",
     "node_deploy_nextjs_require_static_assets",
     "node_deploy_nextjs_require_public_directory",
     "node_deploy_nextjs_require_server_actions_encryption_key",
@@ -371,6 +388,7 @@ function Test-AnsibleDefaults {
     "node_deploy_windows_service_account_password",
     "node_deploy_windows_auto_download_winsw",
     "node_deploy_windows_winsw_download_url",
+    "node_deploy_windows_require_winsw_download_sha256",
     "node_deploy_windows_winsw_download_sha256",
     "node_deploy_windows_backup_dir",
     "node_deploy_linux_deploy_dir",
@@ -423,7 +441,7 @@ function Test-AnsibleDefaults {
   }
 
   if ($text -notmatch "(?m)^node_deploy_package_expected_files:\s*\[\]\s*$") {
-    throw "config/ansible/group_vars_all.example.yml should leave node_deploy_package_expected_files empty so templates use mode-aware Next.js defaults."
+    throw "config/ansible/group_vars_all.example.yml should leave node_deploy_package_expected_files empty so templates use framework-aware defaults."
   }
 
   $windowsTemplate = Get-Content -Path (Join-Path $RepoRoot "ansible/roles/windows_node_service/templates/app.config.json.j2") -Raw
@@ -434,6 +452,8 @@ function Test-AnsibleDefaults {
     )) {
     foreach ($expected in @(
         "default_package_expected_files",
+        "react_package_expected_files",
+        "react_document_root",
         "node_modules/next",
         "configured_package_expected_files",
         "package_expected_files",
@@ -466,6 +486,12 @@ function Test-AnsibleDefaults {
   }
   if (-not $linuxTasks.Contains("APP_FRAMEWORK=nextjs requires node_deploy_app_runtime=node.")) {
     throw "Linux Ansible tasks should reject Next.js deployments that are not APP_RUNTIME=node."
+  }
+  if (-not $windowsTasks.Contains("reactjs")) {
+    throw "Windows Ansible tasks should accept React.js deployments."
+  }
+  if (-not $linuxTasks.Contains("APP_FRAMEWORK=reactjs requires node_deploy_app_runtime=node.")) {
+    throw "Linux Ansible tasks should reject React deployments that are not APP_RUNTIME=node."
   }
 
   Write-Host "Ansible example variables OK"

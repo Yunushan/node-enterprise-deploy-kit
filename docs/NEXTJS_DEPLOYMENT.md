@@ -117,6 +117,10 @@ timestamp, package file name, package SHA256, framework/mode, deployment ID when
 configured, and the Next.js build ID. It does not store the source package path,
 app directory path, host name, or environment values.
 
+Package import intentionally rejects archive symlinks, NTFS reparse points, and
+special-file entries. Keep deployment artifacts as regular files and
+directories so Windows and Unix-like targets import the same runtime tree.
+
 Manual Linux/macOS packaging equivalent:
 
 ```bash
@@ -283,6 +287,9 @@ Choose the service manager by host type:
 | macOS | `launchd` |
 | FreeBSD/OpenBSD/NetBSD | `bsdrc` |
 
+When `SERVICE_MANAGER` is omitted, deploy, status, diagnostics, health checks,
+and uninstall resolve the default from the current host using the same mapping.
+
 Choose `REVERSE_PROXY` from `nginx`, `apache`, `haproxy`, `traefik`, or `none`.
 
 ## Health Endpoint
@@ -442,6 +449,10 @@ health-check history, and the Next.js runtime layout without printing raw
 environment values. Use `--json-output` for release evidence on Linux, macOS,
 and BSD hosts. Unix diagnostics include a safe Next.js runtime layout section
 for Linux, macOS, and BSD service-manager modes:
+
+Unix preflight blocks selected reverse-proxy deployments when the matching
+proxy executable is missing, so an `nginx`, Apache/httpd, HAProxy, or Traefik
+configuration is not written on a host that cannot validate or reload it.
 
 ```bash
 bash scripts/linux/diagnose-node-app.sh config/linux/app.env

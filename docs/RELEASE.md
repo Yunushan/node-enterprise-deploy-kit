@@ -24,6 +24,7 @@ The verifier checks:
 - rendered XML validity for Windows templates
 - rendered shell syntax for Linux init templates with `bash`, plus POSIX `sh` checks for System V, OpenRC, and BSD rc templates when available
 - Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
+- React static package validation plus Windows/Unix preflight success/failure behavior
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
 - Local Node.js runtime smoke coverage for the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract used by standalone Next.js services
 - release package hygiene and required release files
@@ -41,7 +42,7 @@ The verifier checks:
 - `git diff --check` whitespace problems
 
 On Windows, install Git Bash or another `bash` executable for the shell syntax
-and Unix Next.js smoke-test steps. If you are only checking Windows scripts on a
+and Unix smoke-test steps. If you are only checking Windows scripts on a
 restricted machine, use:
 
 ```powershell
@@ -52,6 +53,12 @@ To run only the Next.js deployment checks:
 
 ```powershell
 .\scripts\dev\Test-NextJsSupport.ps1
+```
+
+To run only the React deployment checks:
+
+```powershell
+.\scripts\dev\Test-ReactSupport.ps1
 ```
 
 To validate the declared support targets:
@@ -269,6 +276,23 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 ```
 
+For React build artifacts, validate the archive against the configured document
+root before handing it to a server:
+
+```powershell
+.\scripts\windows\Test-ReactStaticPackage.ps1 `
+  -PackagePath C:\deploy\example-react-app.zip `
+  -ReactDocumentRoot build `
+  -StripSingleTopLevelDirectory
+```
+
+```bash
+bash scripts/linux/validate-react-static-package.sh \
+  --package-path /opt/releases/example-react-app.tar.gz \
+  --react-document-root build \
+  --strip-single-top-level
+```
+
 After importing or copying a live runtime folder, validate the deployed
 directory itself:
 
@@ -362,6 +386,10 @@ PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 
 See [Next.js Deployment](NEXTJS_DEPLOYMENT.md) for the full standalone build
 and packaging flow.
+
+For React releases, verify that the archive contains the configured Node
+entrypoint and `<ReactDocumentRoot>/index.html`; see
+[React Deployment](REACT_DEPLOYMENT.md).
 
 ## Deploy
 

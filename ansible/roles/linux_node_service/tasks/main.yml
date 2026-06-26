@@ -24,8 +24,8 @@
 
 - name: Validate application framework
   ansible.builtin.fail:
-    msg: "Unsupported node_deploy_app_framework={{ node_deploy_app_framework | default('nextjs') }}. Use node or nextjs."
-  when: node_deploy_app_framework_normalized not in ['node', 'next', 'nextjs', 'next-js']
+    msg: "Unsupported node_deploy_app_framework={{ node_deploy_app_framework | default('nextjs') }}. Use node, nextjs, or reactjs."
+  when: node_deploy_app_framework_normalized not in ['node', 'next', 'nextjs', 'next-js', 'react', 'reactjs', 'react-js']
 
 - name: Validate Next.js runtime selection
   ansible.builtin.fail:
@@ -40,6 +40,13 @@
   when:
     - node_deploy_app_framework_normalized in ['next', 'nextjs', 'next-js']
     - node_deploy_nextjs_deployment_mode_normalized not in ['standalone', 'next-start']
+
+- name: Validate React runtime selection
+  ansible.builtin.fail:
+    msg: "APP_FRAMEWORK=reactjs requires node_deploy_app_runtime=node."
+  when:
+    - node_deploy_app_framework_normalized in ['react', 'reactjs', 'react-js']
+    - node_deploy_app_runtime_normalized != 'node'
 
 - name: Ensure Linux deployment support directories exist
   ansible.builtin.file:

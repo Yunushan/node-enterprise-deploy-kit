@@ -94,6 +94,7 @@ $autoDownload = Get-ConfigBool $config "AutoDownloadWinSW" $true
 if ($SkipDownload) {
     $autoDownload = $false
 }
+$requireSha256 = Get-ConfigBool $config "RequireWinSWDownloadSha256" $true
 
 if ([string]::IsNullOrWhiteSpace($DownloadUrl)) {
     $DownloadUrl = Get-ConfigString $config "WinSWDownloadUrl" $DefaultWinSWDownloadUrl
@@ -103,6 +104,9 @@ if ([string]::IsNullOrWhiteSpace($ExpectedSha256)) {
 }
 
 Assert-ValidSha256 $ExpectedSha256
+if ($requireSha256 -and [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+    throw "WinSWDownloadSha256 is required when RequireWinSWDownloadSha256 is true. Provide the pinned SHA256 digest or set RequireWinSWDownloadSha256=false only when WinSW is supplied and verified by an approved internal channel."
+}
 
 $winswCandidate = Resolve-RepoPath $WinSWPath
 $winswDirectory = Split-Path -Parent $winswCandidate

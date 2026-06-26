@@ -11,7 +11,9 @@ param(
     [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
     [string] $WinSWDownloadUrl = "",
     [string] $WinSWDownloadSha256 = "",
+    [string] $PackagePath = "",
     [switch] $SkipWinSWDownload,
+    [switch] $SkipPackageImport,
     [switch] $SkipReverseProxy,
     [switch] $SkipHealthCheck,
     [switch] $AllowPortInUse
@@ -29,6 +31,13 @@ if (-not (Test-Path $ConfigPath)) {
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$effectivePackagePath = $PackagePath
+if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
+    $effectivePackagePath = [string]$config.PackagePath
+}
+if ($SkipPackageImport) {
+    $effectivePackagePath = ""
+}
 $errors = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
 
@@ -223,6 +232,23 @@ function Test-SafeRelativeFilePath([string]$Path) {
     }
     return $true
 }
+function Test-ReactFramework([string]$Framework) {
+    return (Normalize-Name $Framework) -in @("react", "reactjs", "react-js")
+}
+function Get-ReactDocumentRoot($Config) {
+    $documentRoot = (Get-ConfigString $Config "ReactDocumentRoot" "build").Trim()
+    if ([string]::IsNullOrWhiteSpace($documentRoot)) {
+        $documentRoot = "build"
+    }
+    return ($documentRoot -replace "\\", "/").Trim("/")
+}
+function Join-AppRelativePath([string]$Root, [string]$RelativePath) {
+    $normalized = ($RelativePath -replace "\\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -eq ".") {
+        return $Root
+    }
+    return (Join-Path $Root ($normalized -replace "/", "\"))
+}
 function Get-StartCommandPath([string]$AppDirectory, [string]$StartCommand) {
     if ([System.IO.Path]::IsPathRooted($StartCommand)) {
         return $StartCommand
@@ -358,6 +384,33 @@ function Test-NextJsDeploymentLayout($Config) {
         }
     }
 }
+function Test-ReactDeploymentLayout($Config) {
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+    if (-not (Test-ReactFramework $framework)) { return }
+
+    $documentRoot = Get-ReactDocumentRoot $Config
+    if (-not (Test-SafeRelativeFilePath $documentRoot)) {
+        Add-Error "ReactDocumentRoot must be a safe relative directory path."
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $Config.AppDirectory -PathType Container)) {
+        return
+    }
+
+    $reactRoot = Join-AppRelativePath -Root $Config.AppDirectory -RelativePath $documentRoot
+    $indexPath = Join-Path $reactRoot "index.html"
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+        Add-Error "React deployment root is missing index.html: $indexPath"
+    }
+    $hasCommonAssetDirectory = (
+        (Test-Path -LiteralPath (Join-Path $reactRoot "static") -PathType Container) -or
+        (Test-Path -LiteralPath (Join-Path $reactRoot "assets") -PathType Container)
+    )
+    if (-not $hasCommonAssetDirectory) {
+        Add-Warning "React deployment root has no static or assets directory. This can be valid for tiny apps, but verify the built artifact contains browser assets."
+    }
+}
 
 @(
     "AppName",
@@ -385,7 +438,7 @@ if ($config.NodeExe -and -not [System.IO.Path]::IsPathRooted([string]$config.Nod
 }
 
 if ($config.AppDirectory -and -not (Test-Path $config.AppDirectory)) {
-    if ($config.PSObject.Properties["PackagePath"] -and -not [string]::IsNullOrWhiteSpace([string]$config.PackagePath)) {
+    if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
         Add-Warning "AppDirectory does not exist yet, but PackagePath is configured. Package import should create it before app preparation."
     } else {
         Add-Error "AppDirectory not found: $($config.AppDirectory)"
@@ -410,6 +463,7 @@ if ($config.AppDirectory -and $config.StartCommand -and (Test-Path $config.AppDi
 }
 
 Test-NextJsDeploymentLayout $config
+Test-ReactDeploymentLayout $config
 
 $port = 0
 if (-not [int]::TryParse([string]$config.Port, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
@@ -436,8 +490,8 @@ try {
     Add-Error "HealthUrl is not a valid URI: $($config.HealthUrl)"
 }
 
-if ($config.PSObject.Properties["PackagePath"] -and -not [string]::IsNullOrWhiteSpace([string]$config.PackagePath)) {
-    $packagePath = [string]$config.PackagePath
+if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
+    $packagePath = [string]$effectivePackagePath
     if ([System.IO.Path]::GetExtension($packagePath).ToLowerInvariant() -ne ".zip") {
         Add-Error "PackagePath supports .zip only on Windows. Use .zip; .rar and .7z are intentionally unsupported."
     }
@@ -472,6 +526,12 @@ switch ($serviceManager) {
         if ($SkipWinSWDownload) {
             $winswAutoDownload = $false
         }
+        $requireWinSWSha256 = $true
+        try {
+            $requireWinSWSha256 = Get-ConfigBool $config "RequireWinSWDownloadSha256" $true
+        } catch {
+            Add-Error $_.Exception.Message
+        }
 
         $effectiveWinSWDownloadUrl = Get-ConfigString $config "WinSWDownloadUrl" $DefaultWinSWDownloadUrl
         if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) {
@@ -483,6 +543,9 @@ switch ($serviceManager) {
         }
         if (-not (Test-ValidSha256 $effectiveWinSWDownloadSha256)) {
             Add-Error "WinSWDownloadSha256 must be a 64-character SHA256 hex digest."
+        }
+        if ($requireWinSWSha256 -and [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
+            Add-Error "WinSWDownloadSha256 is required when RequireWinSWDownloadSha256 is true."
         }
         if ($winswAutoDownload -and -not (Test-HttpsUri $effectiveWinSWDownloadUrl)) {
             Add-Error "WinSWDownloadUrl must be a valid https URL."
@@ -562,9 +625,13 @@ if (-not $SkipReverseProxy) {
             $iisEnableArrProxy = $true
             $iisSetForwardedHeaders = $true
             $iisWebSocketSupport = $true
+            $iisRequireUrlRewrite = $true
+            $iisRequireArrProxy = $true
             try { $iisEnableArrProxy = Get-ConfigBool $config "IisEnableArrProxy" $true } catch { Add-Error $_.Exception.Message }
             try { $iisSetForwardedHeaders = Get-ConfigBool $config "IisSetForwardedHeaders" $true } catch { Add-Error $_.Exception.Message }
             try { $iisWebSocketSupport = Get-ConfigBool $config "IisWebSocketSupport" $true } catch { Add-Error $_.Exception.Message }
+            try { $iisRequireUrlRewrite = Get-ConfigBool $config "IisRequireUrlRewrite" $true } catch { Add-Error $_.Exception.Message }
+            try { $iisRequireArrProxy = Get-ConfigBool $config "IisRequireArrProxy" $true } catch { Add-Error $_.Exception.Message }
             try {
                 [void](Get-NormalizedRelativePath (Get-ConfigString $config "IisHealthProxyPath" "health") "health")
             } catch {
@@ -579,21 +646,37 @@ if (-not $SkipReverseProxy) {
 
             $webAdminAvailable = $false
             if (-not (Get-Module -ListAvailable -Name WebAdministration)) {
-                Add-Warning "IIS WebAdministration module was not found. IIS site/app-pool automation may not be available."
+                if ($iisRequireUrlRewrite -or $iisRequireArrProxy) {
+                    Add-Error "IIS WebAdministration module was not found. Install IIS management tools or set IisRequireUrlRewrite/IisRequireArrProxy to false only when IIS prerequisites are managed and verified separately."
+                } else {
+                    Add-Warning "IIS WebAdministration module was not found. IIS site/app-pool automation may not be available."
+                }
             } else {
                 try {
                     Import-Module WebAdministration -ErrorAction Stop
                     $webAdminAvailable = $true
                 } catch {
-                    Add-Warning "IIS WebAdministration module could not be loaded. IIS module checks were skipped. $($_.Exception.Message)"
+                    if ($iisRequireUrlRewrite -or $iisRequireArrProxy) {
+                        Add-Error "IIS WebAdministration module could not be loaded, so required IIS module checks were skipped. Run as Administrator or set IisRequireUrlRewrite/IisRequireArrProxy to false only when IIS prerequisites are managed and verified separately. $($_.Exception.Message)"
+                    } else {
+                        Add-Warning "IIS WebAdministration module could not be loaded. IIS module checks were skipped. $($_.Exception.Message)"
+                    }
                 }
             }
             if ($webAdminAvailable) {
                 if (-not (Test-WebGlobalModule "RewriteModule")) {
-                    Add-Warning "IIS URL Rewrite module was not detected. Install URL Rewrite before using ReverseProxy=iis."
+                    if ($iisRequireUrlRewrite) {
+                        Add-Error "IIS URL Rewrite module was not detected. Install URL Rewrite before using ReverseProxy=iis, or set IisRequireUrlRewrite=false only when rewrite rules are managed and verified separately."
+                    } else {
+                        Add-Warning "IIS URL Rewrite module was not detected. Reverse proxy rules in web.config will not work until URL Rewrite is installed."
+                    }
                 }
-                if ($iisEnableArrProxy -and -not (Test-WebGlobalModule "ApplicationRequestRouting")) {
-                    Add-Warning "IisEnableArrProxy is true, but IIS ARR was not detected. Install Application Request Routing or manage ARR proxy settings manually."
+                if (-not (Test-WebGlobalModule "ApplicationRequestRouting")) {
+                    if ($iisRequireArrProxy) {
+                        Add-Error "IIS Application Request Routing module was not detected. Install ARR before using ReverseProxy=iis, or set IisRequireArrProxy=false only when proxy support is managed and verified separately."
+                    } elseif ($iisEnableArrProxy) {
+                        Add-Warning "IisEnableArrProxy is true, but IIS ARR was not detected. Install Application Request Routing or manage ARR proxy settings manually."
+                    }
                 }
                 if ($iisWebSocketSupport -and -not (Test-WebGlobalModule "WebSocketModule")) {
                     Add-Warning "IisWebSocketSupport is true, but the IIS WebSocket module was not detected. Install the WebSocket Protocol feature if the app uses WebSockets."

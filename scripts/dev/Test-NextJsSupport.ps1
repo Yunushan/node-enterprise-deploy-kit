@@ -200,6 +200,7 @@ function New-WindowsConfig {
     NextjsRequireDeploymentId = [bool]$RequireDeploymentId
     AutoDownloadWinSW = $true
     WinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+    RequireWinSWDownloadSha256 = $false
     WinSWDownloadSha256 = ""
     AppDirectory = $AppDirectory
     StartCommand = $StartCommand
@@ -221,6 +222,8 @@ function New-WindowsConfig {
     TlsEnabled = $false
     IisCertificateThumbprint = ""
     IisEnableArrProxy = $true
+    IisRequireUrlRewrite = $false
+    IisRequireArrProxy = $false
     IisSetForwardedHeaders = $true
     IisHealthProxyPath = "health"
     IisWebSocketSupport = $true
@@ -420,6 +423,52 @@ function New-ZipFromDirectory {
     [System.IO.Compression.CompressionLevel]::Optimal,
     $false
   )
+}
+
+function New-ZipWithUnsafeUnixSymlinkEntry {
+  param([string]$OutputPath)
+
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $outputDirectory = Split-Path -Parent $OutputPath
+  New-Directory $outputDirectory
+  if (Test-Path -LiteralPath $OutputPath) {
+    Remove-Item -LiteralPath $OutputPath -Force
+  }
+
+  $zip = [System.IO.Compression.ZipFile]::Open(
+    $OutputPath,
+    [System.IO.Compression.ZipArchiveMode]::Create
+  )
+  try {
+    foreach ($item in @(
+        @{ Name = "server.js"; Content = "console.log('standalone');`n" },
+        @{ Name = ".next/BUILD_ID"; Content = "example-build`n" },
+        @{ Name = ".next/static/app.js"; Content = "console.log('static');`n" }
+      )) {
+      $entry = $zip.CreateEntry([string]$item.Name)
+      $writer = New-Object System.IO.StreamWriter($entry.Open(), [System.Text.UTF8Encoding]::new($false))
+      try {
+        $writer.Write([string]$item.Content)
+      }
+      finally {
+        $writer.Dispose()
+      }
+    }
+
+    $linkEntry = $zip.CreateEntry("public/current")
+    $symlinkAttributes = [uint32]2716663808
+    $linkEntry.ExternalAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes($symlinkAttributes), 0)
+    $writer = New-Object System.IO.StreamWriter($linkEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+    try {
+      $writer.Write("target`n")
+    }
+    finally {
+      $writer.Dispose()
+    }
+  }
+  finally {
+    $zip.Dispose()
+  }
 }
 
 function Assert-TarContains {
@@ -623,13 +672,14 @@ function Invoke-ExpectPowerShellFailure {
   param(
     [string]$ScriptPath,
     [string]$ConfigPath,
-    [string]$ExpectedText
+    [string]$ExpectedText,
+    [string[]]$ExtraArgs = @("-SkipReverseProxy", "-SkipHealthCheck")
   )
 
   $failed = $false
   $captured = New-Object System.Collections.Generic.List[string]
   try {
-    & $ScriptPath -ConfigPath $ConfigPath -SkipReverseProxy -SkipHealthCheck *>&1 |
+    & $ScriptPath -ConfigPath $ConfigPath @ExtraArgs *>&1 |
       ForEach-Object { $captured.Add([string]$_) | Out-Null }
   } catch {
     $failed = $true
@@ -874,6 +924,27 @@ try {
   )
   Invoke-ExpectPackageValidatorPowerShellSuccess -PackagePath $windowsPackagePath
 
+  $windowsCliPackagePreflightRoot = Join-Path $testRoot "windows-cli-package-preflight"
+  $windowsCliPackagePreflightConfig = Join-Path $windowsCliPackagePreflightRoot "app.config.json"
+  $windowsCliPackagePreflightApp = Join-Path $windowsCliPackagePreflightRoot "missing-app"
+  New-WindowsConfig -Path $windowsCliPackagePreflightConfig -AppDirectory $windowsCliPackagePreflightApp -ServiceDirectory (Join-Path $windowsCliPackagePreflightRoot "svc") -LogDirectory (Join-Path $windowsCliPackagePreflightRoot "logs") -Port 39118
+  & $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -SkipReverseProxy -SkipHealthCheck -PackagePath $windowsPackagePath *>&1 | Out-Null
+  $skipPackageImportFailed = $false
+  $skipPackageImportOutput = New-Object System.Collections.Generic.List[string]
+  try {
+    & $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -SkipReverseProxy -SkipHealthCheck -PackagePath $windowsPackagePath -SkipPackageImport *>&1 |
+      ForEach-Object { $skipPackageImportOutput.Add([string]$_) | Out-Null }
+  } catch {
+    $skipPackageImportFailed = $true
+    $skipPackageImportOutput.Add($_.Exception.Message) | Out-Null
+  }
+  if (-not $skipPackageImportFailed) {
+    throw "Expected Windows preflight to fail when PackagePath is provided but package import is skipped."
+  }
+  if (($skipPackageImportOutput -join "`n") -notmatch [regex]::Escape("AppDirectory not found")) {
+    throw "Expected skipped package import preflight failure to mention AppDirectory not found, got: $($skipPackageImportOutput -join "`n")"
+  }
+
   $windowsMissingStaticPackage = Join-Path $testRoot "packages\missing-static.zip"
   New-ZipFromDirectory -SourceDirectory $windowsBadApp -OutputPath $windowsMissingStaticPackage
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsMissingStaticPackage -ExpectedText ".next/static"
@@ -896,6 +967,10 @@ try {
   $windowsBlockedValidatorPackage = Join-Path $testRoot "packages\validator-blocked.zip"
   New-ZipFromDirectory -SourceDirectory $windowsBlockedValidatorRoot -OutputPath $windowsBlockedValidatorPackage
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsBlockedValidatorPackage -ExpectedText "blocked private file"
+
+  $windowsUnsafeTypePackage = Join-Path $testRoot "packages\unsafe-symlink-attribute.zip"
+  New-ZipWithUnsafeUnixSymlinkEntry -OutputPath $windowsUnsafeTypePackage
+  Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsUnsafeTypePackage -ExpectedText "Unsafe archive entry type"
 
   $windowsImportRoot = Join-Path $testRoot "windows-import"
   $windowsImportConfig = Join-Path $windowsImportRoot "app.config.json"
@@ -959,6 +1034,7 @@ try {
   Write-Utf8NoBom -Path (Join-Path $windowsBlockedPackageProject ".next\standalone\.env.production") -Text "SECRET_VALUE=placeholder`n"
   Invoke-ExpectPackagePowerShellFailure -ProjectPath $windowsBlockedPackageProject -OutputPath (Join-Path $testRoot "packages\blocked.zip") -ExpectedText "blocked private file"
   Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsBlockedValidatorPackage -ExpectedText "blocked private file"
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsUnsafeTypePackage -ExpectedText "Unsafe archive entry type"
 
   $bash = Get-Command bash -ErrorAction SilentlyContinue
   if ($bash) {

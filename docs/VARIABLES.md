@@ -7,8 +7,9 @@
 | App name | `AppName` | `APP_NAME` | Short service-safe name |
 | Display name | `DisplayName` | `APP_DISPLAY_NAME` | Human-friendly service name |
 | App runtime | n/a | `APP_RUNTIME` | `node` for Node.js service mode, `tomcat` for WAR deployment mode |
-| App framework | `AppFramework` | `APP_FRAMEWORK` | `node` for generic Node.js, `nextjs` for Next.js layout validation |
+| App framework | `AppFramework` | `APP_FRAMEWORK` | `node` for generic Node.js, `nextjs` for Next.js layout validation, `reactjs` for React static build validation |
 | Next.js deployment mode | `NextjsDeploymentMode` | `NEXTJS_DEPLOYMENT_MODE` | `standalone` for `.next/standalone/server.js`, or `next-start` for full app runtime |
+| React document root | `ReactDocumentRoot` | `REACT_DOCUMENT_ROOT` | Relative directory containing the React `index.html`, usually `build` for Create React App or `dist` for Vite |
 | Next.js require static assets | `NextjsRequireStaticAssets` | `NEXTJS_REQUIRE_STATIC_ASSETS` | Require `.next/static` under the standalone runtime root |
 | Next.js require public directory | `NextjsRequirePublicDirectory` | `NEXTJS_REQUIRE_PUBLIC_DIR` | Require `public` under the standalone runtime root when the app serves public files |
 | Next.js require Server Actions key | `NextjsRequireServerActionsEncryptionKey` | `NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY` | When true, preflight requires `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in private runtime config and validates base64 AES key length |
@@ -16,7 +17,7 @@
 | Deployment ID | `DeploymentId` | `DEPLOYMENT_ID` | Optional safe release/build identifier emitted in status evidence; prefer a sanitized release ID, not a private hostname or ticket URL |
 | App directory | `AppDirectory` | `APP_DIR` | Application working directory |
 | Package path | `PackagePath` | `PACKAGE_PATH` | Optional deployment archive to import before install/build/service setup |
-| Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files or directories that must exist after extraction; Ansible can leave `node_deploy_package_expected_files: []` to use the selected Next.js mode default |
+| Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files or directories that must exist after extraction; Ansible can leave `node_deploy_package_expected_files: []` to use framework-aware defaults |
 | Strip single top directory | `PackageStripSingleTopLevelDirectory` | `PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR` | Use package contents when the archive has one wrapping directory |
 | Skip package import | script flag | `SKIP_PACKAGE_IMPORT` | Leave `AppDirectory`/`APP_DIR` unchanged even when package path is configured |
 | Start script | `StartCommand` | `START_SCRIPT` | JS entry point, usually `server.js` |
@@ -38,7 +39,8 @@
 | Service manager | `ServiceManager` | `SERVICE_MANAGER` | Windows: `winsw`, `nssm`, or `pm2`; Unix-like: `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | Auto-download WinSW | `AutoDownloadWinSW` | n/a | Download pinned WinSW automatically when the local executable is missing |
 | WinSW download URL | `WinSWDownloadUrl` | n/a | HTTPS URL for the pinned WinSW executable |
-| WinSW SHA256 | `WinSWDownloadSha256` | n/a | Optional SHA256 digest to verify the downloaded or existing WinSW executable |
+| Require WinSW SHA256 | `RequireWinSWDownloadSha256` | n/a | Require a configured WinSW SHA256 digest by default; set false only for an approved internal artifact path |
+| WinSW SHA256 | `WinSWDownloadSha256` | n/a | SHA256 digest used to verify the downloaded or existing WinSW executable |
 | Service account | `ServiceAccount` | `SERVICE_USER` | Windows service logon account or Unix runtime user |
 | Service account password | `ServiceAccountPassword` | n/a | Optional Windows password for non-gMSA accounts; prefer gMSA or built-in accounts |
 | Install command | `InstallCommand` | `INSTALL_COMMAND` | Production dependency install command |
@@ -60,6 +62,8 @@
 | IIS app pool | `IisAppPoolName` | n/a | Windows IIS app pool name |
 | IIS certificate | `IisCertificateThumbprint` | n/a | Optional LocalMachine\My certificate thumbprint |
 | IIS ARR proxy | `IisEnableArrProxy` | n/a | Enable and configure IIS ARR proxy mode for localhost reverse proxying |
+| IIS URL Rewrite required | `IisRequireUrlRewrite` | n/a | Fail Windows IIS proxy preflight/install if URL Rewrite is missing |
+| IIS ARR required | `IisRequireArrProxy` | n/a | Fail Windows IIS proxy preflight/install if ARR is missing |
 | IIS forwarded headers | `IisSetForwardedHeaders` | n/a | Add `X-Forwarded-*` server variables in the generated IIS rewrite rule |
 | IIS health proxy path | `IisHealthProxyPath` | n/a | Public relative path that proxies to `HealthUrl`, for example `health` |
 | IIS WebSocket support | `IisWebSocketSupport` | n/a | Warn when IIS WebSocket Protocol support is missing |
@@ -86,6 +90,7 @@
 | Windows service account | `NetworkService`, `LocalService`, dedicated account, or gMSA; avoid `LocalSystem` unless required |
 | Unix-like service manager | systemd on mainstream Linux, launchd on macOS, bsdrc on BSD |
 | Next.js service mode | `AppFramework=nextjs`, `NextjsDeploymentMode=standalone`, `StartCommand=server.js` |
+| React service mode | `AppFramework=reactjs`, `ReactDocumentRoot=build`, `StartCommand=server.js` |
 | Windows reverse proxy | IIS |
 | Unix-like reverse proxy | Nginx, Apache, HAProxy, or Traefik |
 | Restart policy | Always restart after service failure |

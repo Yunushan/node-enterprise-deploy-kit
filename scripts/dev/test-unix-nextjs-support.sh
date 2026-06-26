@@ -131,6 +131,11 @@ run_preflight_with_path() {
   PATH="$fake_path" "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$env_file" --skip-reverse-proxy --skip-service-manager-check
 }
 
+run_preflight_without_proxy_bins() {
+  local fake_path="$1" env_file="$2"
+  PATH="$fake_path" "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$env_file" --skip-health-check --skip-service-manager-check
+}
+
 test_health_scheduler_preflight_requirements() {
   local fake_bin="$TEST_ROOT/fake-bin-no-schedulers"
   new_fake_preflight_path_without_schedulers "$fake_bin"
@@ -152,6 +157,134 @@ test_health_scheduler_preflight_requirements() {
   new_standalone_layout "$bsdrc_root/app"
   write_env "$bsdrc_root/app.env" "$bsdrc_root" 39216 "standalone" "server.js" "bsdrc"
   expect_failure "bsdrc health scheduler preflight" "Healthcheck scheduler requires crontab" run_preflight_with_path "$fake_bin" "$bsdrc_root/app.env"
+}
+
+test_reverse_proxy_preflight_requires_binary() {
+  local fake_bin="$TEST_ROOT/fake-bin-no-proxies"
+  new_fake_preflight_path_without_schedulers "$fake_bin"
+
+  local proxy expected proxy_root
+  for proxy in nginx apache haproxy traefik; do
+    proxy_root="$TEST_ROOT/preflight-reverse-proxy-$proxy"
+    mkdir -p "$proxy_root"
+    new_standalone_layout "$proxy_root/app"
+    write_env "$proxy_root/app.env" "$proxy_root" 39219 "standalone" "server.js" "launchd"
+    cat >> "$proxy_root/app.env" <<EOF
+REVERSE_PROXY="$proxy"
+EOF
+    case "$proxy" in
+      nginx) expected="REVERSE_PROXY=nginx but nginx was not found" ;;
+      apache) expected="REVERSE_PROXY=apache but apache2ctl/httpd was not found" ;;
+      haproxy) expected="REVERSE_PROXY=haproxy but haproxy was not found" ;;
+      traefik) expected="REVERSE_PROXY=traefik but traefik was not found" ;;
+    esac
+    expect_failure "$proxy reverse proxy binary preflight" "$expected" run_preflight_without_proxy_bins "$fake_bin" "$proxy_root/app.env"
+  done
+}
+
+write_minimal_env_without_service_manager() {
+  local path="$1" root="$2" port="$3"
+  cat > "$path" <<EOF
+APP_NAME="example-next-smoke"
+APP_RUNTIME="node"
+APP_DIR="$root/app"
+APP_PORT="$port"
+HEALTH_URL="http://127.0.0.1:$port/health"
+LOG_DIR="$root/logs"
+HEALTHCHECK_STATE_DIR="$root/state"
+REVERSE_PROXY="none"
+EOF
+}
+
+write_fake_host_command() {
+  local fake_bin="$1" command_name="$2"
+  shift 2
+  mkdir -p "$fake_bin"
+  printf '%s\n' "$@" > "$fake_bin/$command_name"
+  chmod 0755 "$fake_bin/$command_name"
+}
+
+new_fake_host_path() {
+  local fake_bin="$1" kernel="$2"
+  mkdir -p "$fake_bin"
+  write_fake_host_command "$fake_bin" "uname" \
+    '#!/usr/bin/env bash' \
+    'if [[ "${1:-}" == "-s" ]]; then printf "%s\n" "'"$kernel"'"; else printf "%s\n" "'"$kernel"'"; fi'
+  write_fake_host_command "$fake_bin" "curl" \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "curl $*" >> "$NODE_EDK_TRACE_FILE"' \
+    'exit 0'
+  write_fake_host_command "$fake_bin" "systemctl" \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "systemctl $*" >> "$NODE_EDK_TRACE_FILE"' \
+    'exit 77'
+  write_fake_host_command "$fake_bin" "launchctl" \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "launchctl $*" >> "$NODE_EDK_TRACE_FILE"' \
+    'exit 0'
+  write_fake_host_command "$fake_bin" "service" \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "service $*" >> "$NODE_EDK_TRACE_FILE"' \
+    'exit 0'
+}
+
+new_fake_dependency_bootstrap_path() {
+  local fake_bin="$1" kernel="$2"
+  mkdir -p "$fake_bin"
+  for command_name in dirname pwd uname tr grep sed; do
+    if [[ "$command_name" == "uname" ]]; then
+      write_fake_host_command "$fake_bin" "uname" \
+        '#!/bin/sh' \
+        'if [ "${1:-}" = "-s" ]; then printf "%s\n" "'"$kernel"'"; else printf "%s\n" "'"$kernel"'"; fi'
+    else
+      copy_command_to_fake_path "$fake_bin" "$command_name"
+    fi
+  done
+}
+
+test_dependency_bootstrap_requires_package_manager() {
+  local macos_root="$TEST_ROOT/dependency-bootstrap-macos"
+  local macos_fake_bin="$macos_root/fake-bin"
+  mkdir -p "$macos_root"
+  new_fake_dependency_bootstrap_path "$macos_fake_bin" "Darwin"
+
+  expect_failure "macOS dependency bootstrap without Homebrew" "Homebrew was not found" env PATH="$macos_fake_bin" "$BASH" "$REPO_ROOT/scripts/linux/install-dependencies.sh"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Neither dnf nor yum was found"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "pkgin was not found"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Unsupported/unknown OS family"
+}
+
+test_host_aware_service_manager_defaults() {
+  local darwin_root="$TEST_ROOT/default-manager-darwin"
+  local darwin_fake_bin="$darwin_root/fake-bin"
+  local darwin_trace="$darwin_root/trace.log"
+  mkdir -p "$darwin_root"
+  write_minimal_env_without_service_manager "$darwin_root/app.env" "$darwin_root" 39217
+  new_fake_host_path "$darwin_fake_bin" "Darwin"
+  expect_success "darwin healthcheck default manager" env NODE_EDK_TRACE_FILE="$darwin_trace" PATH="$darwin_fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/node-healthcheck.sh" "$darwin_root/app.env"
+  assert_contains "$darwin_trace" "launchctl print system/example-next-smoke"
+  assert_not_contains "$darwin_trace" "systemctl"
+
+  local darwin_diag_dir="$darwin_root/diagnostics"
+  expect_success "darwin diagnostics default manager" env NODE_EDK_TRACE_FILE="$darwin_trace" PATH="$darwin_fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/diagnose-node-app.sh" "$darwin_root/app.env" "$darwin_diag_dir"
+  local darwin_diag_file
+  darwin_diag_file="$(ls "$darwin_diag_dir"/diagnostics-*.txt | tail -n 1)"
+  assert_contains "$darwin_diag_file" "ServiceManager=launchd"
+
+  local freebsd_root="$TEST_ROOT/default-manager-freebsd"
+  local freebsd_fake_bin="$freebsd_root/fake-bin"
+  local freebsd_trace="$freebsd_root/trace.log"
+  mkdir -p "$freebsd_root"
+  write_minimal_env_without_service_manager "$freebsd_root/app.env" "$freebsd_root" 39218
+  new_fake_host_path "$freebsd_fake_bin" "FreeBSD"
+  expect_success "freebsd healthcheck default manager" env NODE_EDK_TRACE_FILE="$freebsd_trace" PATH="$freebsd_fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/node-healthcheck.sh" "$freebsd_root/app.env"
+  assert_contains "$freebsd_trace" "service example-next-smoke status"
+  assert_not_contains "$freebsd_trace" "systemctl"
+
+  assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" 'default_service_manager "$PLATFORM_FAMILY"'
+  assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" '${APP_NAME}-healthcheck.plist'
+  assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" 'node-enterprise-deploy-kit:${APP_NAME}:healthcheck:start'
+  assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" 'rm -f "$HC_CONFIG" "$HC_SCRIPT"'
 }
 
 assert_contains() {
@@ -449,6 +582,9 @@ test_service_template_rendering
 test_reverse_proxy_template_rendering
 test_node_runtime_smoke
 test_health_scheduler_preflight_requirements
+test_reverse_proxy_preflight_requires_binary
+test_dependency_bootstrap_requires_package_manager
+test_host_aware_service_manager_defaults
 
 OK_ROOT="$TEST_ROOT/standalone-ok"
 mkdir -p "$OK_ROOT"

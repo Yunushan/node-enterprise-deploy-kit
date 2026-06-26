@@ -5,6 +5,7 @@ node_deploy_description: Example Node.js production service
 node_deploy_mode: reverse_proxy
 node_deploy_app_framework: nextjs
 node_deploy_nextjs_deployment_mode: standalone
+node_deploy_react_document_root: build
 node_deploy_nextjs_require_static_assets: true
 node_deploy_nextjs_require_public_directory: false
 node_deploy_nextjs_require_server_actions_encryption_key: false
@@ -17,6 +18,7 @@ node_deploy_package_path_linux: ""
 # Leave empty to use the mode-aware default:
 # standalone -> server.js, .next/BUILD_ID, .next/static
 # next-start -> package.json, .next/BUILD_ID, .next, node_modules/next
+# react/reactjs -> server.js, <node_deploy_react_document_root>/index.html
 node_deploy_package_expected_files: []
 node_deploy_package_strip_single_top_level_directory: true
 node_deploy_skip_package_import: false
@@ -46,6 +48,8 @@ node_deploy_windows_iis_site_name: ExampleNodeApp
 node_deploy_windows_iis_app_pool_name: ExampleNodeApp-AppPool
 node_deploy_windows_iis_certificate_thumbprint: ""
 node_deploy_windows_iis_enable_arr_proxy: true
+node_deploy_windows_iis_require_url_rewrite: true
+node_deploy_windows_iis_require_arr_proxy: true
 node_deploy_windows_iis_set_forwarded_headers: true
 node_deploy_windows_iis_health_proxy_path: health
 node_deploy_windows_iis_websocket_support: true
@@ -54,7 +58,8 @@ node_deploy_windows_service_account: NetworkService
 node_deploy_windows_service_account_password: ""
 node_deploy_windows_auto_download_winsw: true
 node_deploy_windows_winsw_download_url: https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe
-node_deploy_windows_winsw_download_sha256: ""
+node_deploy_windows_require_winsw_download_sha256: true
+node_deploy_windows_winsw_download_sha256: 05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA
 node_deploy_windows_winsw_source: ""
 node_deploy_failure_restart_delay_seconds: 60
 node_deploy_linux_service_manager: systemd
