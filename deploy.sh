@@ -6,7 +6,6 @@ REPO_ROOT="$SCRIPT_DIR"
 source "$REPO_ROOT/scripts/linux/common.sh"
 CONFIG_FILE="${1:-$REPO_ROOT/config/linux/app.env}"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
-PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
 
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
