@@ -23,6 +23,10 @@ The matrix validator checks target IDs, required Next.js modes, CI/static
 verification references, platform-family mappings, evidence target names, and
 the concrete installer/template artifacts for each declared service manager,
 fallback manager, and reverse proxy.
+It also verifies that every declared CI/static verification job exists in
+`.github/workflows/ci.yml` and still contains the expected verifier command
+fragments, so the matrix cannot point at a job that no longer runs the relevant
+checks.
 
 Windows service-manager routing and runtime environment parity are validated by:
 

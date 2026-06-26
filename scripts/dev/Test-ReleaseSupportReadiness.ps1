@@ -408,7 +408,11 @@ if ($SelfTest) {
   Expand-Archive -LiteralPath $BundlePath -DestinationPath $commitMismatchRoot -Force
   $commitMismatchManifestPath = Join-Path $commitMismatchRoot "support-evidence-manifest.json"
   $commitMismatchManifest = Get-Content -LiteralPath $commitMismatchManifestPath -Raw | ConvertFrom-Json
-  $commitMismatchManifest.sourceControl.commitSha = ("0" * 40)
+  $mismatchedCommitSha = ("0" * 40)
+  $commitMismatchManifest.sourceControl.commitSha = $mismatchedCommitSha
+  if ($commitMismatchManifest.PSObject.Properties["ci"] -and $commitMismatchManifest.ci -and $commitMismatchManifest.ci.PSObject.Properties["sha"]) {
+    $commitMismatchManifest.ci.sha = $mismatchedCommitSha
+  }
   ($commitMismatchManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $commitMismatchManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle source-control commit SHA does not match current repository HEAD" -Action {
     & $PSCommandPath -BundlePath $commitMismatchRoot -IncludeServiceOnly -IncludeFallback -RequireCurrentCommit | Out-Null

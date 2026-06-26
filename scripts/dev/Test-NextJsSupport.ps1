@@ -59,6 +59,14 @@ function Assert-FileDoesNotContainText {
   }
 }
 
+function Test-WindowsStatusSmokeSupported {
+  return [bool](
+    (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) -and
+    (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) -and
+    (Get-Command Get-Service -ErrorAction SilentlyContinue)
+  )
+}
+
 function Get-RepoRelativePath {
   param([string]$Path)
   return (ConvertTo-ForwardSlashPath $Path.Substring($RepoRoot.Length + 1))
@@ -802,31 +810,35 @@ try {
   New-WindowsConfig -Path $windowsOkConfig -AppDirectory $windowsOkApp -ServiceDirectory (Join-Path $windowsOkRoot "svc") -LogDirectory (Join-Path $windowsOkRoot "logs") -Port 39100
   Invoke-ExpectPowerShellSuccess -ScriptPath $windowsPreflight -ConfigPath $windowsOkConfig
   Invoke-ExpectRuntimeLayoutPowerShellSuccess -ConfigPath $windowsOkConfig
-  $windowsStatusJson = Join-Path $windowsOkRoot "status.json"
-  & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsOkConfig -HealthTimeoutSeconds 1 -JsonPath $windowsStatusJson *>&1 | Out-Null
-  $windowsStatusEvidence = Get-Content -Path $windowsStatusJson -Raw | ConvertFrom-Json
-  if (-not $windowsStatusEvidence.PSObject.Properties["ConfigFileName"]) {
-    throw "Windows status JSON should include ConfigFileName."
+  if (Test-WindowsStatusSmokeSupported) {
+    $windowsStatusJson = Join-Path $windowsOkRoot "status.json"
+    & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsOkConfig -HealthTimeoutSeconds 1 -JsonPath $windowsStatusJson *>&1 | Out-Null
+    $windowsStatusEvidence = Get-Content -Path $windowsStatusJson -Raw | ConvertFrom-Json
+    if (-not $windowsStatusEvidence.PSObject.Properties["ConfigFileName"]) {
+      throw "Windows status JSON should include ConfigFileName."
+    }
+    if ($windowsStatusEvidence.PSObject.Properties["ConfigPath"]) {
+      throw "Windows status JSON must not include raw ConfigPath."
+    }
+    if ($windowsStatusEvidence.PSObject.Properties["ComputerName"]) {
+      throw "Windows status JSON must not include raw ComputerName."
+    }
+    if ($windowsStatusEvidence.NextJsRuntime.RuntimeRootName -ne "app") {
+      throw "Windows status JSON should expose RuntimeRootName instead of raw RuntimeRoot."
+    }
+    if ($windowsStatusEvidence.NextJsRuntime.PSObject.Properties["RuntimeRoot"]) {
+      throw "Windows status JSON must not include raw NextJsRuntime.RuntimeRoot."
+    }
+    if ($windowsStatusEvidence.DeploymentIdentity.AppDirectoryName -ne "app") {
+      throw "Windows status JSON should expose DeploymentIdentity.AppDirectoryName."
+    }
+    if ($windowsStatusEvidence.DeploymentIdentity.PSObject.Properties["AppDirectory"]) {
+      throw "Windows status JSON must not include raw DeploymentIdentity.AppDirectory."
+    }
+    Assert-FileDoesNotContainText -Path $windowsStatusJson -UnexpectedText $windowsOkApp
+  } else {
+    Write-Host "Skipping Windows status JSON smoke; Windows CIM/networking cmdlets are unavailable."
   }
-  if ($windowsStatusEvidence.PSObject.Properties["ConfigPath"]) {
-    throw "Windows status JSON must not include raw ConfigPath."
-  }
-  if ($windowsStatusEvidence.PSObject.Properties["ComputerName"]) {
-    throw "Windows status JSON must not include raw ComputerName."
-  }
-  if ($windowsStatusEvidence.NextJsRuntime.RuntimeRootName -ne "app") {
-    throw "Windows status JSON should expose RuntimeRootName instead of raw RuntimeRoot."
-  }
-  if ($windowsStatusEvidence.NextJsRuntime.PSObject.Properties["RuntimeRoot"]) {
-    throw "Windows status JSON must not include raw NextJsRuntime.RuntimeRoot."
-  }
-  if ($windowsStatusEvidence.DeploymentIdentity.AppDirectoryName -ne "app") {
-    throw "Windows status JSON should expose DeploymentIdentity.AppDirectoryName."
-  }
-  if ($windowsStatusEvidence.DeploymentIdentity.PSObject.Properties["AppDirectory"]) {
-    throw "Windows status JSON must not include raw DeploymentIdentity.AppDirectory."
-  }
-  Assert-FileDoesNotContainText -Path $windowsStatusJson -UnexpectedText $windowsOkApp
 
   $windowsLegacyRoot = Join-Path $testRoot "windows-no-environment"
   $windowsLegacyApp = Join-Path $windowsLegacyRoot "app"
@@ -1001,20 +1013,24 @@ try {
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsPackagePath
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsImportRoot
 
-  $windowsImportStatusJson = Join-Path $windowsImportRoot "status-import.json"
-  & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsImportConfig -HealthTimeoutSeconds 1 -JsonPath $windowsImportStatusJson *>&1 | Out-Null
-  $windowsImportStatusEvidence = Get-Content -Path $windowsImportStatusJson -Raw | ConvertFrom-Json
-  if (-not $windowsImportStatusEvidence.DeploymentIdentity.ManifestExists) {
-    throw "Windows status JSON should prove the deployment manifest exists."
+  if (Test-WindowsStatusSmokeSupported) {
+    $windowsImportStatusJson = Join-Path $windowsImportRoot "status-import.json"
+    & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsImportConfig -HealthTimeoutSeconds 1 -JsonPath $windowsImportStatusJson *>&1 | Out-Null
+    $windowsImportStatusEvidence = Get-Content -Path $windowsImportStatusJson -Raw | ConvertFrom-Json
+    if (-not $windowsImportStatusEvidence.DeploymentIdentity.ManifestExists) {
+      throw "Windows status JSON should prove the deployment manifest exists."
+    }
+    if ($windowsImportStatusEvidence.DeploymentIdentity.PackageName -ne (Split-Path -Leaf $windowsPackagePath)) {
+      throw "Windows status JSON should include the imported package file name."
+    }
+    if ($windowsImportStatusEvidence.DeploymentIdentity.PackageSha256 -ne $windowsPackageSha256) {
+      throw "Windows status JSON should include the imported package SHA256."
+    }
+    Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsPackagePath
+    Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsImportRoot
+  } else {
+    Write-Host "Skipping Windows import status JSON smoke; Windows CIM/networking cmdlets are unavailable."
   }
-  if ($windowsImportStatusEvidence.DeploymentIdentity.PackageName -ne (Split-Path -Leaf $windowsPackagePath)) {
-    throw "Windows status JSON should include the imported package file name."
-  }
-  if ($windowsImportStatusEvidence.DeploymentIdentity.PackageSha256 -ne $windowsPackageSha256) {
-    throw "Windows status JSON should include the imported package SHA256."
-  }
-  Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsPackagePath
-  Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsImportRoot
 
   $windowsNextStartImportRoot = Join-Path $testRoot "windows-next-start-import"
   $windowsNextStartImportConfig = Join-Path $windowsNextStartImportRoot "app.config.json"

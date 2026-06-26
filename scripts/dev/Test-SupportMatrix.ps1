@@ -76,6 +76,35 @@ function Test-DeclaredArtifacts {
   }
 }
 
+function Get-CiWorkflowJobBlock {
+  param(
+    [string]$WorkflowText,
+    [string]$JobName
+  )
+
+  $escapedJobName = [regex]::Escape($JobName)
+  $match = [regex]::Match(
+    $WorkflowText,
+    "(?ms)^\s{2}$escapedJobName\s*:\s*\r?\n(?<body>.*?)(?=^\s{2}[A-Za-z0-9_-]+\s*:\s*$|\z)"
+  )
+  if (-not $match.Success) { return "" }
+  return $match.Groups["body"].Value
+}
+
+function Test-TextContainsAll {
+  param(
+    [string]$Text,
+    [string[]]$Expected
+  )
+
+  foreach ($item in $Expected) {
+    if (-not $Text.Contains($item)) {
+      return $false
+    }
+  }
+  return $true
+}
+
 Write-Host ""
 Write-Host "==> Support matrix"
 
@@ -176,6 +205,13 @@ $reverseProxyArtifacts = @{
 }
 $ciWorkflowText = Get-Content -LiteralPath (Join-Path $RepoRoot ".github\workflows\ci.yml") -Raw
 $platformMatrixText = Get-Content -LiteralPath (Join-Path $RepoRoot "scripts\dev\test-platform-matrix.sh") -Raw
+$staticVerificationJobRequirements = @{
+  "basic-checks" = @("Test-Repository.ps1")
+  "windows-checks" = @("Test-Repository.ps1", "-SkipShellSyntax")
+  "linux-family-static-checks" = @("test-platform-matrix.sh", '${{ matrix.platform }}')
+  "macos-checks" = @("test-platform-matrix.sh --case macos", "test-unix-nextjs-support.sh")
+}
+$ciWorkflowJobBlocks = @{}
 
 foreach ($target in $targets) {
   $id = [string]$target.id
@@ -227,8 +263,21 @@ foreach ($target in $targets) {
   Test-DeclaredArtifacts -Issues $issues -TargetId $id -Kind "reverse proxy" -Values ([string[]]$reverseProxies) -ArtifactMap $reverseProxyArtifacts
 
   foreach ($job in $staticVerification) {
-    if ($ciWorkflowText -notmatch "(?m)^\s*$([regex]::Escape($job)):\s*$") {
+    if (-not $ciWorkflowJobBlocks.ContainsKey($job)) {
+      $ciWorkflowJobBlocks[$job] = Get-CiWorkflowJobBlock -WorkflowText $ciWorkflowText -JobName $job
+    }
+    $jobBlock = [string]$ciWorkflowJobBlocks[$job]
+    if ([string]::IsNullOrWhiteSpace($jobBlock)) {
       Add-Issue $issues "$id references missing CI job: $job."
+      continue
+    }
+    if (-not $staticVerificationJobRequirements.ContainsKey($job)) {
+      Add-Issue $issues "$id references CI job '$job' without support-matrix verifier requirements."
+      continue
+    }
+    $requiredFragments = [string[]]$staticVerificationJobRequirements[$job]
+    if (-not (Test-TextContainsAll -Text $jobBlock -Expected $requiredFragments)) {
+      Add-Issue $issues "$id references CI job '$job', but the job does not contain required verifier command fragment(s): $($requiredFragments -join ', ')."
     }
   }
 
