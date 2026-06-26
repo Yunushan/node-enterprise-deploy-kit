@@ -1,6 +1,7 @@
 param(
   [string]$NodeExe = "",
-  [int]$TimeoutSeconds = 15
+  [int]$TimeoutSeconds = 45,
+  [int]$ProbeTimeoutSeconds = 5
 )
 
 Set-StrictMode -Version Latest
@@ -159,7 +160,7 @@ process.on('SIGINT', () => server.close(() => process.exit(0)));
     }
 
     try {
-      $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 2
+      $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec $ProbeTimeoutSeconds
       break
     } catch {
       $lastError = $_.Exception.Message

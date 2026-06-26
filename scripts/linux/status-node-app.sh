@@ -441,14 +441,13 @@ first_line_from_file() {
 
 next_build_id() {
   local root value
-  for root in "${APP_DIR:-}"; do
-    [[ -n "$root" ]] || continue
-    value="$(first_line_from_file "${root%/}/.next/BUILD_ID" 2>/dev/null || true)"
-    if [[ -n "$value" ]]; then
-      printf '%s\n' "$value"
-      return 0
-    fi
-  done
+  root="${APP_DIR:-}"
+  [[ -n "$root" ]] || return 1
+  value="$(first_line_from_file "${root%/}/.next/BUILD_ID" 2>/dev/null || true)"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
   return 1
 }
 
@@ -678,7 +677,7 @@ service_main_pid() {
 read_pid_file() {
   local path="$1" pid
   [[ -f "$path" ]] || return 0
-  pid="$(cat "$path" 2>/dev/null | tr -d '[:space:]' || true)"
+  pid="$(tr -d '[:space:]' < "$path" 2>/dev/null || true)"
   if is_integer "$pid" && [[ "$pid" != "0" ]] && kill -0 "$pid" 2>/dev/null; then
     printf '%s\n' "$pid"
   fi

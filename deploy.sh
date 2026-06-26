@@ -8,7 +8,6 @@ CONFIG_FILE="${1:-$REPO_ROOT/config/linux/app.env}"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
-SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"
 
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"

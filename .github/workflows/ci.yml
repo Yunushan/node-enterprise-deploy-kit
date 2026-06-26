@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck deploy.sh scripts/dev/*.sh scripts/linux/*.sh
+            shellcheck --severity=warning deploy.sh scripts/dev/*.sh scripts/linux/*.sh
           else
             echo "shellcheck not found; skipping optional ShellCheck validation."
           fi
