@@ -1,10 +1,14 @@
 param(
   [string]$BundlePath = "",
   [string]$MatrixPath = "",
+  [string[]]$TargetId = @(),
+  [string[]]$Category = @(),
   [int]$MaxEvidenceAgeDays = 30,
   [switch]$AllowWarnings,
   [switch]$IncludeServiceOnly,
   [switch]$IncludeFallback,
+  [switch]$ProductionRecommendedOnly,
+  [switch]$RequireProductionRecommendedRuntime,
   [switch]$RequireCleanSource,
   [switch]$RequireCurrentCommit,
   [switch]$RequireCiProvenance,
@@ -187,6 +191,59 @@ function Get-BooleanValue {
   if ($text -in @("true", "1", "yes")) { return $true }
   if ($text -in @("false", "0", "no")) { return $false }
   return $Default
+}
+
+function Get-ArrayValue {
+  param($Value)
+  if ($null -eq $Value) { return @() }
+  return @($Value)
+}
+
+function Normalize-Token {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $normalized = $Value.Trim().ToLowerInvariant() -replace '[^a-z0-9]+', '-'
+  return $normalized.Trim('-')
+}
+
+function Test-ProductionRecommendedTarget {
+  param([object]$Target)
+
+  $nodeRuntimeSupport = Get-PropertyValue -Object $Target -Names @("nodeRuntimeSupport")
+  if ($null -eq $nodeRuntimeSupport) { return $false }
+  $property = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
+  return ($property -and $property.Value -is [bool] -and [bool]$property.Value)
+}
+
+function Select-MatrixTargets {
+  param(
+    [string]$MatrixPath,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly
+  )
+
+  $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
+  $selected = @(Get-ArrayValue $matrix.targets)
+  if ($TargetId.Count -gt 0) {
+    $wanted = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wanted -contains (Normalize-Token ([string]$_.id)) })
+    $missing = @($wanted | Where-Object { $targetIdValue = $_; -not @($selected | Where-Object { (Normalize-Token ([string]$_.id)) -eq $targetIdValue }) })
+    if ($missing.Count -gt 0) {
+      throw "Unknown support matrix target id(s): $($missing -join ', ')"
+    }
+  }
+  if ($Category.Count -gt 0) {
+    $wantedCategories = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wantedCategories -contains (Normalize-Token ([string]$_.category)) })
+  }
+  if ($ProductionRecommendedOnly) {
+    $selected = @($selected | Where-Object { Test-ProductionRecommendedTarget -Target $_ })
+  }
+  if ($selected.Count -eq 0) {
+    throw "No support matrix targets matched the requested release readiness filters."
+  }
+  return $selected
 }
 
 function Test-SafeRuntimeVersionValue {
@@ -562,6 +619,10 @@ if ($SelfTest) {
     & $PSCommandPath -BundlePath $missingMinimumUptimeRoot -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours | Out-Null
   }
   & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours | Out-Null
+  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly | Out-Null
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Production-recommended Node runtime targets are required" -Action {
+    & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireProductionRecommendedRuntime | Out-Null
+  }
 
   $strictMissingCiRoot = Join-Path $selfTestRoot "strict-missing-ci"
   New-Item -ItemType Directory -Force -Path $strictMissingCiRoot | Out-Null
@@ -612,6 +673,9 @@ try {
   if (-not (Test-Path -LiteralPath $evidencePath -PathType Container)) {
     throw "Bundle evidence directory not found: $evidencePath"
   }
+
+  $selectedTargets = @(Select-MatrixTargets -MatrixPath $MatrixPath -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
+  $selectedTargetIds = @($selectedTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
 
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
   $currentMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -665,6 +729,10 @@ try {
   $workflowCapableEvidenceCount = 0
   $localCommandOnlyEvidenceCount = 0
   $workflowApplicabilityMissingCount = 0
+  $productionRecommendedRuntimeEvidenceCount = 0
+  $nonProductionRecommendedRuntimeEvidenceCount = 0
+  $runtimeSupportMetadataMissingCount = 0
+  $runtimeSupportTiers = New-Object System.Collections.Generic.HashSet[string]
   foreach ($row in @($manifest.files)) {
     $workflowDispatchSupported = Get-BooleanValue -Object $row -Names @("workflowDispatchSupported") -Default $null
     $localCommandOnly = Get-BooleanValue -Object $row -Names @("localCommandOnly") -Default $null
@@ -686,8 +754,22 @@ try {
     $collectionCiEventName = Get-StringValue -Object $row -Names @("collectionCiEventName")
     $collectionCiSha = (Get-StringValue -Object $row -Names @("collectionCiSha")).Trim().ToLowerInvariant()
     $nodeVersion = Get-StringValue -Object $row -Names @("nodeVersion")
+    $minimumNodeVersion = Get-StringValue -Object $row -Names @("minimumNodeVersion")
+    $nodeVersionSatisfied = Get-BooleanValue -Object $row -Names @("nodeVersionSatisfied") -Default $null
     $nextVersion = Get-StringValue -Object $row -Names @("nextVersion")
+    $nodeRuntimeSupportTier = Get-StringValue -Object $row -Names @("nodeRuntimeSupportTier")
+    $nodeRuntimeProductionRecommended = Get-BooleanValue -Object $row -Names @("nodeRuntimeProductionRecommended") -Default $null
     $collectorSha256 = (Get-StringValue -Object $row -Names @("collectorSha256")).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($nodeRuntimeSupportTier) -or $null -eq $nodeRuntimeProductionRecommended) {
+      $runtimeSupportMetadataMissingCount += 1
+    } else {
+      [void]$runtimeSupportTiers.Add($nodeRuntimeSupportTier)
+      if ($nodeRuntimeProductionRecommended -eq $true) {
+        $productionRecommendedRuntimeEvidenceCount += 1
+      } else {
+        $nonProductionRecommendedRuntimeEvidenceCount += 1
+      }
+    }
     if ($collectionRequirementsApply) {
       if ($collectionCiIsCi -eq $true -and -not [string]::IsNullOrWhiteSpace($collectionCiProvider)) {
         $collectionCiEvidenceCount += 1
@@ -705,9 +787,9 @@ try {
         $hostEvidenceWorkflowMismatchCount += 1
       }
     }
-    if ([string]::IsNullOrWhiteSpace($nodeVersion) -or [string]::IsNullOrWhiteSpace($nextVersion)) {
+    if ([string]::IsNullOrWhiteSpace($nodeVersion) -or [string]::IsNullOrWhiteSpace($minimumNodeVersion) -or [string]::IsNullOrWhiteSpace($nextVersion) -or $nodeVersionSatisfied -ne $true) {
       $runtimeVersionMissingCount += 1
-    } elseif ((Test-SafeRuntimeVersionValue -Value $nodeVersion) -and (Test-SafeRuntimeVersionValue -Value $nextVersion)) {
+    } elseif ((Test-SafeRuntimeVersionValue -Value $nodeVersion) -and (Test-SafeRuntimeVersionValue -Value $minimumNodeVersion) -and (Test-SafeRuntimeVersionValue -Value $nextVersion)) {
       $runtimeVersionEvidenceCount += 1
     } else {
       $runtimeVersionUnsafeCount += 1
@@ -733,16 +815,20 @@ try {
     throw "Collection evidence must come from the host-evidence workflow for workflow-capable evidence with -RequireHostEvidenceWorkflowCollection. Mismatched collection workflow provenance on $hostEvidenceWorkflowMismatchCount workflow-capable evidence file(s)."
   }
   if ($RequireRuntimeVersions -and ($runtimeVersionMissingCount -gt 0 -or $runtimeVersionUnsafeCount -gt 0)) {
-    throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
+    throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js, minimum Node.js, compatible Node.js, or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
   }
   if ($RequireCollectorSha256 -and ($collectorSha256MissingCount -gt 0 -or $collectorSha256UnsafeCount -gt 0)) {
     throw "Collector SHA256 evidence is required for -RequireCollectorSha256. Missing collector SHA256 on $collectorSha256MissingCount evidence file(s); unsafe collector SHA256 on $collectorSha256UnsafeCount evidence file(s)."
+  }
+  if ($RequireProductionRecommendedRuntime -and ($nonProductionRecommendedRuntimeEvidenceCount -gt 0 -or $runtimeSupportMetadataMissingCount -gt 0)) {
+    throw "Production-recommended Node runtime targets are required for -RequireProductionRecommendedRuntime. Non-production runtime evidence file(s): $nonProductionRecommendedRuntimeEvidenceCount; missing runtime support metadata: $runtimeSupportMetadataMissingCount."
   }
 
   $claimArgs = @{
     EvidencePath = $evidencePath
     MatrixPath = $MatrixPath
     MaxEvidenceAgeDays = $MaxEvidenceAgeDays
+    TargetId = [string[]]$selectedTargetIds
     RequireBothNextJsModes = $true
     RequireDeclaredServiceManagers = $true
     RequireDeclaredReverseProxies = $true
@@ -766,6 +852,8 @@ try {
     EvidencePath = $evidencePath
     MatrixPath = $MatrixPath
     MaxEvidenceAgeDays = $MaxEvidenceAgeDays
+    TargetId = [string[]]$selectedTargetIds
+    ProductionRecommendedOnly = [bool]$ProductionRecommendedOnly
     Format = "Json"
     OutputPath = $coverageJson
   }
@@ -790,7 +878,12 @@ try {
     matrixPath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
     maxEvidenceAgeDays = $MaxEvidenceAgeDays
     allowWarnings = [bool]$AllowWarnings
+    targetId = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    category = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+    selectedTargets = $selectedTargetIds
     strictCiRelease = [bool]$StrictCiRelease
+    requireProductionRecommendedRuntime = [bool]$RequireProductionRecommendedRuntime
     requireCleanSource = [bool]$RequireCleanSource
     requireCurrentCommit = [bool]$RequireCurrentCommit
     requireCiProvenance = [bool]$RequireCiProvenance
@@ -829,6 +922,10 @@ try {
       workflowCapableEvidenceCount = $workflowCapableEvidenceCount
       localCommandOnlyEvidenceCount = $localCommandOnlyEvidenceCount
       workflowApplicabilityMissingCount = $workflowApplicabilityMissingCount
+      productionRecommendedRuntimeEvidenceCount = $productionRecommendedRuntimeEvidenceCount
+      nonProductionRecommendedRuntimeEvidenceCount = $nonProductionRecommendedRuntimeEvidenceCount
+      runtimeSupportMetadataMissingCount = $runtimeSupportMetadataMissingCount
+      runtimeSupportTiers = @($runtimeSupportTiers | Sort-Object)
       targets = @($manifest.summary.targets)
       nextJsModes = @($manifest.summary.nextJsModes)
       serviceManagers = @($manifest.summary.serviceManagers)
@@ -865,6 +962,8 @@ try {
       Write-Host "Coverage expected: $($result.coverage.expectedCount)"
       Write-Host "Coverage covered:  $($result.coverage.coveredCount)"
       Write-Host "Coverage missing:  $($result.coverage.missingCount)"
+      Write-Host "Production runtime evidence:     $($result.bundle.productionRecommendedRuntimeEvidenceCount)"
+      Write-Host "Non-production runtime evidence: $($result.bundle.nonProductionRecommendedRuntimeEvidenceCount)"
       Write-Host "Targets: $(@($result.bundle.targets) -join ', ')"
     }
   }

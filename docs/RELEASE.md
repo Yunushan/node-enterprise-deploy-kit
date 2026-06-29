@@ -178,11 +178,11 @@ To create a private release evidence bundle:
   -IncludeFallback
 ```
 
-The bundle manifest records each evidence file hash plus safe Node.js runtime
-and Next.js package version strings when available, the collector SHA256 digest,
-the support matrix SHA256, and safe source-control provenance for the
-repository revision that created the bundle. When built in CI, it also records
-safe workflow/run/ref provenance.
+The bundle manifest records each evidence file hash plus the matrix Node
+runtime support tier, safe Node.js runtime and Next.js package version strings
+when available, the collector SHA256 digest, the support matrix SHA256, and safe
+source-control provenance for the repository revision that created the bundle.
+When built in CI, it also records safe workflow/run/ref provenance.
 When source evidence files contain safe collection CI provenance, the manifest
 records and verifies it per file. The bundle verifier rejects
 internally inconsistent CI/source commit SHAs. Release readiness rejects
@@ -198,8 +198,8 @@ commit, a non-CI bundle path, evidence files without CI/workflow collection
 provenance for workflow-capable rows, evidence collected from a different
 source commit, evidence collected outside the controlled `host-evidence`
 workflow dispatch where that workflow route is supported, or evidence without
-safe Node.js and Next.js version strings, collector SHA256 digests, or the
-required minimum uptime proof fail. Local-command-only rows, such as BSD rows,
+safe Node.js, minimum Node.js, compatible Node.js, and Next.js version strings,
+collector SHA256 digests, or the required minimum uptime proof fail. Local-command-only rows, such as BSD rows,
 must be explicitly marked local-only in the bundle manifest and still pass the
 runtime, collector, and uptime checks. The example support matrix sets
 `requiredMinimumUptimeHours` to 72 hours.
@@ -221,6 +221,13 @@ support claim:
   -IncludeFallback `
   -StrictCiRelease
 ```
+
+For a production-runtime-only release decision, add `-ProductionRecommendedOnly`
+to scope coverage and support-claim checks to matrix rows whose Node runtime is
+production-recommended. Add `-RequireProductionRecommendedRuntime` when the
+bundle itself must not contain experimental or community-package runtime rows.
+When bundle creation is run with target, category, or production filters, only
+matching evidence files are archived in the bundle.
 
 To collect evidence through GitHub Actions, manually run the `host-evidence`
 workflow against a self-hosted runner label for the deployed target host. The

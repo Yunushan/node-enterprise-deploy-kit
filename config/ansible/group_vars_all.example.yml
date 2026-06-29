@@ -10,6 +10,7 @@ node_deploy_nextjs_require_static_assets: true
 node_deploy_nextjs_require_public_directory: false
 node_deploy_nextjs_require_server_actions_encryption_key: false
 node_deploy_nextjs_require_deployment_id: false
+node_deploy_nextjs_minimum_node_version: 20.9.0
 node_deploy_app_runtime: node
 node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
 node_deploy_app_dir_linux: /opt/example-node-app

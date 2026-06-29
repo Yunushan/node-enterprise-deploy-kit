@@ -83,6 +83,26 @@ function Get-BooleanValue {
   return $Default
 }
 
+function Get-ArrayValue {
+  param($Value)
+  if ($null -eq $Value) { return @() }
+  return @($Value)
+}
+
+function Get-MatrixTargetsById {
+  param([string]$Path)
+
+  $matrix = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  $targetsById = @{}
+  foreach ($target in @(Get-ArrayValue $matrix.targets)) {
+    $targetId = Normalize-Token ([string]$target.id)
+    if ($targetId) {
+      $targetsById[$targetId] = $target
+    }
+  }
+  return $targetsById
+}
+
 function Get-SupportTargetId {
   param([object]$Evidence)
 
@@ -508,6 +528,12 @@ function Test-Bundle {
       throw "Manifest summary evidenceFileCount does not match files count."
     }
 
+    $matrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
+    if (-not (Test-Path -LiteralPath $matrixPath -PathType Leaf)) {
+      throw "Support matrix not found: $matrixPath"
+    }
+    $matrixTargetsById = Get-MatrixTargetsById -Path $matrixPath
+
     $listedPaths = New-Object System.Collections.Generic.HashSet[string]
     foreach ($row in $manifestRows) {
       $relative = ([string]$row.path).Replace("\", "/")
@@ -539,9 +565,29 @@ function Test-Bundle {
       if ([string]$row.supportTargetId -ne (Get-SupportTargetId -Evidence $evidence)) {
         throw "supportTargetId manifest mismatch for $relative."
       }
+      $rowTargetId = Normalize-Token ([string]$row.supportTargetId)
+      if (-not $matrixTargetsById.ContainsKey($rowTargetId)) {
+        throw "supportTargetId '$rowTargetId' was not found in the support matrix for $relative."
+      }
+      $matrixTarget = $matrixTargetsById[$rowTargetId]
       $targetCategory = ([string]$row.targetCategory).Trim().ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($targetCategory)) {
         throw "targetCategory manifest value is required for $relative."
+      }
+      $nodeRuntimeSupport = Get-PropertyValue -Object $matrixTarget -Names @("nodeRuntimeSupport")
+      if ([string]$row.nodeRuntimeMinimumNodeVersion -ne (Get-StringValue -Object $nodeRuntimeSupport -Names @("minimumNodeVersion"))) {
+        throw "nodeRuntimeMinimumNodeVersion manifest mismatch for $relative."
+      }
+      if ([string]$row.nodeRuntimeSupportTier -ne (Get-StringValue -Object $nodeRuntimeSupport -Names @("supportTier"))) {
+        throw "nodeRuntimeSupportTier manifest mismatch for $relative."
+      }
+      $rowNodeRuntimeProductionRecommended = Get-BooleanValue -Object $row -Names @("nodeRuntimeProductionRecommended") -Default $null
+      $matrixNodeRuntimeProductionRecommended = Get-BooleanValue -Object $nodeRuntimeSupport -Names @("productionRecommended") -Default $null
+      if ($rowNodeRuntimeProductionRecommended -ne $matrixNodeRuntimeProductionRecommended) {
+        throw "nodeRuntimeProductionRecommended manifest mismatch for $relative."
+      }
+      if ([string]$row.nodeRuntimeRequirements -ne (Get-StringValue -Object $nodeRuntimeSupport -Names @("requirements"))) {
+        throw "nodeRuntimeRequirements manifest mismatch for $relative."
       }
       $workflowDispatchSupported = Get-BooleanValue -Object $row -Names @("workflowDispatchSupported") -Default $null
       $localCommandOnly = Get-BooleanValue -Object $row -Names @("localCommandOnly") -Default $null
@@ -568,6 +614,18 @@ function Test-Bundle {
       }
       if ([string]$row.nodeVersion -ne (Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersion", "nodeVersion"))) {
         throw "nodeVersion manifest mismatch for $relative."
+      }
+      if ([string]$row.minimumNodeVersion -ne (Get-NextJsRuntimeValue -Evidence $evidence -Names @("MinimumNodeVersion", "minimumNodeVersion"))) {
+        throw "minimumNodeVersion manifest mismatch for $relative."
+      }
+      $rowNodeVersionSatisfied = Get-BooleanValue -Object $row -Names @("nodeVersionSatisfied") -Default $null
+      $evidenceNodeVersionSatisfiedText = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersionSatisfied", "nodeVersionSatisfied")
+      $evidenceNodeVersionSatisfied = $null
+      if (-not [string]::IsNullOrWhiteSpace($evidenceNodeVersionSatisfiedText)) {
+        $evidenceNodeVersionSatisfied = ($evidenceNodeVersionSatisfiedText.Trim().ToLowerInvariant() -in @("true", "1", "yes"))
+      }
+      if ($rowNodeVersionSatisfied -ne $evidenceNodeVersionSatisfied) {
+        throw "nodeVersionSatisfied manifest mismatch for $relative."
       }
       if ([string]$row.nextVersion -ne (Get-NextJsRuntimeValue -Evidence $evidence -Names @("NextVersion", "nextVersion"))) {
         throw "nextVersion manifest mismatch for $relative."

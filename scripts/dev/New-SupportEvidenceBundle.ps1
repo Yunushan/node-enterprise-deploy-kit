@@ -14,6 +14,7 @@ param(
   [switch]$RequireCoverageComplete,
   [switch]$IncludeServiceOnly,
   [switch]$IncludeFallback,
+  [switch]$ProductionRecommendedOnly,
   [switch]$AllowReverseProxyNone,
   [switch]$NoZip,
   [switch]$SelfTest
@@ -135,6 +136,46 @@ function Get-MatrixTargetsById {
     }
   }
   return $targetsById
+}
+
+function Test-ProductionRecommendedTarget {
+  param([object]$Target)
+
+  $nodeRuntimeSupport = Get-PropertyValue -Object $Target -Names @("nodeRuntimeSupport")
+  if ($null -eq $nodeRuntimeSupport) { return $false }
+  $property = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
+  return ($property -and $property.Value -is [bool] -and [bool]$property.Value)
+}
+
+function Select-MatrixTargets {
+  param(
+    [string]$Path,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly
+  )
+
+  $matrix = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  $selected = @(Get-ArrayValue $matrix.targets)
+  if ($TargetId.Count -gt 0) {
+    $wanted = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wanted -contains (Normalize-Token ([string]$_.id)) })
+    $missing = @($wanted | Where-Object { $targetIdValue = $_; -not @($selected | Where-Object { (Normalize-Token ([string]$_.id)) -eq $targetIdValue }) })
+    if ($missing.Count -gt 0) {
+      throw "Unknown support matrix target id(s): $($missing -join ', ')"
+    }
+  }
+  if ($Category.Count -gt 0) {
+    $wantedCategories = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wantedCategories -contains (Normalize-Token ([string]$_.category)) })
+  }
+  if ($ProductionRecommendedOnly) {
+    $selected = @($selected | Where-Object { Test-ProductionRecommendedTarget -Target $_ })
+  }
+  if ($selected.Count -eq 0) {
+    throw "No support matrix targets matched the requested bundle filters."
+  }
+  return $selected
 }
 
 function Get-SupportTargetId {
@@ -341,6 +382,46 @@ function Copy-EvidenceFile {
   return $safeRelative
 }
 
+function Select-EvidenceFilesForBundle {
+  param(
+    [object[]]$Files,
+    [string[]]$SelectedTargetIds,
+    [bool]$HasTargetFilter
+  )
+
+  if (-not $HasTargetFilter) {
+    return @($Files)
+  }
+
+  $selected = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($targetId in $SelectedTargetIds) {
+    $normalized = Normalize-Token $targetId
+    if ($normalized) {
+      [void]$selected.Add($normalized)
+    }
+  }
+
+  $filtered = New-Object System.Collections.Generic.List[object]
+  foreach ($file in $Files) {
+    $include = $true
+    try {
+      $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+      $target = Get-SupportTargetId -Evidence $evidence
+      if ($target) {
+        $include = $selected.Contains($target)
+      }
+    } catch {
+      $include = $true
+    }
+
+    if ($include) {
+      $filtered.Add($file) | Out-Null
+    }
+  }
+
+  return @($filtered | ForEach-Object { $_ })
+}
+
 function New-SelfTestEvidence {
   param([string]$Path)
 
@@ -443,6 +524,8 @@ function New-SelfTestEvidence {
       AppFramework = "nextjs"
       Mode = "standalone"
       NodeVersion = "v20.11.1"
+      MinimumNodeVersion = "20.9.0"
+      NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
       RuntimeRootName = "example-next-app"
     }
@@ -553,6 +636,8 @@ function New-SelfTestEvidence {
       appFramework = "nextjs"
       mode = "standalone"
       nodeVersion = "v20.11.1"
+      minimumNodeVersion = "20.9.0"
+      nodeVersionSatisfied = $true
       nextVersion = "14.2.3"
       runtimeRootName = "example-next-app"
     }
@@ -584,7 +669,13 @@ function New-SelfTestEvidence {
     findings = @()
   }
 
+  $legacyWindows = $windows | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  $legacyWindows.SupportTargetId = "windows-server-2012"
+  $legacyWindows.Platform.SupportTargetId = "windows-server-2012"
+  $legacyWindows.Platform.OsCaption = "Microsoft Windows Server 2012 Datacenter"
+
   $windows | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Path "windows-11-winsw-iis.json") -Encoding UTF8
+  $legacyWindows | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Path "windows-server-2012-winsw-iis.json") -Encoding UTF8
   $linux | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Path "ubuntu-systemd-nginx.json") -Encoding UTF8
 }
 
@@ -632,6 +723,10 @@ if ($BundleName -notmatch '^[A-Za-z0-9._-]+$') {
 
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
 
+$selectedTargets = @(Select-MatrixTargets -Path $MatrixPath -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
+$selectedTargetIds = @($selectedTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
+$hasTargetFilter = ($TargetId.Count -gt 0 -or $Category.Count -gt 0 -or [bool]$ProductionRecommendedOnly)
+
 $hostEvidenceArgs = @{
   EvidencePath = $EvidencePath
   MaxEvidenceAgeDays = $MaxEvidenceAgeDays
@@ -639,7 +734,7 @@ $hostEvidenceArgs = @{
   RequireReverseProxy = $true
   RequireDeploymentIdentity = $true
 }
-if ($TargetId.Count -gt 0) { $hostEvidenceArgs.RequiredTargets = [string[]]$TargetId }
+if ($hasTargetFilter) { $hostEvidenceArgs.RequiredTargets = [string[]]$selectedTargetIds }
 if (-not $AllowWarnings) { $hostEvidenceArgs.FailOnWarnings = $true }
 if ($AllowReverseProxyNone -or $IncludeServiceOnly) { $hostEvidenceArgs.AllowReverseProxyNone = $true }
 & (Join-Path $ScriptDir "Test-HostEvidence.ps1") @hostEvidenceArgs | Out-Null
@@ -650,8 +745,7 @@ if ($ValidateSupportClaim) {
     MatrixPath = $MatrixPath
     MaxEvidenceAgeDays = $MaxEvidenceAgeDays
   }
-  if ($TargetId.Count -gt 0) { $claimArgs.TargetId = [string[]]$TargetId }
-  if ($Category.Count -gt 0) { $claimArgs.Category = [string[]]$Category }
+  if ($hasTargetFilter) { $claimArgs.TargetId = [string[]]$selectedTargetIds }
   if ($AllowWarnings) { $claimArgs.AllowWarnings = $true }
   if ($RequireBothNextJsModes) { $claimArgs.RequireBothNextJsModes = $true }
   if ($RequireDeclaredServiceManagers) { $claimArgs.RequireDeclaredServiceManagers = $true }
@@ -666,6 +760,8 @@ if ($RequireCoverageComplete) {
     MatrixPath = $MatrixPath
     MaxEvidenceAgeDays = $MaxEvidenceAgeDays
   }
+  if ($hasTargetFilter) { $coverageArgs.TargetId = [string[]]$selectedTargetIds }
+  if ($ProductionRecommendedOnly) { $coverageArgs.ProductionRecommendedOnly = $true }
   if ($AllowWarnings) { $coverageArgs.AllowWarnings = $true }
   if ($IncludeServiceOnly) { $coverageArgs.IncludeServiceOnly = $true }
   if ($IncludeFallback) { $coverageArgs.IncludeFallback = $true }
@@ -684,6 +780,10 @@ $files = @(Get-ChildItem -Path $EvidencePath -Recurse -File -Filter "*.json" | S
 if ($files.Count -eq 0) {
   throw "No JSON evidence files found in $EvidencePath"
 }
+$files = @(Select-EvidenceFilesForBundle -Files $files -SelectedTargetIds $selectedTargetIds -HasTargetFilter ([bool]$hasTargetFilter))
+if ($files.Count -eq 0) {
+  throw "No JSON evidence files matched the requested bundle target filters."
+}
 
 $manifestFiles = New-Object System.Collections.Generic.List[object]
 $matrixTargetsById = Get-MatrixTargetsById -Path $MatrixPath
@@ -694,12 +794,18 @@ foreach ($file in $files) {
   $parseError = ""
   $target = ""
   $targetCategory = ""
+  $nodeRuntimeMinimumNodeVersion = ""
+  $nodeRuntimeSupportTier = ""
+  $nodeRuntimeProductionRecommended = $null
+  $nodeRuntimeRequirements = ""
   $workflowDispatchSupported = $null
   $localCommandOnly = $null
   $mode = ""
   $serviceManager = ""
   $reverseProxy = ""
   $nodeVersion = ""
+  $minimumNodeVersion = ""
+  $nodeVersionSatisfied = $null
   $nextVersion = ""
   $generatedAt = ""
   $verdict = ""
@@ -728,7 +834,13 @@ foreach ($file in $files) {
     $evidence = Get-Content -LiteralPath $bundleFile -Raw | ConvertFrom-Json
     $target = Get-SupportTargetId -Evidence $evidence
     if ($target -and $matrixTargetsById.ContainsKey($target)) {
-      $targetCategory = [string]$matrixTargetsById[$target].category
+      $matrixTarget = $matrixTargetsById[$target]
+      $targetCategory = [string]$matrixTarget.category
+      $nodeRuntimeSupport = Get-PropertyValue -Object $matrixTarget -Names @("nodeRuntimeSupport")
+      $nodeRuntimeMinimumNodeVersion = Get-StringValue -Object $nodeRuntimeSupport -Names @("minimumNodeVersion")
+      $nodeRuntimeSupportTier = Get-StringValue -Object $nodeRuntimeSupport -Names @("supportTier")
+      $nodeRuntimeProductionRecommended = Get-BooleanValue -Object $nodeRuntimeSupport -Names @("productionRecommended") -Default $null
+      $nodeRuntimeRequirements = Get-StringValue -Object $nodeRuntimeSupport -Names @("requirements")
       $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $targetCategory
       $localCommandOnly = -not [bool]$workflowDispatchSupported
     }
@@ -736,6 +848,11 @@ foreach ($file in $files) {
     $serviceManager = Get-ServiceManager -Evidence $evidence
     $reverseProxy = Get-ReverseProxyMode -Evidence $evidence
     $nodeVersion = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersion", "nodeVersion")
+    $minimumNodeVersion = Get-NextJsRuntimeValue -Evidence $evidence -Names @("MinimumNodeVersion", "minimumNodeVersion")
+    $nodeVersionSatisfiedText = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NodeVersionSatisfied", "nodeVersionSatisfied")
+    if (-not [string]::IsNullOrWhiteSpace($nodeVersionSatisfiedText)) {
+      $nodeVersionSatisfied = ($nodeVersionSatisfiedText.Trim().ToLowerInvariant() -in @("true", "1", "yes"))
+    }
     $nextVersion = Get-NextJsRuntimeValue -Evidence $evidence -Names @("NextVersion", "nextVersion")
     $generatedAt = Get-StringValue -Object $evidence -Names @("GeneratedAtUtc", "generatedAtUtc")
     $verdict = Get-StringValue -Object $evidence -Names @("Verdict", "verdict")
@@ -771,12 +888,18 @@ foreach ($file in $files) {
     bytes = (Get-Item -LiteralPath $bundleFile).Length
     supportTargetId = $target
     targetCategory = $targetCategory
+    nodeRuntimeMinimumNodeVersion = $nodeRuntimeMinimumNodeVersion
+    nodeRuntimeSupportTier = $nodeRuntimeSupportTier
+    nodeRuntimeProductionRecommended = $nodeRuntimeProductionRecommended
+    nodeRuntimeRequirements = $nodeRuntimeRequirements
     workflowDispatchSupported = $workflowDispatchSupported
     localCommandOnly = $localCommandOnly
     nextJsMode = $mode
     serviceManager = $serviceManager
     reverseProxy = $reverseProxy
     nodeVersion = $nodeVersion
+    minimumNodeVersion = $minimumNodeVersion
+    nodeVersionSatisfied = $nodeVersionSatisfied
     nextVersion = $nextVersion
     generatedAtUtc = $generatedAt
     verdict = $verdict
@@ -827,6 +950,8 @@ $manifest = [ordered]@{
   coverageCompleteRequired = [bool]$RequireCoverageComplete
   targetIds = @($TargetId)
   categories = @($Category)
+  productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+  selectedTargets = $selectedTargetIds
   summary = [ordered]@{
     evidenceFileCount = $manifestFiles.Count
     targets = $summaryTargets
@@ -864,6 +989,15 @@ if ($SelfTest) {
   }
   $manifestCheck = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
   if ($manifestCheck.summary.evidenceFileCount -ne 2) {
-    throw "Support evidence bundle self-test expected 2 evidence files."
+    throw "Support evidence bundle self-test expected 2 selected evidence files."
+  }
+  $selfTestTargets = @($manifestCheck.summary.targets)
+  if ($selfTestTargets -contains "windows-server-2012") {
+    throw "Support evidence bundle self-test included a non-selected evidence target."
+  }
+  foreach ($expectedTarget in @("windows-11", "ubuntu")) {
+    if ($selfTestTargets -notcontains $expectedTarget) {
+      throw "Support evidence bundle self-test did not include selected target '$expectedTarget'."
+    }
   }
 }

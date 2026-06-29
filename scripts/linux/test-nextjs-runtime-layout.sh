@@ -10,6 +10,8 @@ CONFIG_FILE=""
 APP_DIR_OVERRIDE=""
 MODE_OVERRIDE=""
 START_SCRIPT_OVERRIDE=""
+NODE_BIN_OVERRIDE=""
+MINIMUM_NODE_VERSION_OVERRIDE=""
 REQUIRE_STATIC_OVERRIDE=""
 REQUIRE_PUBLIC_OVERRIDE=""
 
@@ -24,6 +26,8 @@ Options:
   --app-dir PATH            App directory override.
   --mode MODE               standalone or next-start.
   --start-script PATH       Start script override. Defaults to server.js.
+  --node-bin PATH           Node.js executable override for version validation.
+  --minimum-node-version V  Minimum Node.js version. Defaults to 20.9.0.
   --require-static          Require .next/static. Default for standalone.
   --no-require-static       Do not require .next/static.
   --require-public          Require public/.
@@ -47,6 +51,14 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --start-script)
       START_SCRIPT_OVERRIDE="${2:?--start-script requires a value}"
+      shift 2
+      ;;
+    --node-bin)
+      NODE_BIN_OVERRIDE="${2:?--node-bin requires a value}"
+      shift 2
+      ;;
+    --minimum-node-version)
+      MINIMUM_NODE_VERSION_OVERRIDE="${2:?--minimum-node-version requires a value}"
       shift 2
       ;;
     --require-static)
@@ -98,8 +110,13 @@ fi
 APP_DIR="${APP_DIR_OVERRIDE:-${APP_DIR:-}}"
 MODE="$(normalize_name "${MODE_OVERRIDE:-${NEXTJS_DEPLOYMENT_MODE:-standalone}}")"
 START_SCRIPT="${START_SCRIPT_OVERRIDE:-${START_SCRIPT:-server.js}}"
+NODE_BIN="${NODE_BIN_OVERRIDE:-${NODE_BIN:-}}"
 NODE_ARGUMENTS="${NODE_ARGUMENTS:-}"
 BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1}"
+DEFAULT_NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
+MINIMUM_NODE_VERSION="${MINIMUM_NODE_VERSION_OVERRIDE:-${NEXTJS_MINIMUM_NODE_VERSION:-$DEFAULT_NEXTJS_MINIMUM_NODE_VERSION}}"
+NODE_VERSION=""
+NODE_VERSION_SATISFIED="false"
 REQUIRE_STATIC="${REQUIRE_STATIC_OVERRIDE:-${NEXTJS_REQUIRE_STATIC_ASSETS:-true}}"
 REQUIRE_PUBLIC="${REQUIRE_PUBLIC_OVERRIDE:-${NEXTJS_REQUIRE_PUBLIC_DIR:-false}}"
 
@@ -159,6 +176,34 @@ next_start_hostname_argument() {
     esac
   done
 }
+node_runtime_version() {
+  local node_bin="${NODE_BIN:-node}" output
+  output="$("$node_bin" --version 2>/dev/null | head -n 1 || true)"
+  printf '%s\n' "$output"
+}
+
+validate_node_version() {
+  local rc
+  if ! semver_components "$MINIMUM_NODE_VERSION" >/dev/null; then
+    add_error "NEXTJS_MINIMUM_NODE_VERSION must be a semantic version like 20.9.0."
+    return
+  fi
+  NODE_VERSION="$(node_runtime_version)"
+  if [[ -z "$NODE_VERSION" ]]; then
+    add_error "Next.js requires Node.js >= $MINIMUM_NODE_VERSION, but NODE_BIN did not return a version with --version: ${NODE_BIN:-node}"
+    return
+  fi
+  if semver_at_least "$NODE_VERSION" "$MINIMUM_NODE_VERSION"; then
+    NODE_VERSION_SATISFIED="true"
+    return
+  fi
+  rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    add_error "Next.js requires Node.js >= $MINIMUM_NODE_VERSION, but NODE_BIN returned an unrecognized version: $NODE_VERSION"
+  else
+    add_error "Next.js requires Node.js >= $MINIMUM_NODE_VERSION; configured NODE_BIN reports $NODE_VERSION."
+  fi
+}
 
 if [[ -z "$APP_DIR" ]]; then
   add_error "APP_DIR is required."
@@ -167,6 +212,9 @@ case "$MODE" in
   standalone|next-start) ;;
   *) add_error "NEXTJS_DEPLOYMENT_MODE must be standalone or next-start." ;;
 esac
+if [[ -n "$CONFIG_FILE" || -n "$NODE_BIN" ]]; then
+  validate_node_version
+fi
 
 runtime_root="$APP_DIR"
 start_path=""
@@ -202,6 +250,10 @@ RuntimeRoot=$runtime_root
 START_SCRIPT=$START_SCRIPT
 NODE_ARGUMENTS=$NODE_ARGUMENTS
 BIND_ADDRESS=$BIND_ADDRESS
+NODE_BIN=${NODE_BIN:-node}
+NodeVersion=$NODE_VERSION
+MinimumNodeVersion=$MINIMUM_NODE_VERSION
+NodeVersionSatisfied=$NODE_VERSION_SATISFIED
 RequiresStaticAssets=$REQUIRE_STATIC
 RequiresPublicDirectory=$REQUIRE_PUBLIC
 ServerJsExists=$(path_exists_text "$server_path" file)

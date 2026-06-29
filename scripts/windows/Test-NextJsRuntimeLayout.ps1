@@ -11,8 +11,10 @@ param(
     [string] $AppDirectory = "",
     [string] $Mode = "standalone",
     [string] $StartCommand = "server.js",
+    [string] $NodeExe = "",
     [string] $NodeArguments = "",
     [string] $BindAddress = "127.0.0.1",
+    [string] $MinimumNodeVersion = "20.9.0",
     [bool] $RequireStaticAssets = $true,
     [bool] $RequirePublicDirectory = $false
 )
@@ -75,6 +77,34 @@ function Get-HostnameArgumentValue([string[]]$Tokens) {
     }
     return ""
 }
+function Get-SemverParts([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $match = [regex]::Match($Value.Trim(), '^v?(\d+)\.(\d+)\.(\d+)')
+    if (-not $match.Success) { return $null }
+    return [pscustomobject]@{
+        Major = [int]$match.Groups[1].Value
+        Minor = [int]$match.Groups[2].Value
+        Patch = [int]$match.Groups[3].Value
+    }
+}
+function Test-SemverAtLeast([string]$Actual, [string]$Minimum) {
+    $actualParts = Get-SemverParts $Actual
+    $minimumParts = Get-SemverParts $Minimum
+    if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+    if ($actualParts.Major -ne $minimumParts.Major) { return $actualParts.Major -gt $minimumParts.Major }
+    if ($actualParts.Minor -ne $minimumParts.Minor) { return $actualParts.Minor -gt $minimumParts.Minor }
+    return $actualParts.Patch -ge $minimumParts.Patch
+}
+function Get-NodeRuntimeVersion([string]$NodeExe) {
+    $candidate = if ([string]::IsNullOrWhiteSpace($NodeExe)) { "node" } else { $NodeExe }
+    try {
+        $output = & $candidate --version 2>$null
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return ([string](@($output)[0])).Trim()
+    } catch {
+        return ""
+    }
+}
 
 if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -94,8 +124,10 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     $AppDirectory = Get-ConfigString $config "AppDirectory" $AppDirectory
     $Mode = Get-ConfigString $config "NextjsDeploymentMode" $Mode
     $StartCommand = Get-ConfigString $config "StartCommand" $StartCommand
+    $NodeExe = Get-ConfigString $config "NodeExe" $NodeExe
     $NodeArguments = Get-ConfigString $config "NodeArguments" $NodeArguments
     $BindAddress = Get-ConfigString $config "BindAddress" $BindAddress
+    $MinimumNodeVersion = Get-ConfigString $config "NextjsMinimumNodeVersion" $MinimumNodeVersion
     $RequireStaticAssets = Get-ConfigBool $config "NextjsRequireStaticAssets" $RequireStaticAssets
     $RequirePublicDirectory = Get-ConfigBool $config "NextjsRequirePublicDirectory" $RequirePublicDirectory
 }
@@ -106,6 +138,28 @@ if ($modeNormalized -notin @("standalone", "next-start")) {
 }
 if ([string]::IsNullOrWhiteSpace($AppDirectory)) {
     Add-Error "AppDirectory is required."
+}
+
+$nodeVersion = ""
+$nodeVersionSatisfied = $false
+if (-not [string]::IsNullOrWhiteSpace($ConfigPath) -or -not [string]::IsNullOrWhiteSpace($NodeExe)) {
+    if ($null -eq (Get-SemverParts $MinimumNodeVersion)) {
+        Add-Error "NextjsMinimumNodeVersion must be a semantic version like 20.9.0."
+    } else {
+        $nodeVersion = Get-NodeRuntimeVersion $NodeExe
+        if ([string]::IsNullOrWhiteSpace($nodeVersion)) {
+            Add-Error "Next.js requires Node.js >= $MinimumNodeVersion, but NodeExe did not return a version with --version: $NodeExe"
+        } else {
+            $nodeVersionSatisfiedResult = Test-SemverAtLeast -Actual $nodeVersion -Minimum $MinimumNodeVersion
+            if ($null -eq $nodeVersionSatisfiedResult) {
+                Add-Error "Next.js requires Node.js >= $MinimumNodeVersion, but NodeExe returned an unrecognized version: $nodeVersion"
+            } elseif (-not $nodeVersionSatisfiedResult) {
+                Add-Error "Next.js requires Node.js >= $MinimumNodeVersion; configured NodeExe reports $nodeVersion."
+            } else {
+                $nodeVersionSatisfied = $true
+            }
+        }
+    }
 }
 
 $runtimeRoot = $AppDirectory
@@ -140,6 +194,10 @@ $nextPackagePath = Join-Path $AppDirectory "node_modules\next"
     AppDirectoryExists = (-not [string]::IsNullOrWhiteSpace($AppDirectory) -and (Test-Path -LiteralPath $AppDirectory -PathType Container))
     RuntimeRoot = $runtimeRoot
     StartCommand = $StartCommand
+    NodeExe = $NodeExe
+    NodeVersion = $nodeVersion
+    MinimumNodeVersion = $MinimumNodeVersion
+    NodeVersionSatisfied = $nodeVersionSatisfied
     NodeArguments = $NodeArguments
     BindAddress = $BindAddress
     RequiresStaticAssets = $RequireStaticAssets

@@ -133,6 +133,32 @@ is_true() {
   esac
 }
 
+semver_components() {
+  local value="${1:-}"
+  value="${value#v}"
+  if [[ "$value" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    printf '%s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
+semver_at_least() {
+  local actual="${1:-}" minimum="${2:-}" actual_parts minimum_parts
+  local actual_major actual_minor actual_patch minimum_major minimum_minor minimum_patch
+  actual_parts="$(semver_components "$actual")" || return 2
+  minimum_parts="$(semver_components "$minimum")" || return 2
+  read -r actual_major actual_minor actual_patch <<< "$actual_parts"
+  read -r minimum_major minimum_minor minimum_patch <<< "$minimum_parts"
+
+  if (( 10#$actual_major > 10#$minimum_major )); then return 0; fi
+  if (( 10#$actual_major < 10#$minimum_major )); then return 1; fi
+  if (( 10#$actual_minor > 10#$minimum_minor )); then return 0; fi
+  if (( 10#$actual_minor < 10#$minimum_minor )); then return 1; fi
+  if (( 10#$actual_patch >= 10#$minimum_patch )); then return 0; fi
+  return 1
+}
+
 runtime_env_key_list() {
   printf '%s' "${1:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
 }

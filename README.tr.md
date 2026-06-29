@@ -117,6 +117,7 @@ Copy-Item .\config\windows\app.config.example.json .\config\windows\app.config.j
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
+  "NextjsMinimumNodeVersion": "20.9.0",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "NodeExe": "C:\\Program Files\\nodejs\\node.exe",
   "StartCommand": "server.js",
@@ -230,6 +231,7 @@ NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 SERVICE_USER="nodeapp"
 SERVICE_GROUP="nodeapp"
 APP_DIR="/opt/example-node-app"
@@ -326,20 +328,27 @@ sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 
 ## Desteklenen Platformlar
 
+Guncel Next.js surumleri Node.js `20.9.0` veya uzerini gerektirir. Bu nedenle
+uretim onerisi, hedef isletim sisteminin Node.js runtime destek katmanina da
+baglidir; legacy, deneysel veya topluluk paketiyle calisan hedefler icin
+gercek host kaniti zorunludur ama bu hedefler uretim icin varsayilan onerilen
+satirlar degildir.
+
 | Platform | Durum | Önerilen servis yöneticisi | Not |
 | --- | --- | --- | --- |
 | Windows 10 / 11 | Desteklenir | WinSW / Windows Service | Geliştirme veya küçük servis senaryoları. |
-| Windows Server 2012-2025 | Birinci sınıf destek | WinSW / Windows Service | IIS ve diğer proxy seçenekleriyle üretim kullanımı. |
+| Windows Server 2012 / 2012 R2 | Deneysel Node runtime hedefi | WinSW / Windows Service | Node.js 20.x icin uretim onerisi degildir; Windows Server 2016+ tercih edilmelidir. |
+| Windows Server 2016-2025 | Birinci sınıf destek | WinSW / Windows Service | IIS ve diğer proxy seçenekleriyle üretim kullanımı. |
 | Ubuntu / Debian | Birinci sınıf destek | systemd | En yaygın Linux hedefleri. |
 | RHEL / Rocky / AlmaLinux | Birinci sınıf destek | systemd | Kurumsal Linux dağıtımları. |
 | Oracle Linux | Desteklenir | systemd | RHEL ailesi davranışı temel alınır. |
 | CentOS / CentOS Stream | Desteklenir | systemd | Paket isimleri sürüme göre değişebilir. |
 | Fedora | Desteklenir | systemd | Daha yeni paket sürümleriyle gelir. |
 | Linux Mint | Desteklenir | systemd | Ubuntu/Debian ailesi davranışı temel alınır. |
-| Alpine Linux | Desteklenir | OpenRC | Minimal container veya VM senaryoları. |
-| FreeBSD | Örnek destek | rc.d | Yollar ve paketler ortama göre uyarlanmalıdır. |
-| OpenBSD | Örnek destek | rcctl | Daha sıkı güvenlik varsayımları vardır. |
-| NetBSD | Örnek destek | rc.d | Platforma göre servis yolları kontrol edilmelidir. |
+| Alpine Linux | Deneysel Node runtime hedefi | OpenRC | Musl tabanli runtime icin gercek host kaniti gerekir. |
+| FreeBSD | Deneysel Node runtime hedefi | rc.d | Yollar, paketler ve Node runtime host uzerinde dogrulanmalidir. |
+| OpenBSD | Topluluk Node paketi hedefi | rcctl | OS paketi veya yerel Node runtime ile gercek host kaniti gerekir. |
+| NetBSD | Topluluk Node paketi hedefi | rc.d | OS paketi veya yerel Node runtime ile gercek host kaniti gerekir. |
 | macOS | Örnek destek | launchd | Lokal servis veya küçük ölçekli daemon senaryoları. |
 
 ## Reverse Proxy Desteği

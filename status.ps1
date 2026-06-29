@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
+$DefaultNextJsMinimumNodeVersion = "20.9.0"
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot $ConfigPath
@@ -45,6 +46,8 @@ $script:nextJsRuntimeEvidence = [pscustomobject]@{
     Mode = ""
     RuntimeRoot = ""
     NodeVersion = ""
+    MinimumNodeVersion = ""
+    NodeVersionSatisfied = $null
     NextVersion = ""
 }
 $script:reverseProxyEvidence = [pscustomobject]@{
@@ -363,6 +366,24 @@ function Get-SafeRuntimeVersionText([string]$Value) {
     if ($text.Length -gt 80) { $text = $text.Substring(0, 80) }
     return (($text -replace '[^A-Za-z0-9._+:-]', "-").Trim("-"))
 }
+function Get-SemverParts([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $match = [regex]::Match($Value.Trim(), '^v?(\d+)\.(\d+)\.(\d+)')
+    if (-not $match.Success) { return $null }
+    return [pscustomobject]@{
+        Major = [int]$match.Groups[1].Value
+        Minor = [int]$match.Groups[2].Value
+        Patch = [int]$match.Groups[3].Value
+    }
+}
+function Test-SemverAtLeast([string]$Actual, [string]$Minimum) {
+    $actualParts = Get-SemverParts $Actual
+    $minimumParts = Get-SemverParts $Minimum
+    if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+    if ($actualParts.Major -ne $minimumParts.Major) { return $actualParts.Major -gt $minimumParts.Major }
+    if ($actualParts.Minor -ne $minimumParts.Minor) { return $actualParts.Minor -gt $minimumParts.Minor }
+    return $actualParts.Patch -ge $minimumParts.Patch
+}
 function Get-NodeRuntimeVersion([string]$NodeExe) {
     $candidate = if ([string]::IsNullOrWhiteSpace($NodeExe)) { "node" } else { $NodeExe }
     try {
@@ -398,12 +419,15 @@ function Get-NextPackageVersion([string]$AppDirectory, [string]$RuntimeRoot) {
 }
 function Get-SafeNextJsRuntimeEvidence($Evidence) {
     $runtimeRoot = [string](Get-ObjectPropertyValue $Evidence "RuntimeRoot" "")
+    $nodeVersionSatisfied = Get-ObjectPropertyValue $Evidence "NodeVersionSatisfied" $null
     return [pscustomobject]@{
         Applicable = [bool](Get-ObjectPropertyValue $Evidence "Applicable" $false)
         Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
         AppFramework = [string](Get-ObjectPropertyValue $Evidence "AppFramework" "")
         Mode = [string](Get-ObjectPropertyValue $Evidence "Mode" "")
         NodeVersion = Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $Evidence "NodeVersion" ""))
+        MinimumNodeVersion = Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $Evidence "MinimumNodeVersion" ""))
+        NodeVersionSatisfied = if ($nodeVersionSatisfied -is [bool]) { [bool]$nodeVersionSatisfied } else { $null }
         NextVersion = Get-SafeRuntimeVersionText ([string](Get-ObjectPropertyValue $Evidence "NextVersion" ""))
         RuntimeRootName = Get-SafePathLeaf $runtimeRoot
         AppDirectoryExists = Get-ObjectPropertyValue $Evidence "AppDirectoryExists" $null
@@ -886,6 +910,8 @@ function Get-HealthLogSummary([string]$Path) {
 function Show-NextJsRuntimeLayout {
     $framework = Normalize-Name (Get-ConfigString $config "AppFramework" "node")
     $nodeVersion = Get-NodeRuntimeVersion (Get-ConfigString $config "NodeExe" "node")
+    $minimumNodeVersion = Get-ConfigString $config "NextjsMinimumNodeVersion" $DefaultNextJsMinimumNodeVersion
+    $nodeVersionSatisfied = $null
     $script:nextJsRuntimeEvidence = [pscustomobject]@{
         Applicable = $false
         Status = "not-applicable"
@@ -893,6 +919,8 @@ function Show-NextJsRuntimeLayout {
         Mode = ""
         RuntimeRoot = ""
         NodeVersion = $nodeVersion
+        MinimumNodeVersion = $minimumNodeVersion
+        NodeVersionSatisfied = $nodeVersionSatisfied
         NextVersion = ""
     }
     if ($framework -notin @("next", "nextjs", "next-js")) { return }
@@ -912,6 +940,23 @@ function Show-NextJsRuntimeLayout {
     $startPath = ""
     $runtimeRoot = $appDirectory
 
+    if ($null -eq (Get-SemverParts $minimumNodeVersion)) {
+        Add-Finding -Severity Critical -Message "NextjsMinimumNodeVersion must be a semantic version like 20.9.0."
+        $layoutFailed = $true
+    } elseif ([string]::IsNullOrWhiteSpace($nodeVersion)) {
+        Add-Finding -Severity Critical -Message "Next.js requires Node.js >= $minimumNodeVersion, but NodeExe did not return a version with --version."
+        $layoutFailed = $true
+    } else {
+        $nodeVersionSatisfied = Test-SemverAtLeast -Actual $nodeVersion -Minimum $minimumNodeVersion
+        if ($null -eq $nodeVersionSatisfied) {
+            Add-Finding -Severity Critical -Message "Next.js requires Node.js >= $minimumNodeVersion, but NodeExe returned an unrecognized version: $nodeVersion"
+            $layoutFailed = $true
+        } elseif (-not $nodeVersionSatisfied) {
+            Add-Finding -Severity Critical -Message "Next.js requires Node.js >= $minimumNodeVersion; configured NodeExe reports $nodeVersion."
+            $layoutFailed = $true
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($appDirectory)) {
         Add-Finding -Severity Critical -Message "Next.js config is missing AppDirectory."
         $layoutFailed = $true
@@ -921,6 +966,8 @@ function Show-NextJsRuntimeLayout {
             AppFramework = "nextjs"
             Mode = $mode
             NodeVersion = $nodeVersion
+            MinimumNodeVersion = $minimumNodeVersion
+            NodeVersionSatisfied = $nodeVersionSatisfied
             NextVersion = ""
             AppDirectoryExists = $false
             RuntimeRoot = ""
@@ -972,6 +1019,8 @@ function Show-NextJsRuntimeLayout {
         AppFramework = "nextjs"
         Mode = $mode
         NodeVersion = $nodeVersion
+        MinimumNodeVersion = $minimumNodeVersion
+        NodeVersionSatisfied = $nodeVersionSatisfied
         NextVersion = $nextVersion
         AppDirectoryExists = (Test-Path -LiteralPath $appDirectory -PathType Container)
         RuntimeRoot = $runtimeRoot

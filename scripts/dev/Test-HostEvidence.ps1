@@ -400,6 +400,8 @@ function Get-NextJsEvidence {
     AppFramework = $appFramework
     Mode = $mode
     NodeVersion = Get-StringValue -Object $nextJs -Names @("NodeVersion", "nodeVersion")
+    MinimumNodeVersion = Get-StringValue -Object $nextJs -Names @("MinimumNodeVersion", "minimumNodeVersion")
+    NodeVersionSatisfied = Get-BooleanValue -Object $nextJs -Names @("NodeVersionSatisfied", "nodeVersionSatisfied") -Default $null
     NextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
   }
 }
@@ -822,6 +824,8 @@ function New-SelfTestEvidence {
           AppFramework = "nextjs"
           Mode = "standalone"
           NodeVersion = "v20.11.1"
+          MinimumNodeVersion = "20.9.0"
+          NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
           RuntimeRootName = "example-next-app"
         }
@@ -947,6 +951,8 @@ function New-SelfTestEvidence {
           AppFramework = "nextjs"
           Mode = "standalone"
           NodeVersion = "v20.11.1"
+          MinimumNodeVersion = "20.9.0"
+          NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
           RuntimeRootName = "example-next-app"
         }
@@ -1012,6 +1018,8 @@ function New-SelfTestEvidence {
           appFramework = "nextjs"
           mode = "standalone"
           nodeVersion = "v20.11.1"
+          minimumNodeVersion = "20.9.0"
+          nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
@@ -1069,6 +1077,8 @@ function New-SelfTestEvidence {
           appFramework = "nextjs"
           mode = "standalone"
           nodeVersion = "v20.11.1"
+          minimumNodeVersion = "20.9.0"
+          nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
@@ -1123,6 +1133,8 @@ function New-SelfTestEvidence {
           appFramework = "nextjs"
           mode = "standalone"
           nodeVersion = "v20.11.1"
+          minimumNodeVersion = "20.9.0"
+          nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
@@ -1177,6 +1189,8 @@ function New-SelfTestEvidence {
           appFramework = "nextjs"
           mode = "standalone"
           nodeVersion = "v20.11.1"
+          minimumNodeVersion = "20.9.0"
+          nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
@@ -1231,6 +1245,8 @@ function New-SelfTestEvidence {
           appFramework = "nextjs"
           mode = "standalone"
           nodeVersion = "v20.11.1"
+          minimumNodeVersion = "20.9.0"
+          nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
           runtimeRootName = "example-next-app"
         }
@@ -1616,6 +1632,15 @@ function Test-EvidenceFile {
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NodeVersion)) {
       $Issues.Add("$($File.FullName) contains an unsafe Node.js runtime version value in Next.js evidence.") | Out-Null
     }
+    if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.MinimumNodeVersion)) {
+      $Issues.Add("$($File.FullName) contains an unsafe minimum Node.js version value in Next.js evidence.") | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($nextJsEvidence.MinimumNodeVersion)) {
+      $Issues.Add("$($File.FullName) does not prove the minimum Node.js version required for Next.js.") | Out-Null
+    }
+    if ($nextJsEvidence.NodeVersionSatisfied -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the configured Node.js runtime satisfies the Next.js minimum version requirement.") | Out-Null
+    }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
       $Issues.Add("$($File.FullName) contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
     }
@@ -1846,6 +1871,20 @@ if ($SelfTest) {
   $unsafeVersionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $unsafeVersionFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "unsafe Node.js runtime version" -Parameters @{
     EvidencePath = $unsafeVersionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $unsupportedNodeEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-node-version-minimum-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $unsupportedNodeEvidencePath
+  $unsupportedNodeFile = Join-Path $unsupportedNodeEvidencePath "ubuntu.json"
+  $unsupportedNodeEvidence = Get-Content -LiteralPath $unsupportedNodeFile -Raw | ConvertFrom-Json
+  $unsupportedNodeEvidence.nextJsRuntime.nodeVersion = "v18.20.0"
+  $unsupportedNodeEvidence.nextJsRuntime.nodeVersionSatisfied = $false
+  $unsupportedNodeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $unsupportedNodeFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "configured Node.js runtime satisfies the Next.js minimum version requirement" -Parameters @{
+    EvidencePath = $unsupportedNodeEvidencePath
     RequireNextJs = $true
     RequireReverseProxy = $true
     RequireDeploymentIdentity = $true

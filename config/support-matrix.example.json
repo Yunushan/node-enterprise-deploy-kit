@@ -21,7 +21,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-10"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows 10 or newer."
+      }
     },
     {
       "id": "windows-11",
@@ -33,7 +39,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-11"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows 10 or newer."
+      }
     },
     {
       "id": "windows-server-2012",
@@ -44,7 +56,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2012"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "experimental",
+        "productionRecommended": false,
+        "requirements": "Node.js 20.x lists Windows Server 2012 in the Windows 8.1/Server 2012 Experimental row; prefer Windows Server 2016 or newer for production Next.js support."
+      }
     },
     {
       "id": "windows-server-2012-r2",
@@ -55,7 +73,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2012-r2"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "experimental",
+        "productionRecommended": false,
+        "requirements": "Node.js 20.x lists Windows Server 2012 R2 in the Windows 8.1/Server 2012 Experimental row; prefer Windows Server 2016 or newer for production Next.js support."
+      }
     },
     {
       "id": "windows-server-2016",
@@ -66,7 +90,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2016"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+      }
     },
     {
       "id": "windows-server-2019",
@@ -77,7 +107,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2019"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+      }
     },
     {
       "id": "windows-server-2022",
@@ -88,7 +124,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2022"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+      }
     },
     {
       "id": "windows-server-2025",
@@ -99,7 +141,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["windows-checks"],
       "evidenceTargets": ["windows-server-2025"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+      }
     },
     {
       "id": "ubuntu",
@@ -111,7 +159,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["ubuntu", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Ubuntu 20.04 or newer."
+      }
     },
     {
       "id": "debian",
@@ -123,7 +177,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["debian", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Debian 10 or newer."
+      }
     },
     {
       "id": "linux-mint",
@@ -135,7 +195,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["linux-mint", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a Linux Mint release based on Ubuntu 20.04 or newer."
+      }
     },
     {
       "id": "rhel",
@@ -147,7 +213,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["rhel", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as RHEL 8 or newer."
+      }
     },
     {
       "id": "oracle-linux",
@@ -159,7 +231,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["oracle-linux", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Oracle Linux 8 or newer."
+      }
     },
     {
       "id": "centos",
@@ -171,7 +249,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["centos", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; legacy CentOS 7-era hosts are outside the production Next.js runtime floor."
+      }
     },
     {
       "id": "centos-stream",
@@ -183,7 +267,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["centos-stream", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as CentOS Stream 8 or newer."
+      }
     },
     {
       "id": "rocky",
@@ -195,7 +285,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["rocky", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Rocky Linux 8 or newer."
+      }
     },
     {
       "id": "almalinux",
@@ -207,7 +303,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["almalinux", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as AlmaLinux 8 or newer."
+      }
     },
     {
       "id": "fedora",
@@ -219,7 +321,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["fedora", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a currently maintained Fedora release."
+      }
     },
     {
       "id": "alpine",
@@ -231,7 +339,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["alpine", "linux"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "experimental",
+        "productionRecommended": false,
+        "requirements": "Node.js 20.x lists GNU/Linux musl targets such as Alpine as Experimental; require explicit real-host evidence for the installed Node runtime."
+      }
     },
     {
       "id": "macos",
@@ -243,7 +357,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["macos-checks", "linux-family-static-checks"],
       "evidenceTargets": ["macos"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "tier-1",
+        "productionRecommended": true,
+        "requirements": "Node.js 20.x Tier 1: macOS x64 >= 10.15 or macOS arm64 >= 11."
+      }
     },
     {
       "id": "freebsd",
@@ -255,7 +375,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["freebsd", "bsd"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "experimental",
+        "productionRecommended": false,
+        "requirements": "Node.js 20.x lists FreeBSD x64 >= 12.4 as Experimental; require explicit local real-host evidence for the installed Node runtime."
+      }
     },
     {
       "id": "openbsd",
@@ -267,7 +393,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["openbsd", "bsd"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "community-package",
+        "productionRecommended": false,
+        "requirements": "OpenBSD is not an official Node.js 20 release-platform row; require the OS package or a locally maintained Node runtime plus explicit local real-host evidence."
+      }
     },
     {
       "id": "netbsd",
@@ -279,7 +411,13 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["netbsd", "bsd"],
-      "minimumClaimLevel": "real-host-verified"
+      "minimumClaimLevel": "real-host-verified",
+      "nodeRuntimeSupport": {
+        "minimumNodeVersion": "20.9.0",
+        "supportTier": "community-package",
+        "productionRecommended": false,
+        "requirements": "NetBSD is not an official Node.js 20 release-platform row; require the OS package or a locally maintained Node runtime plus explicit local real-host evidence."
+      }
     }
   ]
 }

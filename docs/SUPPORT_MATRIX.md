@@ -19,10 +19,10 @@ It is validated by:
 .\scripts\dev\Test-SupportMatrix.ps1
 ```
 
-The matrix validator checks target IDs, required Next.js modes, CI/static
-verification references, platform-family mappings, evidence target names, and
-the concrete installer/template artifacts for each declared service manager,
-fallback manager, and reverse proxy.
+The matrix validator checks target IDs, required Next.js modes, Node.js runtime
+support metadata, CI/static verification references, platform-family mappings,
+evidence target names, and the concrete installer/template artifacts for each
+declared service manager, fallback manager, and reverse proxy.
 It also verifies that every declared CI/static verification job exists in
 `.github/workflows/ci.yml` and still contains the expected verifier command
 fragments, so the matrix cannot point at a job that no longer runs the relevant
@@ -48,7 +48,9 @@ To generate a release-specific evidence checklist from the matrix:
 
 The generated plan separates strict real-host evidence, service-only
 `ReverseProxy=none` evidence, and fallback-manager evidence so release claims
-can stay precise.
+can stay precise. It also carries each target's Node runtime support tier so
+collection plans make experimental and community-package targets visible before
+evidence collection starts.
 
 After downloading `host-evidence` workflow artifacts into a local folder,
 validate and import them into the canonical evidence tree. `ArtifactPath` can
@@ -102,9 +104,9 @@ After evidence is collected and validated, create a private evidence bundle:
 ```
 
 The bundle manifest records each evidence file's SHA256, support dimensions,
-live status collector provenance including collector SHA256 digest, and explicit
-non-synthetic/non-mock/non-sample markers so later release reviews can prove
-exactly which files supported the claim.
+Node runtime support tier, live status collector provenance including collector
+SHA256 digest, and explicit non-synthetic/non-mock/non-sample markers so later
+release reviews can prove exactly which files supported the claim.
 
 Verify a saved bundle with:
 
@@ -145,8 +147,9 @@ Markdown report for release review:
 ```
 
 Missing rows in Markdown, JSON, and CSV output include the expected evidence
-file plus the local collector command and, where supported, the exact manual
-`gh workflow run host-evidence.yml` command to collect that evidence.
+file, Node runtime support tier, local collector command, and, where supported,
+the exact manual `gh workflow run host-evidence.yml` command to collect that
+evidence.
 
 The full repository verifier runs the matrix check automatically:
 
@@ -247,17 +250,48 @@ still real-host evidence rows, but the bundle manifest must mark them
 collection for workflow-capable rows and accepts local-command-only rows only
 with the same live/runtime/collector/uptime evidence checks.
 
+## Node Runtime Support Tiers
+
+Current Next.js releases require Node.js `20.9.0` or newer, so every matrix row
+also declares `nodeRuntimeSupport`. This is separate from service/reverse-proxy
+support: a row can have scripts and real-host evidence while still being a
+legacy or community runtime target.
+
+The support tiers are:
+
+- `tier-1`: production-recommended when the host meets the listed Node.js
+  platform floor.
+- `experimental`: Node.js lists the platform family as Experimental for the
+  Node major required by current Next.js.
+- `community-package`: the target depends on an OS package or locally
+  maintained Node runtime rather than an official Node.js release-platform row.
+
+Windows Server 2012 / 2012 R2, Alpine/musl, and FreeBSD are intentionally
+marked `experimental`. OpenBSD and NetBSD are intentionally marked
+`community-package`. These rows still require real-host evidence when claimed,
+but the example matrix does not mark them production-recommended. Prefer
+Windows Server 2016 or newer, GNU/Linux hosts that meet the kernel/glibc floor,
+or supported macOS versions for production Next.js support.
+
+Use `Test-ReleaseSupportReadiness.ps1 -ProductionRecommendedOnly` when the
+release decision should cover only production-recommended runtime rows. Use
+`-RequireProductionRecommendedRuntime` when the evidence bundle itself must not
+contain experimental or community-package runtime rows.
+When `New-SupportEvidenceBundle.ps1` runs with target, category, or production
+filters, only matching evidence files are copied into the archived bundle.
+
 ## Current Target Families
 
-| Target group | Matrix IDs | Service manager | Reverse proxy options |
-|---|---|---|---|
-| Windows clients | `windows-10`, `windows-11` | WinSW, NSSM; PM2 fallback outside strict real-host service claims | IIS or none |
-| Windows Server | `windows-server-2012`, `windows-server-2012-r2`, `windows-server-2016`, `windows-server-2019`, `windows-server-2022`, `windows-server-2025` | WinSW, NSSM | IIS or none |
-| Debian family | `ubuntu`, `debian`, `linux-mint` | systemd or System V | Nginx, Apache, HAProxy, Traefik, or none |
-| RHEL family | `rhel`, `oracle-linux`, `centos`, `centos-stream`, `rocky`, `almalinux`, `fedora` | systemd or System V where applicable | Nginx, Apache, HAProxy, Traefik, or none |
-| Alpine | `alpine` | OpenRC | Nginx, Apache, HAProxy, Traefik, or none |
-| macOS | `macos` | launchd | Nginx, Apache, HAProxy, Traefik, or none |
-| BSD | `freebsd`, `openbsd`, `netbsd` | bsdrc | Nginx, Apache, HAProxy, Traefik, or none |
+| Target group | Matrix IDs | Service manager | Reverse proxy options | Node.js runtime support |
+|---|---|---|---|---|
+| Windows clients | `windows-10`, `windows-11` | WinSW, NSSM; PM2 fallback outside strict real-host service claims | IIS or none | Tier 1 for Node.js 20.x |
+| Windows Server | `windows-server-2016`, `windows-server-2019`, `windows-server-2022`, `windows-server-2025` | WinSW, NSSM | IIS or none | Tier 1 for Node.js 20.x |
+| Legacy Windows Server | `windows-server-2012`, `windows-server-2012-r2` | WinSW, NSSM | IIS or none | Experimental for Node.js 20.x; not production-recommended |
+| Debian family | `ubuntu`, `debian`, `linux-mint` | systemd or System V | Nginx, Apache, HAProxy, Traefik, or none | Tier 1 when kernel/glibc floors are met |
+| RHEL family | `rhel`, `oracle-linux`, `centos`, `centos-stream`, `rocky`, `almalinux`, `fedora` | systemd or System V where applicable | Nginx, Apache, HAProxy, Traefik, or none | Tier 1 when kernel/glibc floors are met |
+| Alpine | `alpine` | OpenRC | Nginx, Apache, HAProxy, Traefik, or none | Experimental musl runtime; not production-recommended |
+| macOS | `macos` | launchd | Nginx, Apache, HAProxy, Traefik, or none | Tier 1 when macOS architecture/version floor is met |
+| BSD | `freebsd`, `openbsd`, `netbsd` | bsdrc | Nginx, Apache, HAProxy, Traefik, or none | FreeBSD experimental; OpenBSD/NetBSD community-package |
 
 ## Real Evidence Gate
 

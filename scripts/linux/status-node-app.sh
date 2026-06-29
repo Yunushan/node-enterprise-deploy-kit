@@ -114,6 +114,9 @@ SERVICE_ENABLED_STATUS="unknown"
 NEXTJS_LAYOUT_APPLICABLE="false"
 NEXTJS_LAYOUT_STATUS="not-applicable"
 NEXTJS_RUNTIME_ROOT=""
+DEFAULT_NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
+NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE="${NEXTJS_MINIMUM_NODE_VERSION:-$DEFAULT_NEXTJS_MINIMUM_NODE_VERSION}"
+NEXTJS_NODE_VERSION_SATISFIED="false"
 REVERSE_PROXY_APPLICABLE="false"
 REVERSE_PROXY_STATUS="not-applicable"
 REVERSE_PROXY_PROBE_URL=""
@@ -1414,6 +1417,12 @@ write_json_output() {
     printf '    "appFramework": "%s",\n' "$(json_escape "$APP_FRAMEWORK_NORMALIZED")"
     printf '    "mode": "%s",\n' "$(json_escape "$NEXTJS_DEPLOYMENT_MODE_NORMALIZED")"
     printf '    "nodeVersion": "%s",\n' "$(json_escape "$NODE_RUNTIME_VERSION")"
+    printf '    "minimumNodeVersion": "%s",\n' "$(json_escape "$NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE")"
+    if [[ "$NEXTJS_NODE_VERSION_SATISFIED" == "true" || "$NEXTJS_NODE_VERSION_SATISFIED" == "false" ]]; then
+      printf '    "nodeVersionSatisfied": %s,\n' "$NEXTJS_NODE_VERSION_SATISFIED"
+    else
+      printf '    "nodeVersionSatisfied": null,\n'
+    fi
     printf '    "nextVersion": "%s",\n' "$(json_escape "$NEXT_PACKAGE_VERSION")"
     printf '    "runtimeRootName": "%s"\n' "$(json_escape "$(safe_path_name "${NEXTJS_RUNTIME_ROOT:-${APP_DIR:-}}")")"
     printf '  },\n'
@@ -1486,7 +1495,7 @@ write_json_output() {
 }
 
 run_nextjs_layout_check() {
-  local output exit_code runtime_root
+  local output exit_code runtime_root minimum_node_version node_version_satisfied
   NODE_RUNTIME_VERSION="$(node_runtime_version)"
   NEXT_PACKAGE_VERSION="$(next_package_version)"
   case "$APP_FRAMEWORK_NORMALIZED" in
@@ -1508,11 +1517,19 @@ run_nextjs_layout_check() {
   set -e
   printf '%s\n' "$output"
   runtime_root="$(printf '%s\n' "$output" | awk -v key="RuntimeRoot" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
+  minimum_node_version="$(printf '%s\n' "$output" | awk -v key="MinimumNodeVersion" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
+  node_version_satisfied="$(printf '%s\n' "$output" | awk -v key="NodeVersionSatisfied" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   if [[ -n "$runtime_root" ]]; then
     NEXTJS_RUNTIME_ROOT="$runtime_root"
   else
     NEXTJS_RUNTIME_ROOT="${APP_DIR:-}"
   fi
+  if [[ -n "$minimum_node_version" ]]; then
+    NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE="$minimum_node_version"
+  fi
+  case "$node_version_satisfied" in
+    true|false) NEXTJS_NODE_VERSION_SATISFIED="$node_version_satisfied" ;;
+  esac
   if [[ "$exit_code" -ne 0 ]]; then
     NEXTJS_LAYOUT_STATUS="failed"
     add_critical "Next.js runtime layout check failed."

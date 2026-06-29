@@ -536,6 +536,8 @@ function New-SelfTestEvidence {
       AppFramework = "nextjs"
       Mode = "standalone"
       NodeVersion = "v20.11.1"
+      MinimumNodeVersion = "20.9.0"
+      NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
       RuntimeRootName = "example-next-app"
     }

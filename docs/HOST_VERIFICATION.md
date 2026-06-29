@@ -242,9 +242,10 @@ Create a private evidence bundle for the release record after validation:
 The bundle contains the safe evidence JSON files plus
 `support-evidence-manifest.json`, which records SHA256, size, target ID,
 Next.js mode, service manager, reverse proxy, deployment ID, build ID, and
-package SHA256 for each evidence file. It also records safe Node.js runtime and
-Next.js package version strings when available, the status collector, collector
-version, collector SHA256 digest, live-host flag, and explicit
+package SHA256 for each evidence file. It also records the matrix Node runtime
+support tier, safe Node.js runtime and Next.js package version strings when
+available, the status collector, collector version, collector SHA256 digest,
+live-host flag, and explicit
 synthetic/mock/sample flags so archived evidence cannot silently lose
 provenance. The manifest also records the support
 matrix SHA256 and safe source-control provenance, including
@@ -292,10 +293,18 @@ commit, a non-CI bundle path, evidence files without CI/workflow collection
 provenance for workflow-capable rows, evidence collected from a different
 source commit, evidence collected outside the controlled `host-evidence`
 workflow dispatch where that workflow route is supported, or evidence without
-safe Node.js and Next.js version strings, collector SHA256 digests, or the
-required minimum uptime proof are rejected;
+safe Node.js, minimum Node.js, compatible Node.js, and Next.js version strings,
+collector SHA256 digests, or the required minimum uptime proof are rejected;
 omit it only for explicitly provisional evidence reviews. The example support
 matrix sets `requiredMinimumUptimeHours` to 72 hours.
+
+For a production-runtime-only support decision, add
+`-ProductionRecommendedOnly` to scope readiness coverage and support-claim
+checks to matrix rows whose Node runtime is production-recommended. Add
+`-RequireProductionRecommendedRuntime` when the bundle itself must not contain
+experimental or community-package runtime rows.
+When bundle creation is run with target, category, or production filters, only
+matching evidence files are archived in the bundle.
 
 For release signoff, prefer the support-claim gate because it derives the
 required evidence aliases from the support matrix:
@@ -359,7 +368,9 @@ Evidence is acceptable when:
   Unix-like hosts, the managed cron entry must exist and cron daemon activity
   must be detected.
 - For Next.js support claims, `-RequireNextJs` proves `AppFramework=nextjs`, a
-  valid deployment mode, and a successful runtime layout check.
+  valid deployment mode, safe Node.js and Next.js runtime versions, a Node.js
+  runtime that satisfies the configured minimum, and a successful runtime
+  layout check.
 - For reverse-proxy deployments, `-RequireReverseProxy` proves the proxy health
   route returned a successful HTTP status.
 - For Windows IIS reverse-proxy deployments, `-RequireReverseProxy` also proves

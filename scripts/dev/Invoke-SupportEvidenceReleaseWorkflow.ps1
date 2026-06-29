@@ -2,11 +2,15 @@ param(
   [string]$ArtifactPath = "",
   [string]$EvidencePath = ".\evidence",
   [string]$MatrixPath = "",
+  [string[]]$TargetId = @(),
+  [string[]]$Category = @(),
   [string]$OutputDirectory = ".tmp/support-evidence-release",
   [string]$BundleName = "support-evidence",
   [int]$MaxEvidenceAgeDays = 30,
   [switch]$IncludeServiceOnly,
   [switch]$IncludeFallback,
+  [switch]$ProductionRecommendedOnly,
+  [switch]$RequireProductionRecommendedRuntime,
   [switch]$AllowWarnings,
   [switch]$AllowLocalCollection,
   [switch]$Force,
@@ -80,6 +84,9 @@ function Get-CoverageReport {
     Format = "Json"
     OutputPath = $JsonPath
   }
+  if ($TargetId.Count -gt 0) { $coverageArgs.TargetId = [string[]]$TargetId }
+  if ($Category.Count -gt 0) { $coverageArgs.Category = [string[]]$Category }
+  if ($ProductionRecommendedOnly) { $coverageArgs.ProductionRecommendedOnly = $true }
   Add-CommonCoverageSwitches -Arguments $coverageArgs
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") @coverageArgs | Out-Null
 
@@ -187,6 +194,9 @@ Invoke-Step "Support evidence bundle" {
     RequireDeclaredReverseProxies = $true
     RequireCoverageComplete = $true
   }
+  if ($TargetId.Count -gt 0) { $bundleArgs.TargetId = [string[]]$TargetId }
+  if ($Category.Count -gt 0) { $bundleArgs.Category = [string[]]$Category }
+  if ($ProductionRecommendedOnly) { $bundleArgs.ProductionRecommendedOnly = $true }
   if ($IncludeServiceOnly) { $bundleArgs.IncludeServiceOnly = $true }
   if ($IncludeFallback) { $bundleArgs.IncludeFallback = $true }
   if ($AllowWarnings) { $bundleArgs.AllowWarnings = $true }
@@ -211,6 +221,10 @@ Invoke-Step "Release support readiness" {
     Format = "Json"
     OutputPath = $readinessJson
   }
+  if ($TargetId.Count -gt 0) { $readinessArgs.TargetId = [string[]]$TargetId }
+  if ($Category.Count -gt 0) { $readinessArgs.Category = [string[]]$Category }
+  if ($ProductionRecommendedOnly) { $readinessArgs.ProductionRecommendedOnly = $true }
+  if ($RequireProductionRecommendedRuntime) { $readinessArgs.RequireProductionRecommendedRuntime = $true }
   if ($IncludeServiceOnly) { $readinessArgs.IncludeServiceOnly = $true }
   if ($IncludeFallback) { $readinessArgs.IncludeFallback = $true }
   if ($AllowWarnings) { $readinessArgs.AllowWarnings = $true }
@@ -230,6 +244,10 @@ $result = [pscustomobject]@{
   expectedCoverage = [int]$coverage.summary.expectedCount
   coveredEvidence = [int]$coverage.summary.coveredCount
   missingEvidence = [int]$coverage.summary.missingCount
+  targetId = @($TargetId)
+  category = @($Category)
+  productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+  requireProductionRecommendedRuntime = [bool]$RequireProductionRecommendedRuntime
   strictCiRelease = [bool]$StrictCiRelease
 }
 

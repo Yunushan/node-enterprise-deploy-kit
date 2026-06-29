@@ -130,6 +130,7 @@ function Test-WindowsExampleConfig {
     "NextjsRequirePublicDirectory",
     "NextjsRequireServerActionsEncryptionKey",
     "NextjsRequireDeploymentId",
+    "NextjsMinimumNodeVersion",
     "ServiceManager",
     "ReverseProxy",
     "AutoDownloadWinSW",
@@ -184,6 +185,9 @@ function Test-WindowsExampleConfig {
   }
   if ([string]$config.NextjsDeploymentMode -notin @("standalone", "next-start")) {
     throw "Windows NextjsDeploymentMode must be standalone or next-start."
+  }
+  if ([string]$config.NextjsMinimumNodeVersion -notmatch '^\d+\.\d+\.\d+') {
+    throw "Windows NextjsMinimumNodeVersion must be a semantic version like 20.9.0."
   }
   if ([string]::IsNullOrWhiteSpace([string]$config.ReactDocumentRoot) -or [string]$config.ReactDocumentRoot -match '(^|[\\/])\.\.($|[\\/])' -or [System.IO.Path]::IsPathRooted([string]$config.ReactDocumentRoot)) {
     throw "Windows ReactDocumentRoot must be a safe relative directory path."
@@ -261,6 +265,7 @@ function Test-LinuxExampleConfig {
     "NEXTJS_REQUIRE_PUBLIC_DIR",
     "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY",
     "NEXTJS_REQUIRE_DEPLOYMENT_ID",
+    "NEXTJS_MINIMUM_NODE_VERSION",
     "APP_RUNTIME",
     "SERVICE_MANAGER",
     "REVERSE_PROXY",
@@ -304,6 +309,9 @@ function Test-LinuxExampleConfig {
   }
   if ($env.NEXTJS_DEPLOYMENT_MODE -notin @("standalone", "next-start")) {
     throw "Linux NEXTJS_DEPLOYMENT_MODE must be standalone or next-start."
+  }
+  if ($env.NEXTJS_MINIMUM_NODE_VERSION -notmatch '^\d+\.\d+\.\d+') {
+    throw "Linux NEXTJS_MINIMUM_NODE_VERSION must be a semantic version like 20.9.0."
   }
   if ([string]::IsNullOrWhiteSpace($env.REACT_DOCUMENT_ROOT) -or $env.REACT_DOCUMENT_ROOT -match '(^|[\\/])\.\.($|[\\/])' -or [System.IO.Path]::IsPathRooted($env.REACT_DOCUMENT_ROOT)) {
     throw "Linux REACT_DOCUMENT_ROOT must be a safe relative directory path."
@@ -367,6 +375,7 @@ function Test-AnsibleDefaults {
     "node_deploy_nextjs_require_public_directory",
     "node_deploy_nextjs_require_server_actions_encryption_key",
     "node_deploy_nextjs_require_deployment_id",
+    "node_deploy_nextjs_minimum_node_version",
     "node_deploy_app_runtime",
     "node_deploy_package_path_windows",
     "node_deploy_package_path_linux",

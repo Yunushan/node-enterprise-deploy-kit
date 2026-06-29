@@ -30,6 +30,8 @@ done
 PLATFORM_FAMILY="$(detect_platform_family)"
 APP_RUNTIME_NORMALIZED="$(normalize_name "${APP_RUNTIME:-node}")"
 APP_FRAMEWORK_NORMALIZED="$(normalize_name "${APP_FRAMEWORK:-node}")"
+DEFAULT_NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
+NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE="${NEXTJS_MINIMUM_NODE_VERSION:-$DEFAULT_NEXTJS_MINIMUM_NODE_VERSION}"
 
 errors=()
 warnings=()
@@ -163,6 +165,36 @@ next_start_hostname_argument() {
     esac
   done
 }
+node_runtime_version() {
+  local node_bin="${NODE_BIN:-node}" output
+  output="$("$node_bin" --version 2>/dev/null | head -n 1 || true)"
+  printf '%s\n' "$output"
+}
+validate_nextjs_node_version() {
+  local minimum="$NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE" node_version rc
+  if ! semver_components "$minimum" >/dev/null; then
+    add_error "NEXTJS_MINIMUM_NODE_VERSION must be a semantic version like 20.9.0."
+    return 0
+  fi
+  if [[ -z "${NODE_BIN:-}" ]]; then
+    add_error "APP_FRAMEWORK=nextjs requires NODE_BIN so preflight can verify the Node.js version."
+    return 0
+  fi
+  node_version="$(node_runtime_version)"
+  if [[ -z "$node_version" ]]; then
+    add_error "Next.js requires Node.js >= $minimum, but NODE_BIN did not return a version with --version: ${NODE_BIN:-node}"
+    return 0
+  fi
+  if semver_at_least "$node_version" "$minimum"; then
+    return 0
+  fi
+  rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    add_error "Next.js requires Node.js >= $minimum, but NODE_BIN returned an unrecognized version: $node_version"
+  else
+    add_error "Next.js requires Node.js >= $minimum; configured NODE_BIN reports $node_version."
+  fi
+}
 validate_nextjs_layout() {
   case "$APP_FRAMEWORK_NORMALIZED" in
     next|nextjs|next-js) ;;
@@ -173,6 +205,7 @@ validate_nextjs_layout() {
     add_error "APP_FRAMEWORK=nextjs requires APP_RUNTIME=node."
     return 0
   fi
+  validate_nextjs_node_version
   if is_true "${NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY:-false}"; then
     if [[ -z "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:-}" ]]; then
       add_error "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY=true, but NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is missing. Put the value in target-local private config, not committed example config."

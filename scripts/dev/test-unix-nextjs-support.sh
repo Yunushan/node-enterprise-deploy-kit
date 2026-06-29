@@ -50,9 +50,17 @@ new_next_project_layout() {
 
 write_env() {
   local path="$1" root="$2" port="$3" mode="${4:-standalone}" start_script="${5:-server.js}" service_manager="${6:-launchd}" node_arguments="${7:-}"
+  local node_bin="$root/fake-node"
   if [[ "$mode" == "next-start" && -z "$node_arguments" ]]; then
     node_arguments="start -H 127.0.0.1"
   fi
+  write_file "$node_bin" '#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  echo "v20.11.1"
+  exit 0
+fi
+exit 0'
+  chmod 0755 "$node_bin"
   cat > "$path" <<EOF
 APP_NAME="example-next-smoke"
 APP_DISPLAY_NAME="Example Next Smoke"
@@ -61,9 +69,10 @@ APP_FRAMEWORK="nextjs"
 NEXTJS_DEPLOYMENT_MODE="$mode"
 NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 DEPLOYMENT_ID="example-deploy-001"
 APP_DIR="$root/app"
-NODE_BIN="/bin/sh"
+NODE_BIN="$node_bin"
 START_SCRIPT="$start_script"
 NODE_ARGUMENTS="$node_arguments"
 APP_PORT="$port"
@@ -696,6 +705,9 @@ assert_contains "$STATUS_JSON" '"applicable": true'
 assert_contains "$STATUS_JSON" '"status": "ok"'
 assert_contains "$STATUS_JSON" '"appFramework": "nextjs"'
 assert_contains "$STATUS_JSON" '"mode": "standalone"'
+assert_contains "$STATUS_JSON" '"nodeVersion": "v20.11.1"'
+assert_contains "$STATUS_JSON" '"minimumNodeVersion": "20.9.0"'
+assert_contains "$STATUS_JSON" '"nodeVersionSatisfied": true'
 assert_contains "$STATUS_JSON" '"configFileName": "app.env"'
 assert_contains "$STATUS_JSON" '"runtimeRootName": "app"'
 assert_contains "$STATUS_JSON" '"deploymentIdentity": {'

@@ -546,6 +546,8 @@ function New-ClaimSelfTestEvidence {
               AppFramework = "nextjs"
               Mode = $mode
               NodeVersion = "v20.11.1"
+              MinimumNodeVersion = "20.9.0"
+              NodeVersionSatisfied = $true
               NextVersion = "14.2.3"
               RuntimeRootName = "example-next-app"
             }
@@ -641,6 +643,8 @@ function New-ClaimSelfTestEvidence {
               appFramework = "nextjs"
               mode = $mode
               nodeVersion = "v20.11.1"
+              minimumNodeVersion = "20.9.0"
+              nodeVersionSatisfied = $true
               nextVersion = "14.2.3"
               runtimeRootName = "example-next-app"
             }

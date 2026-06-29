@@ -179,6 +179,7 @@ foreach ($duplicateId in $duplicateIds) {
 
 $allowedCategories = @("windows-client", "windows-server", "linux", "macos", "bsd")
 $allowedClaimLevels = @("template-ready", "ci-static-verified", "real-host-verified")
+$allowedNodeRuntimeSupportTiers = @("tier-1", "tier-2", "experimental", "community-package")
 $allowedWindowsManagers = @("winsw", "nssm", "pm2")
 $allowedUnixManagers = @("systemd", "systemv", "openrc", "launchd", "bsdrc")
 $allowedWindowsProxies = @("iis", "none")
@@ -231,6 +232,52 @@ foreach ($target in $targets) {
   }
   if ($allowedClaimLevels -notcontains [string]$target.minimumClaimLevel) {
     Add-Issue $issues "$id has unsupported minimumClaimLevel: $($target.minimumClaimLevel)."
+  }
+
+  $nodeRuntimeSupport = Get-OptionalPropertyValue -Object $target -Name "nodeRuntimeSupport"
+  if ($null -eq $nodeRuntimeSupport) {
+    Add-Issue $issues "$id is missing nodeRuntimeSupport metadata."
+  } else {
+    $minimumNodeVersion = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "minimumNodeVersion")
+    $supportTier = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "supportTier")
+    $productionRecommendedProperty = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
+    $requirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
+
+    if ($minimumNodeVersion -ne "20.9.0") {
+      Add-Issue $issues "$id nodeRuntimeSupport.minimumNodeVersion must be 20.9.0 for current Next.js support."
+    }
+    if ($allowedNodeRuntimeSupportTiers -notcontains $supportTier) {
+      Add-Issue $issues "$id has unsupported nodeRuntimeSupport.supportTier: $supportTier."
+    }
+    if ($null -eq $productionRecommendedProperty -or $productionRecommendedProperty.Value -isnot [bool]) {
+      Add-Issue $issues "$id nodeRuntimeSupport.productionRecommended must be a boolean."
+    }
+    if ([string]::IsNullOrWhiteSpace($requirements)) {
+      Add-Issue $issues "$id nodeRuntimeSupport.requirements must describe the Node.js runtime platform floor."
+    }
+
+    $productionRecommended = if ($productionRecommendedProperty -and $productionRecommendedProperty.Value -is [bool]) { [bool]$productionRecommendedProperty.Value } else { $null }
+    if ($id -in @("windows-server-2012", "windows-server-2012-r2")) {
+      if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x only lists Windows Server 2012-family hosts in an Experimental row."
+      }
+    } elseif ($id -eq "alpine") {
+      if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x musl targets are Experimental."
+      }
+    } elseif ($id -eq "freebsd") {
+      if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x FreeBSD support is Experimental."
+      }
+    } elseif ($id -in @("openbsd", "netbsd")) {
+      if ($supportTier -ne "community-package" -or $productionRecommended -ne $false) {
+        Add-Issue $issues "$id must be marked as community-package and not productionRecommended because it is not an official Node.js 20.x release-platform row."
+      }
+    } elseif ([string]$target.category -in @("windows-client", "windows-server", "linux", "macos")) {
+      if ($supportTier -ne "tier-1" -or $productionRecommended -ne $true) {
+        Add-Issue $issues "$id must be marked as tier-1 and productionRecommended, or be explicitly handled as an exception."
+      }
+    }
   }
 
   $targetModes = @(Get-ArrayValue $target.nextjsModes)

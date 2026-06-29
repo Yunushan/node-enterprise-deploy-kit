@@ -10,6 +10,7 @@
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
+  "NextjsMinimumNodeVersion": "20.9.0",
   "ServiceManager": "winsw",
   "ReverseProxy": "iis",
   "AutoDownloadWinSW": true,

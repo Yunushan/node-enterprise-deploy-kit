@@ -21,6 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DefaultWinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+$DefaultNextJsMinimumNodeVersion = "20.9.0"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -210,6 +211,53 @@ function Test-ValidSha256([string]$Hash) {
     if ([string]::IsNullOrWhiteSpace($Hash)) { return $true }
     return $Hash -match '^[A-Fa-f0-9]{64}$'
 }
+function Get-SemverParts([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $match = [regex]::Match($Value.Trim(), '^v?(\d+)\.(\d+)\.(\d+)')
+    if (-not $match.Success) { return $null }
+    return [pscustomobject]@{
+        Major = [int]$match.Groups[1].Value
+        Minor = [int]$match.Groups[2].Value
+        Patch = [int]$match.Groups[3].Value
+    }
+}
+function Test-SemverAtLeast([string]$Actual, [string]$Minimum) {
+    $actualParts = Get-SemverParts $Actual
+    $minimumParts = Get-SemverParts $Minimum
+    if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+    if ($actualParts.Major -ne $minimumParts.Major) { return $actualParts.Major -gt $minimumParts.Major }
+    if ($actualParts.Minor -ne $minimumParts.Minor) { return $actualParts.Minor -gt $minimumParts.Minor }
+    return $actualParts.Patch -ge $minimumParts.Patch
+}
+function Get-NodeRuntimeVersion([string]$NodeExe) {
+    $candidate = if ([string]::IsNullOrWhiteSpace($NodeExe)) { "node" } else { $NodeExe }
+    try {
+        $output = & $candidate --version 2>$null
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return ([string](@($output)[0])).Trim()
+    } catch {
+        return ""
+    }
+}
+function Test-NextJsNodeVersion($Config) {
+    $minimum = Get-ConfigString $Config "NextjsMinimumNodeVersion" $DefaultNextJsMinimumNodeVersion
+    if ($null -eq (Get-SemverParts $minimum)) {
+        Add-Error "NextjsMinimumNodeVersion must be a semantic version like 20.9.0."
+        return
+    }
+    $nodeExe = Get-ConfigString $Config "NodeExe" "node"
+    $nodeVersion = Get-NodeRuntimeVersion $nodeExe
+    if ([string]::IsNullOrWhiteSpace($nodeVersion)) {
+        Add-Error "Next.js requires Node.js >= $minimum, but NodeExe did not return a version with --version: $nodeExe"
+        return
+    }
+    $satisfied = Test-SemverAtLeast -Actual $nodeVersion -Minimum $minimum
+    if ($null -eq $satisfied) {
+        Add-Error "Next.js requires Node.js >= $minimum, but NodeExe returned an unrecognized version: $nodeVersion"
+    } elseif (-not $satisfied) {
+        Add-Error "Next.js requires Node.js >= $minimum; configured NodeExe reports $nodeVersion."
+    }
+}
 function Test-HttpsUri([string]$Url) {
     if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
     try {
@@ -278,6 +326,7 @@ function Get-HostnameArgumentValue([string[]]$Tokens) {
 function Test-NextJsDeploymentLayout($Config) {
     $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
     if ($framework -notin @("next", "nextjs", "next-js")) { return }
+    Test-NextJsNodeVersion $Config
 
     $requireServerActionsKey = $false
     $requireDeploymentId = $false

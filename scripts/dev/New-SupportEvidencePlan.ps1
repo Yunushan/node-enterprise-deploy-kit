@@ -208,6 +208,12 @@ function New-PlanEntry {
   $reverseProxyValue = Normalize-Token $ReverseProxy
   $evidenceFile = Get-EvidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -Kind $Kind
   $category = [string]$Target.category
+  $nodeRuntimeSupport = Get-OptionalPropertyValue -Object $Target -Name "nodeRuntimeSupport"
+  $nodeRuntimeMinimumNodeVersion = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "minimumNodeVersion")
+  $nodeRuntimeSupportTier = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "supportTier")
+  $nodeRuntimeProductionRecommendedProperty = if ($nodeRuntimeSupport) { $nodeRuntimeSupport.PSObject.Properties["productionRecommended"] } else { $null }
+  $nodeRuntimeProductionRecommended = if ($nodeRuntimeProductionRecommendedProperty -and $nodeRuntimeProductionRecommendedProperty.Value -is [bool]) { [bool]$nodeRuntimeProductionRecommendedProperty.Value } else { $null }
+  $nodeRuntimeRequirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
   $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $category
   $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
@@ -239,6 +245,10 @@ function New-PlanEntry {
     nextJsMode = $modeValue
     serviceManager = $serviceManagerValue
     reverseProxy = $reverseProxyValue
+    nodeRuntimeMinimumNodeVersion = $nodeRuntimeMinimumNodeVersion
+    nodeRuntimeSupportTier = $nodeRuntimeSupportTier
+    nodeRuntimeProductionRecommended = $nodeRuntimeProductionRecommended
+    nodeRuntimeRequirements = $nodeRuntimeRequirements
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
@@ -290,17 +300,19 @@ function ConvertTo-PlanMarkdown {
       $lines.Add("") | Out-Null
       continue
     }
-    $lines.Add("| Target | Mode | Service | Proxy | Evidence file | Collection command | Workflow route |") | Out-Null
-    $lines.Add("|---|---|---|---|---|---|---|") | Out-Null
+    $lines.Add("| Target | Mode | Service | Proxy | Node runtime | Evidence file | Collection command | Workflow route |") | Out-Null
+    $lines.Add("|---|---|---|---|---|---|---|---|") | Out-Null
     foreach ($item in $items) {
       $targetCell = ([string]$item.targetId).Replace("|", "\|")
       $modeCell = ([string]$item.nextJsMode).Replace("|", "\|")
       $serviceCell = ([string]$item.serviceManager).Replace("|", "\|")
       $proxyCell = ([string]$item.reverseProxy).Replace("|", "\|")
       $fileCell = ([string]$item.evidenceFile).Replace("|", "\|")
+      $runtimeSuffix = if ($item.nodeRuntimeProductionRecommended -eq $true) { "production" } else { "not production" }
+      $runtimeCell = ("{0}; {1}" -f [string]$item.nodeRuntimeSupportTier, $runtimeSuffix).Replace("|", "\|")
       $commandCell = ([string]$item.collectionCommand).Replace("|", "\|")
       $workflowCell = ([string]$item.workflowInputSummary).Replace("|", "\|")
-      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $fileCell, $commandCell, $workflowCell)) | Out-Null
+      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` | `{7}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $runtimeCell, $fileCell, $commandCell, $workflowCell)) | Out-Null
     }
     $lines.Add("") | Out-Null
   }
@@ -604,6 +616,10 @@ switch ($Format) {
 
 if ($SelfTest) {
   $parsed = Get-Content -LiteralPath $OutputPath -Raw | ConvertFrom-Json
+  $workflowInputValidatorPath = Join-Path $ScriptDir "Test-HostEvidenceWorkflowInputs.ps1"
+  if (-not (Test-Path -LiteralPath $workflowInputValidatorPath -PathType Leaf)) {
+    throw "Support evidence plan self-test failed: missing host evidence workflow input validator."
+  }
   if ([int]$parsed.summary.strictEvidenceCount -ne @($parsed.strictEvidence).Count) {
     throw "Support evidence plan self-test failed: strictEvidenceCount does not match strictEvidence."
   }
@@ -639,6 +655,19 @@ if ($SelfTest) {
         throw "Support evidence plan self-test failed: workflowInputs.$requiredInput missing from $context."
       }
     }
+    foreach ($requiredRuntimeProperty in @(
+        "nodeRuntimeMinimumNodeVersion",
+        "nodeRuntimeSupportTier",
+        "nodeRuntimeProductionRecommended",
+        "nodeRuntimeRequirements"
+      )) {
+      if (-not $entry.PSObject.Properties[$requiredRuntimeProperty]) {
+        throw "Support evidence plan self-test failed: $requiredRuntimeProperty missing from $context."
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$entry.nodeRuntimeMinimumNodeVersion) -or [string]::IsNullOrWhiteSpace([string]$entry.nodeRuntimeSupportTier)) {
+      throw "Support evidence plan self-test failed: Node runtime support metadata is incomplete for $context."
+    }
     if ($entry.workflowInputs.expected_target_id -ne $entry.targetId) {
       throw "Support evidence plan self-test failed: expected_target_id does not match targetId for $context."
     }
@@ -653,6 +682,23 @@ if ($SelfTest) {
     }
     if ([int]$entry.workflowInputs.minimum_uptime_hours -ne [int]$entry.requiredMinimumUptimeHours) {
       throw "Support evidence plan self-test failed: minimum_uptime_hours does not match requiredMinimumUptimeHours for $context."
+    }
+    try {
+      & $workflowInputValidatorPath `
+        -MatrixPath $MatrixPath `
+        -RunnerLabels ([string]$entry.workflowInputs.runner_labels) `
+        -Platform ([string]$entry.workflowInputs.platform) `
+        -ConfigPath ([string]$entry.workflowInputs.config_path) `
+        -EvidenceName ([string]$entry.workflowInputs.evidence_name) `
+        -ExpectedTargetId ([string]$entry.workflowInputs.expected_target_id) `
+        -ExpectedNextJsMode ([string]$entry.workflowInputs.expected_nextjs_mode) `
+        -ExpectedServiceManager ([string]$entry.workflowInputs.expected_service_manager) `
+        -ExpectedReverseProxy ([string]$entry.workflowInputs.expected_reverse_proxy) `
+        -MinimumUptimeHours ([string]$entry.workflowInputs.minimum_uptime_hours) `
+        -UploadRetentionDays ([string]$entry.workflowInputs.upload_retention_days) `
+        -Quiet
+    } catch {
+      throw "Support evidence plan self-test failed: workflowInputs were rejected by host evidence workflow validator for $($context): $($_.Exception.Message)"
     }
     $command = [string]$entry.workflowDispatchCommand
     if (-not $command.Contains("gh workflow run")) {
@@ -676,6 +722,9 @@ if ($SelfTest) {
   }
   if (-not $planMarkdown.Contains("Collection command")) {
     throw "Support evidence plan self-test failed: Markdown output is missing collection command guidance."
+  }
+  if (-not $planMarkdown.Contains("Node runtime")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing Node runtime support guidance."
   }
   if (-not $planMarkdown.Contains("Required minimum uptime hours")) {
     throw "Support evidence plan self-test failed: Markdown output is missing required minimum uptime summary."

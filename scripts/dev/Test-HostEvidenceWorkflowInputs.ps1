@@ -10,6 +10,7 @@ param(
   [string]$ExpectedReverseProxy = $env:EXPECTED_REVERSE_PROXY,
   [string]$MinimumUptimeHours = $env:MINIMUM_UPTIME_HOURS,
   [string]$UploadRetentionDays = $env:UPLOAD_RETENTION_DAYS,
+  [switch]$Quiet,
   [switch]$SelfTest
 )
 
@@ -315,7 +316,9 @@ function Invoke-SelfTest {
     Invoke-HostEvidenceWorkflowInputValidation @case
   }
 
-  Write-Host "Host evidence workflow input validation self-test OK"
+  if (-not $Quiet) {
+    Write-Host "Host evidence workflow input validation self-test OK"
+  }
 }
 
 if ($SelfTest) {
@@ -336,4 +339,6 @@ Invoke-HostEvidenceWorkflowInputValidation `
   -MinimumUptimeHours $MinimumUptimeHours `
   -UploadRetentionDays $UploadRetentionDays
 
-Write-Host "Host evidence workflow inputs OK"
+if (-not $Quiet) {
+  Write-Host "Host evidence workflow inputs OK"
+}

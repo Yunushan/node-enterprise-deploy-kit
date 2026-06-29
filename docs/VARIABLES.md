@@ -14,6 +14,7 @@
 | Next.js require public directory | `NextjsRequirePublicDirectory` | `NEXTJS_REQUIRE_PUBLIC_DIR` | Require `public` under the standalone runtime root when the app serves public files |
 | Next.js require Server Actions key | `NextjsRequireServerActionsEncryptionKey` | `NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY` | When true, preflight requires `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in private runtime config and validates base64 AES key length |
 | Next.js require deployment ID | `NextjsRequireDeploymentId` | `NEXTJS_REQUIRE_DEPLOYMENT_ID` | When true, preflight requires `NEXT_DEPLOYMENT_ID` in private runtime config for rolling deployment/version-skew protection |
+| Next.js minimum Node.js version | `NextjsMinimumNodeVersion` | `NEXTJS_MINIMUM_NODE_VERSION` | Minimum Node.js runtime version required by Next.js preflight and status evidence; defaults to `20.9.0` |
 | Deployment ID | `DeploymentId` | `DEPLOYMENT_ID` | Optional safe release/build identifier emitted in status evidence; prefer a sanitized release ID, not a private hostname or ticket URL |
 | App directory | `AppDirectory` | `APP_DIR` | Application working directory |
 | Package path | `PackagePath` | `PACKAGE_PATH` | Optional deployment archive to import before install/build/service setup |

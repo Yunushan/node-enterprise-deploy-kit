@@ -2,9 +2,12 @@ param(
   [string]$EvidencePath = "",
   [string]$BundlePath = "",
   [string]$MatrixPath = "",
+  [string[]]$TargetId = @(),
+  [string[]]$Category = @(),
   [int]$MaxEvidenceAgeDays = 30,
   [switch]$IncludeServiceOnly,
   [switch]$IncludeFallback,
+  [switch]$ProductionRecommendedOnly,
   [switch]$AllowWarnings,
   [switch]$ReportOnly,
   [ValidateSet("Table", "Json", "Csv", "Markdown")]
@@ -133,6 +136,45 @@ function Get-MatrixRequiredMinimumUptimeHours {
   } catch {
     throw "Support matrix requiredMinimumUptimeHours must be a positive integer."
   }
+}
+
+function Test-ProductionRecommendedTarget {
+  param([object]$Target)
+
+  $nodeRuntimeSupport = Get-OptionalPropertyValue -Object $Target -Name "nodeRuntimeSupport"
+  if ($null -eq $nodeRuntimeSupport) { return $false }
+  $property = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
+  return ($property -and $property.Value -is [bool] -and [bool]$property.Value)
+}
+
+function Select-MatrixTargets {
+  param(
+    [object[]]$Targets,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly
+  )
+
+  $selected = @($Targets)
+  if ($TargetId.Count -gt 0) {
+    $wanted = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wanted -contains (Normalize-Token ([string]$_.id)) })
+    $missing = @($wanted | Where-Object { $targetIdValue = $_; -not @($selected | Where-Object { (Normalize-Token ([string]$_.id)) -eq $targetIdValue }) })
+    if ($missing.Count -gt 0) {
+      throw "Unknown support matrix target id(s): $($missing -join ', ')"
+    }
+  }
+  if ($Category.Count -gt 0) {
+    $wantedCategories = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wantedCategories -contains (Normalize-Token ([string]$_.category)) })
+  }
+  if ($ProductionRecommendedOnly) {
+    $selected = @($selected | Where-Object { Test-ProductionRecommendedTarget -Target $_ })
+  }
+  if ($selected.Count -eq 0) {
+    throw "No support matrix targets matched the requested evidence coverage filters."
+  }
+  return $selected
 }
 
 function Get-EvidenceFile {
@@ -501,7 +543,14 @@ function New-ExpectedEntry {
   $reverseProxyValue = Normalize-ReverseProxy $ReverseProxy
   $category = [string]$Target.category
   $evidenceFile = Get-EvidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -Kind $Kind
+  $nodeRuntimeSupport = Get-OptionalPropertyValue -Object $Target -Name "nodeRuntimeSupport"
+  $nodeRuntimeMinimumNodeVersion = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "minimumNodeVersion")
+  $nodeRuntimeSupportTier = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "supportTier")
+  $nodeRuntimeProductionRecommendedProperty = if ($nodeRuntimeSupport) { $nodeRuntimeSupport.PSObject.Properties["productionRecommended"] } else { $null }
+  $nodeRuntimeProductionRecommended = if ($nodeRuntimeProductionRecommendedProperty -and $nodeRuntimeProductionRecommendedProperty.Value -is [bool]) { [bool]$nodeRuntimeProductionRecommendedProperty.Value } else { $null }
+  $nodeRuntimeRequirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
   $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $category
+  $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
   $workflowDispatchCommand = ""
   if ($workflowDispatchSupported) {
@@ -536,12 +585,53 @@ function New-ExpectedEntry {
     nextJsMode = $modeValue
     serviceManager = $serviceManagerValue
     reverseProxy = $reverseProxyValue
+    nodeRuntimeMinimumNodeVersion = $nodeRuntimeMinimumNodeVersion
+    nodeRuntimeSupportTier = $nodeRuntimeSupportTier
+    nodeRuntimeProductionRecommended = $nodeRuntimeProductionRecommended
+    nodeRuntimeRequirements = $nodeRuntimeRequirements
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
     workflowDispatchSupported = $workflowDispatchSupported
+    workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
     workflowDispatchCommand = $workflowDispatchCommand
+  }
+}
+
+function Assert-WorkflowInputsAccepted {
+  param(
+    [object[]]$Entries,
+    [string]$MatrixPath
+  )
+
+  $workflowInputValidatorPath = Join-Path $ScriptDir "Test-HostEvidenceWorkflowInputs.ps1"
+  if (-not (Test-Path -LiteralPath $workflowInputValidatorPath -PathType Leaf)) {
+    throw "Support evidence coverage self-test failed: missing host evidence workflow input validator."
+  }
+
+  foreach ($entry in @($Entries | Where-Object { $_.workflowDispatchSupported -eq $true })) {
+    $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
+    if (-not $entry.PSObject.Properties["workflowInputs"] -or $null -eq $entry.workflowInputs) {
+      throw "Support evidence coverage self-test failed: workflowInputs missing from $context."
+    }
+    try {
+      & $workflowInputValidatorPath `
+        -MatrixPath $MatrixPath `
+        -RunnerLabels ([string]$entry.workflowInputs.runner_labels) `
+        -Platform ([string]$entry.workflowInputs.platform) `
+        -ConfigPath ([string]$entry.workflowInputs.config_path) `
+        -EvidenceName ([string]$entry.workflowInputs.evidence_name) `
+        -ExpectedTargetId ([string]$entry.workflowInputs.expected_target_id) `
+        -ExpectedNextJsMode ([string]$entry.workflowInputs.expected_nextjs_mode) `
+        -ExpectedServiceManager ([string]$entry.workflowInputs.expected_service_manager) `
+        -ExpectedReverseProxy ([string]$entry.workflowInputs.expected_reverse_proxy) `
+        -MinimumUptimeHours ([string]$entry.workflowInputs.minimum_uptime_hours) `
+        -UploadRetentionDays ([string]$entry.workflowInputs.upload_retention_days) `
+        -Quiet
+    } catch {
+      throw "Support evidence coverage self-test failed: workflowInputs were rejected by host evidence workflow validator for $($context): $($_.Exception.Message)"
+    }
   }
 }
 
@@ -615,11 +705,13 @@ function ConvertTo-CoverageMarkdown {
     return ($lines -join [Environment]::NewLine) + [Environment]::NewLine
   }
 
-  $lines.Add("| Kind | Target | Next.js mode | Service manager | Reverse proxy | Evidence file | Workflow |") | Out-Null
-  $lines.Add("|---|---|---|---|---|---|---|") | Out-Null
+  $lines.Add("| Kind | Target | Next.js mode | Service manager | Reverse proxy | Node runtime | Evidence file | Workflow |") | Out-Null
+  $lines.Add("|---|---|---|---|---|---|---|---|") | Out-Null
   foreach ($row in @($Result.missing)) {
     $workflow = if ([bool]$row.workflowDispatchSupported) { "supported" } else { "local only" }
-    $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | {6} |' -f $row.kind, $row.targetId, $row.nextJsMode, $row.serviceManager, $row.reverseProxy, $row.evidenceFile, $workflow)) | Out-Null
+    $runtimeSuffix = if ($row.nodeRuntimeProductionRecommended -eq $true) { "production" } else { "not production" }
+    $runtimeCell = "{0}; {1}" -f $row.nodeRuntimeSupportTier, $runtimeSuffix
+    $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` | {7} |' -f $row.kind, $row.targetId, $row.nextJsMode, $row.serviceManager, $row.reverseProxy, $runtimeCell, $row.evidenceFile, $workflow)) | Out-Null
   }
   $lines.Add("") | Out-Null
   $lines.Add("## Next Collection Commands") | Out-Null
@@ -868,6 +960,8 @@ function New-SelfTestEvidence {
         appFramework = "nextjs"
         mode = $nextJsMode
         nodeVersion = "v20.11.1"
+        minimumNodeVersion = "20.9.0"
+        nodeVersionSatisfied = $true
         nextVersion = "14.2.3"
         runtimeRootName = "example-next-app"
       }
@@ -895,7 +989,8 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
-$targets = @(Get-ArrayValue $matrix.targets)
+$allTargets = @(Get-ArrayValue $matrix.targets)
+$targets = @(Select-MatrixTargets -Targets $allTargets -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
 
 if ($SelfTest) {
   $IncludeServiceOnly = $true
@@ -922,6 +1017,7 @@ if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
 }
 
 $expectedEntries = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)
+Assert-WorkflowInputsAccepted -Entries $expectedEntries -MatrixPath $MatrixPath
 $records = @(Get-EvidenceRecords -Path $EvidencePath)
 $healthyRecords = @($records | Where-Object { Test-RecordHealthy -Record $_ })
 $covered = New-Object System.Collections.Generic.List[object]
@@ -942,6 +1038,10 @@ foreach ($entry in $expectedEntries) {
       nextJsMode = $entry.nextJsMode
       serviceManager = $entry.serviceManager
       reverseProxy = $entry.reverseProxy
+      nodeRuntimeMinimumNodeVersion = $entry.nodeRuntimeMinimumNodeVersion
+      nodeRuntimeSupportTier = $entry.nodeRuntimeSupportTier
+      nodeRuntimeProductionRecommended = $entry.nodeRuntimeProductionRecommended
+      nodeRuntimeRequirements = $entry.nodeRuntimeRequirements
       requiredMinimumUptimeHours = $entry.requiredMinimumUptimeHours
       evidenceFile = $entry.evidenceFile
       collectionCommand = $entry.collectionCommand
@@ -958,6 +1058,10 @@ foreach ($entry in $expectedEntries) {
       nextJsMode = $entry.nextJsMode
       serviceManager = $entry.serviceManager
       reverseProxy = $entry.reverseProxy
+      nodeRuntimeMinimumNodeVersion = $entry.nodeRuntimeMinimumNodeVersion
+      nodeRuntimeSupportTier = $entry.nodeRuntimeSupportTier
+      nodeRuntimeProductionRecommended = $entry.nodeRuntimeProductionRecommended
+      nodeRuntimeRequirements = $entry.nodeRuntimeRequirements
       requiredMinimumUptimeHours = $entry.requiredMinimumUptimeHours
       evidenceFile = $entry.evidenceFile
       collectionCommand = $entry.collectionCommand
@@ -981,6 +1085,10 @@ $result = [pscustomobject]@{
   reportOnly = [bool]$ReportOnly
   workflowFile = $WorkflowFile
   workflowRef = $WorkflowRef
+  targetId = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+  category = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+  productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+  selectedTargets = @($targets | ForEach-Object { Normalize-Token ([string]$_.id) })
   requiredMinimumUptimeHours = $requiredMinimumUptimeHours
   summary = [pscustomobject]@{
     expectedCount = $expectedEntries.Count
@@ -1016,6 +1124,7 @@ if ($SelfTest) {
       "minimum_uptime_hours=$requiredMinimumUptimeHours",
       "-MinimumUptimeHours $requiredMinimumUptimeHours",
       "--minimum-uptime-hours $requiredMinimumUptimeHours",
+      "Node runtime",
       "Local collector command:",
       "config/windows/app.config.json",
       "config/linux/app.env",
@@ -1033,13 +1142,16 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: missing JSON report did not report missing entries."
   }
   $firstMissing = @($missingJson.missing | Select-Object -First 1)[0]
-  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
+  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
     if (-not $firstMissing.PSObject.Properties[$requiredProperty]) {
       throw "Support evidence coverage self-test failed: missing JSON row did not include $requiredProperty."
     }
   }
   if ([int]$firstMissing.requiredMinimumUptimeHours -ne $requiredMinimumUptimeHours) {
     throw "Support evidence coverage self-test failed: missing JSON row did not carry requiredMinimumUptimeHours."
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$firstMissing.nodeRuntimeMinimumNodeVersion) -or [string]::IsNullOrWhiteSpace([string]$firstMissing.nodeRuntimeSupportTier)) {
+    throw "Support evidence coverage self-test failed: missing JSON row did not carry Node runtime support metadata."
   }
   $firstWindowsMissing = @($missingJson.missing | Where-Object { ([string]$_.targetId).StartsWith("windows-") } | Select-Object -First 1)[0]
   if ($null -eq $firstWindowsMissing -or -not ([string]$firstWindowsMissing.collectionCommand).Contains("-MinimumUptimeHours $requiredMinimumUptimeHours")) {
@@ -1048,6 +1160,20 @@ if ($SelfTest) {
   $firstUnixMissing = @($missingJson.missing | Where-Object { ([string]$_.targetId) -eq "ubuntu" } | Select-Object -First 1)[0]
   if ($null -eq $firstUnixMissing -or -not ([string]$firstUnixMissing.collectionCommand).Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
     throw "Support evidence coverage self-test failed: Unix collection command is missing minimum uptime guidance."
+  }
+
+  $productionOnlyJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-production-only-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly -ReportOnly -Format Json -OutputPath $productionOnlyJsonPath | Out-Null
+  $productionOnlyJson = Get-Content -LiteralPath $productionOnlyJsonPath -Raw | ConvertFrom-Json
+  if ($productionOnlyJson.productionRecommendedOnly -ne $true) {
+    throw "Support evidence coverage self-test failed: production-only report did not record productionRecommendedOnly."
+  }
+  if ([int]$productionOnlyJson.summary.expectedCount -le 0 -or [int]$productionOnlyJson.summary.expectedCount -ge [int]$missingJson.summary.expectedCount) {
+    throw "Support evidence coverage self-test failed: production-only report should cover fewer entries than full-matrix coverage."
+  }
+  $nonProductionRows = @($productionOnlyJson.missing | Where-Object { $_.nodeRuntimeProductionRecommended -ne $true })
+  if ($nonProductionRows.Count -gt 0) {
+    throw "Support evidence coverage self-test failed: production-only report included non-production runtime rows."
   }
 
   $bundleOutput = Join-Path $RepoRoot ".tmp\support-evidence-coverage-bundle-selftest-$([Guid]::NewGuid().ToString('N'))"
@@ -1094,7 +1220,7 @@ switch ($Format) {
     Write-Host "Covered:  $($result.summary.coveredCount)"
     Write-Host "Missing:  $($result.summary.missingCount)"
     if ($result.summary.missingCount -gt 0) {
-      @($missing | Select-Object -First 50) | Format-Table kind, targetId, nextJsMode, serviceManager, reverseProxy -AutoSize
+      @($missing | Select-Object -First 50) | Format-Table kind, targetId, nextJsMode, serviceManager, reverseProxy, nodeRuntimeSupportTier, nodeRuntimeProductionRecommended -AutoSize
       if ($missing.Count -gt 50) {
         Write-Host "... $($missing.Count - 50) more missing entries."
       }

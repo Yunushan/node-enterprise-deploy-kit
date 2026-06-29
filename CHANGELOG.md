@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a Next.js Node.js compatibility gate: Windows and Unix preflight/runtime checks now verify `NextjsMinimumNodeVersion` / `NEXTJS_MINIMUM_NODE_VERSION` (default `20.9.0`), status evidence records `minimumNodeVersion` and `nodeVersionSatisfied`, and host-evidence/release-readiness validators require that proof for real Next.js support claims.
+- Added support-matrix Node.js runtime tier metadata so production-recommended Next.js targets are separated from experimental and community-package runtime targets, and propagated that tier through evidence plans, coverage reports, and evidence bundle manifests.
+- Added production-runtime release readiness filters so coverage, bundle creation, and release signoff can be scoped to production-recommended Node runtime targets, selected evidence bundles archive only matching target rows, and release readiness can reject bundles containing experimental/community runtime evidence.
+- Hardened real-host evidence planning and coverage reports so every generated Windows, Linux, and macOS workflow dispatch entry is validated by the same guarded `host-evidence` input validator before release tooling accepts the collection guidance.
 - Added first-class Next.js deployment controls, standalone/next-start layout validation, Windows/Linux standalone artifact package and validation helpers, live runtime layout checkers, automatic import-time Next.js package validation for standalone and next-start artifacts, artifact expected-path checks, Unix deployment archive link-entry hardening, automated standalone and next-start support smoke tests, macOS CI smoke coverage, and a dedicated Next.js deployment guide.
 - Added Ansible mode-aware Next.js package expected-path defaults and early role validation for invalid Next.js framework/runtime/mode combinations.
 - Hardened Next.js `next-start` service launches by validating the `next start` subcommand, hostname binding argument, and Next CLI start path across preflight, runtime layout checks, status, diagnostics, and Ansible defaults.

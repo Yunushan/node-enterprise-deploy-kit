@@ -17,6 +17,13 @@
 - NetBSD
 - Apple macOS
 
+Current Next.js requires Node.js `20.9.0` or newer. The production-recommended
+GNU/Linux rows assume the host meets the Node.js 20.x kernel/glibc runtime
+floor. Alpine/musl and FreeBSD are tracked as Experimental Node runtime
+targets, while OpenBSD and NetBSD require an OS package or locally maintained
+Node runtime. All of those rows still require real-host evidence before they
+can be claimed for a release.
+
 ## Recommended Production Pattern
 
 ```text
@@ -194,6 +201,7 @@ NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 START_SCRIPT="server.js"
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 ```

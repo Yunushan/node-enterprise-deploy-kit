@@ -22,6 +22,7 @@
   "NextjsRequirePublicDirectory": {{ node_deploy_nextjs_require_public_directory | default(false) | bool | to_json }},
   "NextjsRequireServerActionsEncryptionKey": {{ node_deploy_nextjs_require_server_actions_encryption_key | default(false) | bool | to_json }},
   "NextjsRequireDeploymentId": {{ node_deploy_nextjs_require_deployment_id | default(false) | bool | to_json }},
+  "NextjsMinimumNodeVersion": {{ node_deploy_nextjs_minimum_node_version | default('20.9.0') | string | to_json }},
   "ServiceManager": {{ node_deploy_windows_service_manager | to_json }},
   "ReverseProxy": {{ node_deploy_windows_reverse_proxy | to_json }},
   "AutoDownloadWinSW": {{ node_deploy_windows_auto_download_winsw | default(true) | bool | to_json }},

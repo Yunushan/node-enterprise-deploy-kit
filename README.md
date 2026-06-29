@@ -306,8 +306,9 @@ To create a private release evidence bundle with per-file SHA256 hashes:
 ```
 
 The bundle manifest records safe Node.js runtime and Next.js package version
-strings when available, the collector SHA256 digest, the support matrix SHA256,
-and safe source-control provenance, plus safe CI run provenance when built in CI.
+strings when available, the matrix Node runtime support tier for each target,
+the collector SHA256 digest, the support matrix SHA256, and safe source-control
+provenance, plus safe CI run provenance when built in CI.
 The bundle verifier rejects internally inconsistent CI/source commit SHAs.
 When individual evidence files contain safe collection CI provenance, the
 manifest records and verifies it per file so workflow-collected status evidence
@@ -342,6 +343,13 @@ support claim:
   -IncludeFallback `
   -StrictCiRelease
 ```
+
+For a production-runtime-only support decision, add `-ProductionRecommendedOnly`
+to scope coverage and support-claim checks to matrix rows whose Node runtime is
+production-recommended. Add `-RequireProductionRecommendedRuntime` when the
+bundle itself must not contain experimental or community-package runtime rows.
+When bundle creation is run with target, category, or production filters, only
+matching evidence files are archived in the bundle.
 
 The support-claim gate also has a self-test:
 
@@ -685,7 +693,7 @@ sudo bash scripts/linux/uninstall-node-service.sh config/linux/app.env
 
 ## Supported Platforms
 
-This project is a deployment kit, not a vendor support guarantee. Older operating systems such as Windows Server 2012 may require older PowerShell, TLS, .NET, Node.js, or package-management adjustments. Use current vendor-supported systems where possible.
+This project is a deployment kit, not a vendor support guarantee. Current Next.js requires Node.js `20.9.0` or newer, and Node runtime support is platform-specific. Use current vendor-supported systems where possible; the machine-readable support matrix marks legacy or non-official Node runtime targets separately from production-recommended rows.
 
 ### Windows targets
 
@@ -693,7 +701,7 @@ This project is a deployment kit, not a vendor support guarantee. Older operatin
 |---|---|---|---|
 | Windows 10 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
 | Windows 11 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
-| Windows Server 2012 / 2012 R2 | WinSW / NSSM | IIS | Legacy target; validate Node.js runtime compatibility |
+| Windows Server 2012 / 2012 R2 | WinSW / NSSM | IIS | Legacy target; Node.js 20.x runtime support is Experimental, not production-recommended |
 | Windows Server 2016 | WinSW / NSSM | IIS | Supported deployment target |
 | Windows Server 2019 | WinSW / NSSM | IIS | Recommended minimum for many production environments |
 | Windows Server 2022 | WinSW / NSSM | IIS | Recommended production target |
@@ -709,6 +717,12 @@ This project is a deployment kit, not a vendor support guarantee. Older operatin
 | OpenRC family | Alpine, Gentoo-style hosts | OpenRC | Nginx / Apache / HAProxy / Traefik |
 | BSD family | FreeBSD, OpenBSD, NetBSD | bsdrc | Nginx / Apache / HAProxy / Traefik |
 | macOS | Apple macOS | launchd | Nginx / Apache / HAProxy / Traefik |
+
+For production Next.js targets, prefer Windows Server 2016 or newer, GNU/Linux
+hosts that meet Node.js 20.x kernel/glibc floors, or supported macOS versions.
+Alpine/musl, FreeBSD, OpenBSD, and NetBSD remain real-host evidence targets, but
+the example matrix marks them experimental or community-package Node runtime
+targets instead of production-recommended rows.
 
 ---
 
@@ -830,6 +844,7 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
+  "NextjsMinimumNodeVersion": "20.9.0",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
   "PackageExpectedFiles": [
     "server.js",
@@ -899,6 +914,7 @@ NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 SERVICE_MANAGER="systemd"
 PACKAGE_PATH=""
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"

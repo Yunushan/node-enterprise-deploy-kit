@@ -130,6 +130,8 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
 
 function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js runtime layout"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "MinimumNodeVersion"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "NodeVersionSatisfied"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js standalone StartCommand must be a single file path."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js next-start mode requires NodeArguments to start with 'start'."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "DuplicateBindingCount"
@@ -145,6 +147,8 @@ function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"health": {'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"uptime": {'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"healthMonitor": {'
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"minimumNodeVersion"'
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"nodeVersionSatisfied"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"schedulerChecked"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText "launchd-timer"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText "HealthCronEntryExists"
@@ -194,11 +198,13 @@ function New-WindowsConfig {
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start" -and [string]::IsNullOrWhiteSpace($NodeArguments)) {
     $NodeArguments = "start -H 127.0.0.1"
   }
-  $nodeCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
-  if (-not $nodeCommand) { $nodeCommand = Get-Command pwsh -ErrorAction SilentlyContinue }
-  if (-not $nodeCommand) { $nodeCommand = Get-Command sh -ErrorAction SilentlyContinue }
-  if (-not $nodeCommand) { throw "No verifier-safe NodeExe placeholder command was found." }
-  $nodeExe = $nodeCommand.Source
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if ($nodeCommand) {
+    $nodeExe = $nodeCommand.Source
+  } else {
+    $nodeExe = Join-Path (Split-Path -Parent $Path) "fake-node.cmd"
+    Write-Utf8NoBom -Path $nodeExe -Text "@echo off`r`nif ""%~1""==""--version"" (`r`n  echo v20.11.1`r`n  exit /b 0`r`n)`r`nexit /b 0`r`n"
+  }
   $config = [ordered]@{
     AppName = "ExampleNextSmoke"
     DisplayName = "Example Next Smoke"
@@ -210,6 +216,7 @@ function New-WindowsConfig {
     NextjsRequirePublicDirectory = $false
     NextjsRequireServerActionsEncryptionKey = [bool]$RequireServerActionsEncryptionKey
     NextjsRequireDeploymentId = [bool]$RequireDeploymentId
+    NextjsMinimumNodeVersion = "20.9.0"
     AutoDownloadWinSW = $true
     WinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
     RequireWinSWDownloadSha256 = $false
@@ -293,6 +300,13 @@ function New-UnixEnv {
   )
 
   $relativeRoot = ConvertTo-ForwardSlashPath $RelativeRoot
+  $nodeBinPath = Join-Path (Split-Path -Parent $Path) "fake-node.sh"
+  $nodeBinRelative = "$relativeRoot/fake-node.sh"
+  Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v20.11.1`n  exit 0`nfi`nexit 0`n"
+  $bashForChmod = Get-Command bash -ErrorAction SilentlyContinue
+  if ($bashForChmod) {
+    & $bashForChmod.Source "-lc" "chmod +x '$nodeBinRelative'" | Out-Null
+  }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start" -and [string]::IsNullOrWhiteSpace($NodeArguments)) {
     $NodeArguments = "start -H 127.0.0.1"
   }
@@ -311,8 +325,9 @@ NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="$([bool]$RequireServerActionsEncryptionKey)"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="$([bool]$RequireDeploymentId)"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 APP_DIR="$relativeRoot/app"
-NODE_BIN="/usr/bin/bash"
+NODE_BIN="$nodeBinRelative"
 START_SCRIPT="$StartScript"
 NODE_ARGUMENTS="$NodeArguments"
 APP_PORT="$Port"
@@ -830,6 +845,12 @@ try {
     if ($windowsStatusEvidence.NextJsRuntime.RuntimeRootName -ne "app") {
       throw "Windows status JSON should expose RuntimeRootName instead of raw RuntimeRoot."
     }
+    if ($windowsStatusEvidence.NextJsRuntime.NodeVersionSatisfied -ne $true) {
+      throw "Windows status JSON should prove NodeVersionSatisfied for Next.js."
+    }
+    if ([string]$windowsStatusEvidence.NextJsRuntime.MinimumNodeVersion -ne "20.9.0") {
+      throw "Windows status JSON should expose the configured minimum Node.js version."
+    }
     if ($windowsStatusEvidence.NextJsRuntime.PSObject.Properties["RuntimeRoot"]) {
       throw "Windows status JSON must not include raw NextJsRuntime.RuntimeRoot."
     }
@@ -874,6 +895,19 @@ try {
   New-WindowsConfig -Path $windowsMissingBuildIdConfig -AppDirectory $windowsMissingBuildIdApp -ServiceDirectory (Join-Path $windowsMissingBuildIdRoot "svc") -LogDirectory (Join-Path $windowsMissingBuildIdRoot "logs") -Port 39124
   Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsMissingBuildIdConfig -ExpectedText "BUILD_ID"
   Invoke-ExpectRuntimeLayoutPowerShellFailure -ConfigPath $windowsMissingBuildIdConfig -ExpectedText "BUILD_ID"
+
+  $windowsOldNodeRoot = Join-Path $testRoot "windows-old-node"
+  $windowsOldNodeApp = Join-Path $windowsOldNodeRoot "app"
+  New-StandaloneLayout -AppDirectory $windowsOldNodeApp
+  $windowsOldNodeConfig = Join-Path $windowsOldNodeRoot "app.config.json"
+  New-WindowsConfig -Path $windowsOldNodeConfig -AppDirectory $windowsOldNodeApp -ServiceDirectory (Join-Path $windowsOldNodeRoot "svc") -LogDirectory (Join-Path $windowsOldNodeRoot "logs") -Port 39126
+  $windowsOldNodeExe = Join-Path $windowsOldNodeRoot "old-node.cmd"
+  Write-Utf8NoBom -Path $windowsOldNodeExe -Text "@echo off`r`nif ""%~1""==""--version"" (`r`n  echo v18.20.0`r`n  exit /b 0`r`n)`r`nexit /b 0`r`n"
+  $windowsOldNodeConfigData = Get-Content -LiteralPath $windowsOldNodeConfig -Raw | ConvertFrom-Json
+  $windowsOldNodeConfigData.NodeExe = $windowsOldNodeExe
+  Write-Utf8NoBom -Path $windowsOldNodeConfig -Text (($windowsOldNodeConfigData | ConvertTo-Json -Depth 20) + "`n")
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsOldNodeConfig -ExpectedText "Node.js >= 20.9.0"
+  Invoke-ExpectRuntimeLayoutPowerShellFailure -ConfigPath $windowsOldNodeConfig -ExpectedText "Node.js >= 20.9.0"
 
   $windowsShellStyleStartRoot = Join-Path $testRoot "windows-shell-style-start-command"
   $windowsShellStyleStartApp = Join-Path $windowsShellStyleStartRoot "app"
@@ -1110,6 +1144,17 @@ try {
       New-UnixEnv -Path $unixMissingBuildIdEnv -RelativeRoot $unixMissingBuildIdRel -Port 39125
       Invoke-ExpectBashFailure -BashPath $bash.Source -EnvPath "$unixMissingBuildIdRel/app.env" -ExpectedText "BUILD_ID"
       Invoke-ExpectRuntimeLayoutBashFailure -BashPath $bash.Source -EnvPath "$unixMissingBuildIdRel/app.env" -ExpectedText "BUILD_ID"
+
+      $unixOldNodeRoot = Join-Path $testRoot "unix-old-node"
+      $unixOldNodeRel = Get-RepoRelativePath $unixOldNodeRoot
+      $unixOldNodeApp = Join-Path $unixOldNodeRoot "app"
+      New-StandaloneLayout -AppDirectory $unixOldNodeApp
+      $unixOldNodeEnv = Join-Path $unixOldNodeRoot "app.env"
+      New-UnixEnv -Path $unixOldNodeEnv -RelativeRoot $unixOldNodeRel -Port 39126
+      Write-Utf8NoBom -Path (Join-Path $unixOldNodeRoot "fake-node.sh") -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v18.20.0`n  exit 0`nfi`nexit 0`n"
+      & $bash.Source "-lc" "chmod +x '$unixOldNodeRel/fake-node.sh'" | Out-Null
+      Invoke-ExpectBashFailure -BashPath $bash.Source -EnvPath "$unixOldNodeRel/app.env" -ExpectedText "Node.js >= 20.9.0"
+      Invoke-ExpectRuntimeLayoutBashFailure -BashPath $bash.Source -EnvPath "$unixOldNodeRel/app.env" -ExpectedText "Node.js >= 20.9.0"
 
       $unixNextStartRoot = Join-Path $testRoot "unix-next-start"
       $unixNextStartRel = Get-RepoRelativePath $unixNextStartRoot

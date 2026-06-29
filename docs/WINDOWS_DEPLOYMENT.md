@@ -10,7 +10,12 @@
 - Windows Server 2022
 - Windows Server 2025
 
-Legacy systems may require compatibility testing for the chosen Node.js version.
+Current Next.js requires Node.js `20.9.0` or newer. For Node.js 20.x, Windows
+10 and Windows Server 2016 or newer are the production-recommended Windows
+runtime targets in this kit. Windows Server 2012 / 2012 R2 remains in the
+matrix for legacy migration evidence, but it is marked as an Experimental
+Node.js runtime target and is not production-recommended for current Next.js
+deployments.
 
 ## Recommended Production Pattern
 
@@ -156,6 +161,7 @@ import flow also runs this validator automatically when `AppFramework` is
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
+  "NextjsMinimumNodeVersion": "20.9.0",
   "StartCommand": "server.js",
   "PackageExpectedFiles": [
     "server.js",

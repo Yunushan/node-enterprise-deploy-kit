@@ -17,6 +17,22 @@ Official Next.js references:
 
 - https://nextjs.org/docs/app/api-reference/config/next-config-js/output
 - https://nextjs.org/docs/app/guides/self-hosting
+- https://github.com/nodejs/node/blob/v20.x/BUILDING.md#platform-list
+
+Current Next.js releases require Node.js `20.9.0` or newer. The example
+configs therefore set `NextjsMinimumNodeVersion` /
+`NEXTJS_MINIMUM_NODE_VERSION` to `20.9.0`, and preflight/status evidence fails
+when the configured Node runtime cannot prove it meets that minimum.
+
+The Node.js runtime floor is also platform-specific. For the Node.js 20.x
+minimum used by current Next.js, production-recommended rows are Windows 10 /
+Windows Server 2016 or newer, GNU/Linux hosts that meet the documented
+kernel/glibc floor, and macOS hosts that meet the documented architecture and
+version floor. Windows Server 2012 / 2012 R2, Alpine/musl, and FreeBSD are
+tracked as Experimental Node runtime targets; OpenBSD and NetBSD require an OS
+package or locally maintained Node runtime. The support matrix records this in
+`nodeRuntimeSupport` so release claims can distinguish production targets from
+legacy, experimental, or community-runtime targets.
 
 ## Supported Modes
 
@@ -169,6 +185,7 @@ Use the normal Windows deployment flow with these Next.js-specific fields:
   "NextjsRequirePublicDirectory": false,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
+  "NextjsMinimumNodeVersion": "20.9.0",
   "StartCommand": "server.js",
   "BindAddress": "127.0.0.1",
   "PackageExpectedFiles": [
@@ -248,6 +265,7 @@ NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
+NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 START_SCRIPT="server.js"
 APP_PORT="3000"
 BIND_ADDRESS="127.0.0.1"
@@ -413,6 +431,8 @@ For `standalone`, the preflight validates:
 
 - `AppFramework` / `APP_FRAMEWORK` is `nextjs`.
 - `NextjsDeploymentMode` / `NEXTJS_DEPLOYMENT_MODE` is valid.
+- `NodeExe` / `NODE_BIN` reports a Node.js version at or above
+  `NextjsMinimumNodeVersion` / `NEXTJS_MINIMUM_NODE_VERSION`.
 - `StartCommand` / `START_SCRIPT` points to a safe `server.js` path.
 - The runtime root has `.next`.
 - The runtime root has `.next/BUILD_ID`.
@@ -443,8 +463,9 @@ Get-NetTCPConnection -State Listen |
 
 For `AppFramework=nextjs`, `status.ps1` also prints a safe Next.js runtime
 layout section and raises findings when `server.js`, `.next`, `.next/BUILD_ID`,
-`.next/static`, or `node_modules/next` are missing for the selected mode. To
-collect the same layout information in a machine-readable release evidence file, run:
+`.next/static`, `node_modules/next`, or compatible Node.js runtime evidence are
+missing for the selected mode. To collect the same layout information in a
+machine-readable release evidence file, run:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-nextjs-status.json -FailOnCritical
@@ -474,9 +495,11 @@ curl -fsS http://127.0.0.1:3000/health
 
 The Unix status command checks service state, configured port, HTTP health,
 health-check history, and the Next.js runtime layout without printing raw
-environment values. Use `--json-output` for release evidence on Linux, macOS,
-and BSD hosts. Unix diagnostics include a safe Next.js runtime layout section
-for Linux, macOS, and BSD service-manager modes:
+environment values. Its JSON evidence includes `nodeVersion`,
+`minimumNodeVersion`, and `nodeVersionSatisfied`. Use `--json-output` for
+release evidence on Linux, macOS, and BSD hosts. Unix diagnostics include a
+safe Next.js runtime layout section for Linux, macOS, and BSD service-manager
+modes:
 
 Unix preflight blocks selected reverse-proxy deployments when the matching
 proxy executable is missing, so an `nginx`, Apache/httpd, HAProxy, or Traefik
