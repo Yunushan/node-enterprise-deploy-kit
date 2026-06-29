@@ -183,10 +183,15 @@ include a safe Next.js runtime layout section when `AppFramework=nextjs`.
 Use it to confirm the live folder still contains the expected standalone or
 `next-start` files without printing private environment values.
 The status JSON also includes `HealthMonitor` evidence from the scheduled
-health-check task, state file, and recent health-check log summary. For a
-fully proven production host, collect evidence after the monitor has completed
-successfully and after the requested uptime window, not immediately after the
-first service start.
+health-check task, state file, and recent health-check log summary. It also
+includes `ServiceDefinition` evidence proving that WinSW, NSSM, or the PM2
+ecosystem file still matches the current `NodeExe`, `AppDirectory`,
+`StartCommand`, and `NodeArguments`. The task action must run this kit's
+health-check script with the current deployment config path, so stale services
+or health-check tasks from older releases are not accepted as production proof.
+For a fully proven production host, collect evidence after the monitor has
+completed successfully and after the requested uptime window, not immediately
+after the first service start.
 
 For live RDP/VPN operations where each release is already extracted to a new
 timestamped folder, use the latest-release helper instead of moving the current
@@ -206,9 +211,15 @@ This creates a generated runtime config that points `AppDirectory` and
 `IisSitePath` to the newest matching release folder, runs the normal Windows
 deployment flow with package import/install/build disabled, registers health
 checks, and runs `status.ps1`. The previous live folder is left in place. If
-another IIS site already owns the configured public port, the helper fails by
+another IIS site already owns the configured public binding, the helper fails by
 default; `-TakeOverPublicPortBinding` removes the conflicting binding only when
-you intentionally want the configured site to take over that port.
+you intentionally want the configured site to take over that port. The helper
+uses `TlsEnabled` to inspect `http` or `https`, defaults the public port to `80`
+or `443` when `PublicPort` is unset, and rollback restores the previous IIS
+physical path, app pool, and started/stopped site state. The generated runtime
+config is retained under `<ServiceDirectory>\config` by default because the
+Windows scheduled health-check task reads that exact config path after
+deployment.
 
 The Windows service installers write safe runtime environment defaults when
 they are not already set in `Environment`: `NODE_ENV`, `PORT`, `APP_PORT`,
@@ -238,8 +249,8 @@ but a gMSA is preferred so no password has to be stored in deployment config.
 
 When `ReverseProxy` is `iis`, `scripts\windows\Install-ReverseProxy.ps1`
 dispatches to the IIS installer, which writes `web.config`, configures an
-always-running app pool, creates or updates the IIS site, and adds the
-configured HTTP/HTTPS binding. If `TlsEnabled` is true and
+always-running app pool, creates or updates the IIS site, adds the configured
+HTTP/HTTPS binding, and starts the site when it is stopped. If `TlsEnabled` is true and
 `IisCertificateThumbprint` is empty or unavailable, certificate binding remains
 an explicit manual step and the script prints a warning.
 
@@ -304,18 +315,20 @@ so normal service updates should not need `-AllowPortInUse`.
 The status command reports host uptime, service state, service wrapper uptime,
 node processes, configured port listeners, whether the configured service owns
 the listener, HTTP health latency, scheduled health-check freshness, health
-history, and recent log file metadata without printing environment variables or
-log contents. `-MinimumUptimeHours` is useful after a reboot or several days of
+history, service-definition alignment, scheduled-task action/config alignment,
+and recent log file metadata without printing environment variables or log
+contents. `-MinimumUptimeHours` is useful after a reboot or several days of
 runtime because it warns when the service has restarted more recently than the
 period you expected. `-JsonPath` writes the same safe verdict and findings to a
 machine-readable evidence file for release reviews.
 
 For IIS reverse-proxy deployments, the status JSON also includes safe IIS
 evidence: whether the WebAdministration module was available, whether the
-configured site exists, whether the site physical path matches the configured
-deployment path, whether the configured site owns the expected public binding,
-and whether another IIS site also has that binding. Full filesystem paths are
-not written to evidence; only safe path basenames are emitted.
+configured site exists and is started, whether the site physical path matches
+the configured deployment path, whether the configured site owns the expected
+public binding, and whether another IIS site also has that binding. Full
+filesystem paths are not written to evidence; only safe path basenames are
+emitted.
 
 The status JSON also includes a safe configured-port proof section. It records
 whether the app port was checked, is listening, has readable owner process
@@ -329,6 +342,11 @@ Managed file updates create timestamped backups in `BackupDirectory` before
 replacing existing WinSW XML/exe files, IIS `web.config`, or the scheduled
 health-check task definition. If `BackupDirectory` is not set, the scripts use
 `<ServiceDirectory>\backups`.
+
+When `scripts\windows\Register-HealthCheckTask.ps1` is run directly, it
+resolves `-ConfigPath` to an absolute path before saving the task action. This
+prevents a relative config path from breaking later when Task Scheduler runs the
+health check as `SYSTEM`.
 
 8. Restart or uninstall:
 

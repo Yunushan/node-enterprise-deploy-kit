@@ -169,6 +169,30 @@ function Test-PlatformMatrix {
   }
 }
 
+function Test-LinuxContainerSmokeSelfTest {
+  if ($SkipShellSyntax) {
+    Write-Host "Skipping Linux container smoke self-test."
+    return
+  }
+
+  Write-Step "Linux container smoke self-test"
+  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  if (-not $bash) {
+    throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
+  }
+
+  Push-Location $RepoRoot
+  try {
+    & $bash.Source "scripts/dev/test-linux-container-smoke.sh" "--self-test"
+    if ($LASTEXITCODE -ne 0) {
+      throw "Linux container smoke self-test failed."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Test-NoObviousSecrets {
   Write-Step "Obvious secret patterns"
   $patterns = @(
@@ -303,6 +327,7 @@ Test-LineEndings
 Test-ShellSyntax
 Test-UnixShellPortabilityPatterns
 Test-PlatformMatrix
+Test-LinuxContainerSmokeSelfTest
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
 Test-ReactSupport

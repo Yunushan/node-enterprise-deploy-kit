@@ -196,7 +196,7 @@ validate_nextjs_layout() {
   case "$mode" in
     standalone)
       if [[ "${START_SCRIPT:-server.js}" == *" "* ]]; then
-        add_warning "Next.js layout validation skipped because START_SCRIPT contains shell-style arguments."
+        add_error "START_SCRIPT must be a single file path for Next.js standalone validation. Put script arguments in NODE_ARGUMENTS."
         return 0
       fi
       if [[ "${START_SCRIPT:-server.js}" != /* ]] && ! safe_relative_path "${START_SCRIPT:-server.js}"; then
@@ -229,7 +229,8 @@ validate_nextjs_layout() {
       else
         start_path="$(nextjs_start_command_path)"
         [[ -f "$start_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $start_path"
-        case "$(printf '%s' "$start_path" | tr '\\' '/')" in
+        normalized_start_path="${start_path//\\//}"
+        case "$normalized_start_path" in
           */node_modules/next/*) ;;
           *) add_error "Next.js next-start START_SCRIPT should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next." ;;
         esac

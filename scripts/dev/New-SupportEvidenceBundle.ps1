@@ -386,6 +386,16 @@ function New-SelfTestEvidence {
       StartType = "Automatic"
       ProcessId = 4321
     }
+    ServiceDefinition = [ordered]@{
+      Checked = $true
+      Manager = "winsw"
+      DefinitionSource = "winsw-xml"
+      DefinitionExists = $true
+      ServiceWrapperMatchesConfig = $true
+      NodeExeMatchesConfig = $true
+      WorkingDirectoryMatchesConfig = $true
+      ArgumentsMatchConfig = $true
+    }
     Port = [ordered]@{
       Checked = $true
       Port = 3000
@@ -414,6 +424,9 @@ function New-SelfTestEvidence {
       Scheduled = $true
       ScheduleType = "windows-task"
       TaskExists = $true
+      TaskActionChecked = $true
+      TaskActionUsesHealthCheckScript = $true
+      TaskActionUsesConfigPath = $true
       TaskLastResult = 0
       TaskMissedRuns = 0
       StateExists = $true
@@ -443,6 +456,7 @@ function New-SelfTestEvidence {
         Applicable = $true
         ModuleAvailable = $true
         SiteExists = $true
+        SiteStarted = $true
         SitePathMatchesConfig = $true
         BindingMatchesConfig = $true
         DuplicateBindingConflict = $false
@@ -470,6 +484,16 @@ function New-SelfTestEvidence {
     serviceManager = "systemd"
     serviceActiveStatus = "active"
     serviceEnabledStatus = "enabled"
+    serviceDefinition = [ordered]@{
+      checked = $true
+      manager = "systemd"
+      definitionSource = "systemd-unit"
+      definitionExists = $true
+      nodeExeMatchesConfig = $true
+      workingDirectoryMatchesConfig = $true
+      argumentsMatchConfig = $true
+      runnerScriptMatchesConfig = $false
+    }
     platform = [ordered]@{
       family = "linux"
       supportTargetId = "ubuntu"

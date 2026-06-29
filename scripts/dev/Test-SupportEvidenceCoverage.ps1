@@ -713,6 +713,9 @@ function New-SelfTestEvidence {
     }
     if ($scheduleType -eq "windows-task") {
       $monitor["taskExists"] = $true
+      $monitor["taskActionChecked"] = $true
+      $monitor["taskActionUsesHealthCheckScript"] = $true
+      $monitor["taskActionUsesConfigPath"] = $true
       $monitor["taskLastResult"] = 0
       $monitor["taskMissedRuns"] = 0
     } else {
@@ -740,6 +743,7 @@ function New-SelfTestEvidence {
           applicable = $true
           moduleAvailable = $true
           siteExists = $true
+          siteStarted = $true
           sitePathMatchesConfig = $true
           bindingMatchesConfig = $true
           duplicateBindingConflict = $false
@@ -789,6 +793,39 @@ function New-SelfTestEvidence {
       serviceManager = $serviceManager
       serviceActiveStatus = "active"
       serviceEnabledStatus = "enabled"
+      serviceDefinition = if ($targetIsWindows) {
+        [ordered]@{
+          checked = $true
+          manager = $serviceManager
+          definitionSource = switch ($serviceManager) {
+            "nssm" { "nssm-registry" }
+            "pm2" { "pm2-ecosystem" }
+            default { "winsw-xml" }
+          }
+          definitionExists = $true
+          serviceWrapperMatchesConfig = if ($serviceManager -eq "winsw") { $true } else { $null }
+          nodeExeMatchesConfig = $true
+          workingDirectoryMatchesConfig = $true
+          argumentsMatchConfig = $true
+        }
+      } else {
+        [ordered]@{
+          checked = $true
+          manager = $serviceManager
+          definitionSource = switch ($serviceManager) {
+            "launchd" { "launchd-plist" }
+            "bsdrc" { "bsdrc-init" }
+            "openrc" { "openrc-init" }
+            "systemv" { "systemv-init" }
+            default { "systemd-unit" }
+          }
+          definitionExists = $true
+          nodeExeMatchesConfig = $true
+          workingDirectoryMatchesConfig = $true
+          argumentsMatchConfig = $true
+          runnerScriptMatchesConfig = ($serviceManager -eq "launchd")
+        }
+      }
       platform = [ordered]@{
         family = $platformFamily
         supportTargetId = $targetId

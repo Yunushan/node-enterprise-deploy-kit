@@ -46,6 +46,10 @@ deployed app. For example, use `/health` for the App Router example or
 ## Windows
 
 Scheduled task runs `scripts/windows/Invoke-NodeHealthCheck.ps1`.
+When the task is registered, `Register-HealthCheckTask.ps1` resolves
+`-ConfigPath` to an absolute path before writing the scheduled task action.
+That keeps manually registered tasks working when Windows later runs them as
+`SYSTEM` from a different working directory.
 
 Recommended controls:
 
@@ -72,9 +76,12 @@ without printing health-check log contents:
 It reports scheduled task last run, next run, last result, consecutive failure
 state, last successful check, last failed check, summarized health log event
 counts, service startup mode, and a final operational verdict. It also verifies
-that the configured port is owned by the configured service process tree, which
-helps distinguish a proper service deployment from a manually started
-`node.exe`.
+that the Windows service definition still matches the current `NodeExe`,
+`AppDirectory`, `StartCommand`, and `NodeArguments`, and that the scheduled task
+action points at this kit's health-check script and the current deployment
+config path. The configured port must be owned by the configured service process
+tree, which helps distinguish a proper service deployment from a manually
+started `node.exe`.
 
 Use `-JsonPath` when you need auditable post-deploy evidence. The JSON output
 contains the verdict, counts, safe health URL, port ownership proof,
@@ -86,8 +93,8 @@ directory basenames in machine-readable evidence.
 For IIS reverse-proxy deployments, status evidence also probes the configured
 health proxy path. Set `ProxyHealthUrl` when the default local probe is not the
 right endpoint for your topology. IIS evidence additionally records whether the
-configured site exists, points at the configured deployment path, owns the
-expected public binding, and has no duplicate binding conflict.
+configured site exists and is started, points at the configured deployment path,
+owns the expected public binding, and has no duplicate binding conflict.
 Status evidence emits the configured deployment ID, private runtime deployment
 ID, or Next.js `.next/BUILD_ID` when one is available.
 Validate collected evidence with
@@ -154,7 +161,10 @@ sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env
 The status command prints an operational verdict and can fail automation when
 critical findings exist. It checks service status, configured port listener,
 boot enablement, HTTP health, health-check state, health-check log summary, and
-framework-specific runtime layout where available.
+framework-specific runtime layout where available. It also emits
+`serviceDefinition` proof that the managed systemd, System V, OpenRC, launchd,
+or BSD rc definition still matches the current `NODE_BIN`, `APP_DIR`,
+`START_SCRIPT`, and `NODE_ARGUMENTS`.
 
 Use `--json-output` to write safe machine-readable evidence for Linux, macOS,
 and BSD hosts. The file is suitable for release records and support reviews

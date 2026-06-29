@@ -229,6 +229,13 @@ For timestamped folders already extracted under a release root, use:
   -TakeOverPublicPortBinding
 ```
 
+The helper uses `TlsEnabled` to check/take over the matching IIS `http` or
+`https` binding and restores the previous IIS site path, app pool, and
+started/stopped state if deployment fails. Its generated runtime config is kept
+under `<ServiceDirectory>\config` by default so the scheduled health-check task
+continues to use the same release-specific config after the deploy command
+exits.
+
 ## Linux, BSD, and macOS Config
 
 Use these fields in `config/linux/app.env`:
@@ -344,6 +351,23 @@ On Unix-like hosts, including macOS CI runners, run the Bash-only smoke test:
 bash scripts/dev/test-unix-nextjs-support.sh
 ```
 
+For representative Linux userland coverage on a Docker-capable CI host:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
+```
+
+To check the wrapper logic without Docker/network access:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --self-test
+```
+
+CI runs the container smoke command for Ubuntu, Debian, Linux Mint, RHEL/UBI,
+Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine.
+Real-host release claims still require collected status evidence from the exact
+platform rows in the support matrix.
+
 The repository verifier also starts a tiny local standalone-style Node.js
 server and probes `/health` to prove that the managed `PORT`, `APP_PORT`,
 `HOST`, and `HOSTNAME` values produce an actual loopback HTTP listener. Set
@@ -379,7 +403,11 @@ For CI or cross-platform static checks where the target service manager is not
 available on the runner, add `--skip-service-manager-check`. Do not use that
 flag as the final preflight on the real host; macOS should still prove
 `launchctl`, OpenRC should prove `rc-service`/`rc-update`, and systemd should
-prove `systemctl`.
+prove `systemctl`. Final host status evidence also checks that the managed
+service definition still matches `NODE_BIN`, `APP_DIR`, `START_SCRIPT`, and
+`NODE_ARGUMENTS`, so an old systemd unit, launchd plist/runner, OpenRC script,
+System V script, or BSD rc script cannot silently count as current deployment
+proof.
 
 For `standalone`, the preflight validates:
 

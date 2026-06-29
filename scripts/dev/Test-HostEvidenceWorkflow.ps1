@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $WorkflowPath = Join-Path $RepoRoot ".github\workflows\host-evidence.yml"
+$InputValidatorPath = Join-Path $ScriptDir "Test-HostEvidenceWorkflowInputs.ps1"
 
 function Assert-Contains {
   param(
@@ -37,8 +38,25 @@ Write-Host "==> Host evidence workflow"
 if (-not (Test-Path -LiteralPath $WorkflowPath -PathType Leaf)) {
   throw "Missing host evidence workflow: .github/workflows/host-evidence.yml"
 }
+if (-not (Test-Path -LiteralPath $InputValidatorPath -PathType Leaf)) {
+  throw "Missing host evidence workflow input validator: scripts/dev/Test-HostEvidenceWorkflowInputs.ps1"
+}
 
 $workflow = Get-Content -LiteralPath $WorkflowPath -Raw
+$inputValidator = Get-Content -LiteralPath $InputValidatorPath -Raw
+$workflowAndInputValidator = "$workflow`n$inputValidator"
+
+& $InputValidatorPath -SelfTest
+
+foreach ($expected in @(
+    "validate-dispatch:",
+    "Validate self-hosted runner labels",
+    "run: ./scripts/dev/Test-HostEvidenceWorkflowInputs.ps1",
+    "needs: validate-dispatch",
+    "runs-on: `${{ fromJSON(inputs.runner_labels) }}"
+  )) {
+  Assert-Contains -Text $workflow -Expected $expected -Context ".github/workflows/host-evidence.yml"
+}
 
 foreach ($expected in @(
     "workflow_dispatch:",
@@ -51,13 +69,14 @@ foreach ($expected in @(
     "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, launchd, or bsdrc.",
     "expected_reverse_proxy must be one of iis, nginx, apache, haproxy, traefik, or none.",
     "expected_target_id, expected_nextjs_mode, expected_service_manager, and expected_reverse_proxy are required for real host evidence collection.",
-    "config/support-matrix.example.json",
-    '$expectedTarget = $env:EXPECTED_TARGET_ID.Trim().ToLowerInvariant()',
+    "config\support-matrix.example.json",
+    '$expectedTarget = $ExpectedTargetId.Trim().ToLowerInvariant()',
     "expected_target_id must match a support matrix target id.",
     "is not declared for support matrix target",
     "platform must be",
     "validate-dispatch:",
     "Validate self-hosted runner labels",
+    "Test-HostEvidenceWorkflowInputs.ps1",
     "needs: validate-dispatch",
     "runs-on: `${{ fromJSON(inputs.runner_labels) }}",
     "actions/checkout@v7",
@@ -85,6 +104,10 @@ foreach ($expected in @(
     "runner_labels must include self-hosted for real host evidence collection.",
     "runner_labels must include the expected target label",
     "runner_labels must not use GitHub-hosted runner labels for real host evidence.",
+    '$hostedLabelPatterns = @(',
+    '^ubuntu-(latest|\d{2}\.\d{2}.*)$',
+    '^windows-(latest|\d{4}.*)$',
+    '^macos-(latest|\d+.*)$',
     "config_path is required and must be a relative path inside the repository workspace.",
     "config_path must not contain parent traversal, empty path segments, or a trailing slash.",
     "config_path was not found on the self-hosted runner workspace.",
@@ -95,7 +118,7 @@ foreach ($expected in @(
     "upload_retention_days must be an integer from 1 to 90.",
     "expected target, mode, service manager, and reverse proxy values must contain only letters, numbers, dot, underscore, or dash."
   )) {
-  Assert-Contains -Text $workflow -Expected $expected -Context ".github/workflows/host-evidence.yml"
+  Assert-Contains -Text $workflowAndInputValidator -Expected $expected -Context "host evidence workflow and input validator"
 }
 
 foreach ($unexpected in @(

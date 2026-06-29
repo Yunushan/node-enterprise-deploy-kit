@@ -88,9 +88,12 @@ patterns, platform-family mapping for Linux/macOS/BSD targets, LF-only
 deployment files, example config shape, service and reverse-proxy template
 rendering, release package hygiene, docs consistency, Next.js standalone packaging plus
 standalone/next-start preflight behavior, a local Node.js runtime smoke for
-the managed `PORT`/`HOSTNAME` contract, React static package validation,
+both Next.js modes and the managed `PORT`/`HOSTNAME` contract, React static package validation,
 obvious secret patterns, and `git diff --check`. On Windows it needs Git Bash
 or another `bash` executable for the shell syntax and Unix smoke-test steps.
+CI runs the Windows static verifier on pinned hosted Windows Server images
+(`windows-2022` and `windows-2025`) instead of the moving `windows-latest`
+alias.
 
 To run only the Next.js support checks:
 
@@ -111,6 +114,27 @@ systemd, System V, OpenRC, launchd, and BSD rc preflight/status evidence paths:
 
 ```bash
 bash scripts/dev/test-unix-nextjs-support.sh
+```
+
+GitHub Actions also runs that Unix/Next.js smoke suite inside target or
+target-family Linux containers for Ubuntu, Debian, Linux Mint, RHEL/UBI,
+Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
+```
+
+To validate the container smoke wrapper locally without Docker pulls:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --self-test
+```
+
+GitHub Actions also installs ShellCheck and runs the same Bash lint gate that
+you can run locally after installing ShellCheck:
+
+```bash
+bash scripts/dev/lint-shellcheck.sh
 ```
 
 To build a sanitized handoff package:
@@ -137,8 +161,9 @@ macOS runner where the release is already deployed. It is intentionally
 `workflow_dispatch` only, so normal push/PR CI does not create support claims.
 The workflow validates `runner_labels` before collection and requires a JSON
 array containing `self-hosted` plus the expected target label; GitHub-hosted
-labels such as `ubuntu-latest`, `windows-latest`, and `macos-latest` are
-rejected for real evidence collection.
+labels such as `ubuntu-latest`, `ubuntu-24.04`, `windows-latest`,
+`windows-2022`, `windows-2025`, `macos-latest`, and `macos-15` are rejected
+for real evidence collection.
 The workflow also requires expected target, Next.js mode, service manager, and
 reverse proxy inputs from the generated support evidence plan so collected
 artifacts are rejected when they do not match the matrix combination being
@@ -157,6 +182,11 @@ The support matrix is machine-readable and checked by CI:
 ```powershell
 .\scripts\dev\Test-SupportMatrix.ps1
 ```
+
+Linux rows in the matrix must keep both the broad platform-family static job
+and the `linux-container-smoke` job. The container job proves the Unix scripts
+execute in public target or target-family Linux userlands; final release
+support still requires real-host evidence for the exact targets being claimed.
 
 Windows service-manager routing and runtime environment parity are checked by:
 
@@ -450,7 +480,8 @@ files and directories in deployment artifacts.
 For IIS deployments, install IIS URL Rewrite and Application Request Routing
 first. The IIS installer can enable ARR proxy mode, allow the URL Rewrite
 server variables needed for forwarded headers, render a dedicated health proxy
-path, and warn when WebSocket support is missing. `IisRequireUrlRewrite` and
+path, start the configured IIS site after updating it, and warn when WebSocket
+support is missing. `IisRequireUrlRewrite` and
 `IisRequireArrProxy` default to `true`, so preflight and direct IIS install stop
 instead of writing a broken reverse-proxy config when required IIS modules are
 missing.
@@ -472,6 +503,14 @@ use the latest-release helper so the current live folder is not moved:
   -HealthPath "/" `
   -SkipWinSWDownload
 ```
+
+For IIS sites, the helper checks the configured public binding before changing
+the live site. It uses `TlsEnabled` to choose `http` or `https` and defaults the
+public port to `80` or `443` when `PublicPort` is not set. If deployment fails,
+rollback restores the previous IIS physical path, app pool, and started/stopped
+site state. The generated runtime config is retained under
+`<ServiceDirectory>\config` by default because the Windows scheduled health
+check task reads that exact config path after deployment.
 
 If preflight reports a known, intentional listener on the configured port that is not the current service, use:
 

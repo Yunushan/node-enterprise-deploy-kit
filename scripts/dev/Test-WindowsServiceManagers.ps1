@@ -41,6 +41,19 @@ function Assert-FileContainsText {
   }
 }
 
+function Assert-FileDoesNotContainText {
+  param(
+    [string]$Path,
+    [string]$UnexpectedText
+  )
+
+  $fullPath = Resolve-RepoFile $Path
+  $text = Get-Content -Path $fullPath -Raw
+  if ($text.Contains($UnexpectedText)) {
+    throw "$(Get-RepoRelativePath $fullPath) contains unexpected text: $UnexpectedText"
+  }
+}
+
 function Assert-TextOrder {
   param(
     [string]$Path,
@@ -129,11 +142,16 @@ function Assert-WindowsReverseProxyRouting {
       'Get-ConfigBool $config "IisRequireUrlRewrite" $true',
       'Get-ConfigBool $config "IisRequireArrProxy" $true',
       'IIS URL Rewrite module was not detected. Install URL Rewrite before using ReverseProxy=iis',
-      'IIS Application Request Routing module was not detected. Install ARR before using ReverseProxy=iis'
+      'IIS Application Request Routing module was not detected. Install ARR before using ReverseProxy=iis',
+      'The IIS installer will start it.'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Test-DeploymentPreflight.ps1" -ExpectedText $expected
-    Assert-FileContainsText -Path "scripts/windows/Install-IISReverseProxy.ps1" -ExpectedText $expected
+    if ($expected -ne 'The IIS installer will start it.') {
+      Assert-FileContainsText -Path "scripts/windows/Install-IISReverseProxy.ps1" -ExpectedText $expected
+    }
   }
+  Assert-FileContainsText -Path "scripts/windows/Install-IISReverseProxy.ps1" -ExpectedText "Ensure-WebsiteStarted"
+  Assert-FileContainsText -Path "scripts/windows/Install-IISReverseProxy.ps1" -ExpectedText "Started IIS site:"
 
   $tempRoot = Join-Path $RepoRoot ".tmp\windows-reverse-proxy-dispatcher"
   New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
@@ -272,7 +290,14 @@ function Assert-WindowsStatusEvidenceContract {
       'SupportTargetId = $supportTargetId',
       'ServiceManager = Get-ConfigString $config "ServiceManager" "winsw"',
       'ReverseProxy = Get-ConfigString $config "ReverseProxy" ""',
-      'NextjsDeploymentMode = Get-ConfigString $config "NextjsDeploymentMode" ""'
+      'NextjsDeploymentMode = Get-ConfigString $config "NextjsDeploymentMode" ""',
+      'function Get-WindowsServiceDefinitionEvidence',
+      'ServiceDefinition = [pscustomobject]@',
+      'DefinitionSource = "winsw-xml"',
+      'DefinitionSource = "nssm-registry"',
+      'DefinitionSource = "pm2-ecosystem"',
+      'Windows service working directory does not match the current AppDirectory.',
+      'Windows service arguments do not match the current StartCommand/NodeArguments.'
     )) {
     Assert-FileContainsText -Path "status.ps1" -ExpectedText $expected
   }
@@ -282,7 +307,51 @@ function Assert-WindowsStatusEvidenceContract {
       'SupportTargetId = "windows-11"',
       'Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")',
       'Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")',
-      'missing supportTargetId metadata required for matrix-level support claims'
+      'missing supportTargetId metadata required for matrix-level support claims',
+      'DefinitionChecked = Get-BooleanValue -Object $definition -Names @("Checked", "checked")',
+      'does not prove the managed service definition was checked',
+      'does not prove the managed service working directory matches the current app directory',
+      'does not prove the managed service arguments match the current start command and arguments'
+    )) {
+    Assert-FileContainsText -Path "scripts/dev/Test-HostEvidence.ps1" -ExpectedText $expected
+  }
+}
+
+function Assert-WindowsHealthCheckTaskContract {
+  Write-Step "Windows health-check task config path contract"
+
+  foreach ($script in @(
+      "scripts/windows/Register-HealthCheckTask.ps1",
+      "scripts/windows/Invoke-NodeHealthCheck.ps1"
+    )) {
+    Assert-FileContainsText -Path $script -ExpectedText "function Resolve-ConfigPath"
+    Assert-FileContainsText -Path $script -ExpectedText '$ConfigPath = Resolve-ConfigPath $ConfigPath'
+    Assert-FileContainsText -Path $script -ExpectedText 'Test-Path -LiteralPath $ConfigPath -PathType Leaf'
+    Assert-FileContainsText -Path $script -ExpectedText 'Get-Content -LiteralPath $ConfigPath -Raw'
+    Assert-FileDoesNotContainText -Path $script -UnexpectedText 'Get-Content $ConfigPath -Raw'
+  }
+
+  Assert-FileContainsText -Path "scripts/windows/Register-HealthCheckTask.ps1" -ExpectedText '-ConfigPath `"$ConfigPath`"'
+
+  foreach ($expected in @(
+      'TaskActionChecked',
+      'TaskActionUsesHealthCheckScript',
+      'TaskActionUsesConfigPath',
+      'Get-CommandArgumentValue -Arguments $taskArguments -Name "File"',
+      'Get-CommandArgumentValue -Arguments $taskArguments -Name "ConfigPath"',
+      'Health check scheduled task action does not run this kit''s Invoke-NodeHealthCheck.ps1 script.',
+      'Health check scheduled task action does not use the current deployment config path.'
+    )) {
+    Assert-FileContainsText -Path "status.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      'TaskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked")',
+      'TaskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript")',
+      'TaskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath")',
+      'does not prove the Windows health check scheduled task action was checked',
+      'does not prove the Windows health check scheduled task runs this kit''s health-check script',
+      'does not prove the Windows health check scheduled task uses the current config path'
     )) {
     Assert-FileContainsText -Path "scripts/dev/Test-HostEvidence.ps1" -ExpectedText $expected
   }
@@ -316,6 +385,29 @@ function Assert-WindowsSupportMatrixContract {
   foreach ($target in $windowsClients) {
     Assert-ArrayContains -Values @($target.fallbackManagers) -Expected "pm2" -Context "support target '$($target.id)' fallback managers"
   }
+}
+
+function Assert-WindowsLatestReleaseHelperContract {
+  Write-Step "Windows latest-release helper IIS contract"
+
+  foreach ($expected in @(
+      'function Get-IisPublicProtocol',
+      'function Get-DefaultGeneratedConfigPath',
+      'if (Get-ConfigBool $Config "TlsEnabled" $false) { return "https" }',
+      '$defaultPort = if ($tlsEnabled) { 443 } else { 80 }',
+      'Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.json"',
+      'Generated config is retained because the Windows health-check task uses it.',
+      'Generated config retained:',
+      '$protocol = Get-IisPublicProtocol $Config',
+      '$publicPort = Get-IisPublicPort $Config',
+      'Where-Object { $_.protocol -eq $protocol -and $_.bindingInformation -like "*:${publicPort}:*" }',
+      'State = [string]$site.State',
+      'Start-Website -Name $State.Name',
+      'Stop-Website -Name $State.Name'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Deploy-LatestRelease.ps1" -ExpectedText $expected
+  }
+  Assert-FileDoesNotContainText -Path "scripts/windows/Deploy-LatestRelease.ps1" -UnexpectedText 'Remove-Item -LiteralPath $GeneratedConfigPath'
 }
 
 function Assert-WindowsExampleConfigContract {
@@ -363,7 +455,9 @@ Assert-WindowsReverseProxyRouting
 Assert-WindowsServiceEnvironmentContract
 Assert-WindowsUninstallRouting
 Assert-WindowsStatusEvidenceContract
+Assert-WindowsHealthCheckTaskContract
 Assert-WindowsSupportMatrixContract
+Assert-WindowsLatestReleaseHelperContract
 Assert-WindowsExampleConfigContract
 
 Write-Host ""

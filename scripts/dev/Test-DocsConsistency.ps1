@@ -86,11 +86,24 @@ function Split-LinkTarget {
 }
 
 function Get-DocFiles {
-  Get-ChildItem -Path $RepoRoot -Recurse -File -Include "*.md" |
-    Where-Object {
-      $relative = Get-RelativePath $_.FullName
-      $relative -notmatch '(^|/)(\.git|\.tmp|node_modules|\.next|dist|build|coverage)(/|$)'
+  $ignoredDirectoryNames = @(".git", ".tmp", "node_modules", ".next", "dist", "build", "coverage")
+  $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
+  $pending.Push((Get-Item -LiteralPath $RepoRoot))
+
+  while ($pending.Count -gt 0) {
+    $directory = $pending.Pop()
+    foreach ($item in Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction SilentlyContinue) {
+      if ($item.PSIsContainer) {
+        if ($ignoredDirectoryNames -notcontains $item.Name) {
+          $pending.Push($item)
+        }
+        continue
+      }
+      if ($item.Extension -ieq ".md") {
+        $item
+      }
     }
+  }
 }
 
 Write-Step "Docs consistency"
@@ -147,8 +160,11 @@ $requiredFiles = @(
   "scripts/dev/Test-SupportMatrix.ps1",
   "scripts/dev/Test-WindowsServiceManagers.ps1",
   "scripts/dev/Test-HostEvidenceWorkflow.ps1",
+  "scripts/dev/Test-HostEvidenceWorkflowInputs.ps1",
   "scripts/dev/Test-NextJsSupport.ps1",
   "scripts/dev/Test-ReactSupport.ps1",
+  "scripts/dev/lint-shellcheck.sh",
+  "scripts/dev/test-linux-container-smoke.sh",
   "scripts/dev/test-unix-nextjs-support.sh",
   "scripts/dev/New-ReleasePackage.ps1",
   "scripts/windows/Restore-ManagedBackup.ps1"

@@ -238,6 +238,7 @@ function Get-ServiceEvidence {
   param([object]$Evidence)
 
   $service = Get-PropertyValue -Object $Evidence -Names @("Service", "service")
+  $definition = Get-PropertyValue -Object $Evidence -Names @("ServiceDefinition", "serviceDefinition")
   $activeStatus = Get-StringValue -Object $Evidence -Names @("ServiceActiveStatus", "serviceActiveStatus")
   $enabledStatus = Get-StringValue -Object $Evidence -Names @("ServiceEnabledStatus", "serviceEnabledStatus")
 
@@ -266,6 +267,14 @@ function Get-ServiceEvidence {
   return [pscustomobject]@{
     ActiveStatus = if ($activeStatus) { $activeStatus } else { "unknown" }
     EnabledStatus = if ($enabledStatus) { $enabledStatus } else { "unknown" }
+    DefinitionChecked = Get-BooleanValue -Object $definition -Names @("Checked", "checked")
+    DefinitionExists = Get-BooleanValue -Object $definition -Names @("DefinitionExists", "definitionExists")
+    DefinitionSource = Get-StringValue -Object $definition -Names @("DefinitionSource", "definitionSource")
+    ServiceWrapperMatchesConfig = Get-BooleanValue -Object $definition -Names @("ServiceWrapperMatchesConfig", "serviceWrapperMatchesConfig")
+    NodeExeMatchesConfig = Get-BooleanValue -Object $definition -Names @("NodeExeMatchesConfig", "nodeExeMatchesConfig")
+    WorkingDirectoryMatchesConfig = Get-BooleanValue -Object $definition -Names @("WorkingDirectoryMatchesConfig", "workingDirectoryMatchesConfig")
+    ArgumentsMatchConfig = Get-BooleanValue -Object $definition -Names @("ArgumentsMatchConfig", "argumentsMatchConfig")
+    RunnerScriptMatchesConfig = Get-BooleanValue -Object $definition -Names @("RunnerScriptMatchesConfig", "runnerScriptMatchesConfig")
   }
 }
 
@@ -334,6 +343,9 @@ function Get-HealthMonitorEvidence {
     Scheduled = Get-BooleanValue -Object $monitor -Names @("Scheduled", "scheduled") -Default $false
     ScheduleType = Get-StringValue -Object $monitor -Names @("ScheduleType", "scheduleType")
     TaskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists")
+    TaskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked")
+    TaskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript")
+    TaskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath")
     TaskLastResult = Get-IntegerValue -Object $monitor -Names @("TaskLastResult", "taskLastResult")
     TaskMissedRuns = Get-IntegerValue -Object $monitor -Names @("TaskMissedRuns", "taskMissedRuns")
     SchedulerChecked = Get-BooleanValue -Object $monitor -Names @("SchedulerChecked", "schedulerChecked")
@@ -439,6 +451,7 @@ function Get-ReverseProxyEvidence {
     StatusCode = $statusCode
     IisModuleAvailable = Get-BooleanValue -Object $iis -Names @("ModuleAvailable", "moduleAvailable")
     IisSiteExists = Get-BooleanValue -Object $iis -Names @("SiteExists", "siteExists")
+    IisSiteStarted = Get-BooleanValue -Object $iis -Names @("SiteStarted", "siteStarted")
     IisSitePathMatchesConfig = Get-BooleanValue -Object $iis -Names @("SitePathMatchesConfig", "sitePathMatchesConfig")
     IisBindingMatchesConfig = Get-BooleanValue -Object $iis -Names @("BindingMatchesConfig", "bindingMatchesConfig")
     IisDuplicateBindingConflict = Get-BooleanValue -Object $iis -Names @("DuplicateBindingConflict", "duplicateBindingConflict")
@@ -694,6 +707,36 @@ function New-SelfTestEvidence {
     logFailureCount = 0
     logRestartCount = 0
   }
+  $systemdServiceDefinitionEvidence = [ordered]@{
+    checked = $true
+    manager = "systemd"
+    definitionSource = "systemd-unit"
+    definitionExists = $true
+    nodeExeMatchesConfig = $true
+    workingDirectoryMatchesConfig = $true
+    argumentsMatchConfig = $true
+    runnerScriptMatchesConfig = $false
+  }
+  $launchdServiceDefinitionEvidence = [ordered]@{
+    checked = $true
+    manager = "launchd"
+    definitionSource = "launchd-plist"
+    definitionExists = $true
+    nodeExeMatchesConfig = $true
+    workingDirectoryMatchesConfig = $true
+    argumentsMatchConfig = $true
+    runnerScriptMatchesConfig = $true
+  }
+  $bsdrcServiceDefinitionEvidence = [ordered]@{
+    checked = $true
+    manager = "bsdrc"
+    definitionSource = "bsdrc-init"
+    definitionExists = $true
+    nodeExeMatchesConfig = $true
+    workingDirectoryMatchesConfig = $true
+    argumentsMatchConfig = $true
+    runnerScriptMatchesConfig = $false
+  }
   $examples = @(
     @{
       Name = "windows-server-2022.json"
@@ -720,6 +763,16 @@ function New-SelfTestEvidence {
           Win32State = "Running"
           Win32StartMode = "Auto"
           ProcessId = 1234
+        }
+        ServiceDefinition = [ordered]@{
+          Checked = $true
+          Manager = "winsw"
+          DefinitionSource = "winsw-xml"
+          DefinitionExists = $true
+          ServiceWrapperMatchesConfig = $true
+          NodeExeMatchesConfig = $true
+          WorkingDirectoryMatchesConfig = $true
+          ArgumentsMatchConfig = $true
         }
         Port = [ordered]@{
           Checked = $true
@@ -750,6 +803,9 @@ function New-SelfTestEvidence {
           Scheduled = $true
           ScheduleType = "windows-task"
           TaskExists = $true
+          TaskActionChecked = $true
+          TaskActionUsesHealthCheckScript = $true
+          TaskActionUsesConfigPath = $true
           TaskLastResult = 0
           TaskMissedRuns = 0
           StateExists = $true
@@ -782,6 +838,7 @@ function New-SelfTestEvidence {
             SiteName = "example-next-app"
             SiteExists = $true
             SiteState = "Started"
+            SiteStarted = $true
             SitePathName = "example-next-app"
             ConfiguredSitePathName = "example-next-app"
             SitePathMatchesConfig = $true
@@ -832,6 +889,16 @@ function New-SelfTestEvidence {
           Win32StartMode = "Auto"
           ProcessId = 2234
         }
+        ServiceDefinition = [ordered]@{
+          Checked = $true
+          Manager = "winsw"
+          DefinitionSource = "winsw-xml"
+          DefinitionExists = $true
+          ServiceWrapperMatchesConfig = $true
+          NodeExeMatchesConfig = $true
+          WorkingDirectoryMatchesConfig = $true
+          ArgumentsMatchConfig = $true
+        }
         Port = [ordered]@{
           Checked = $true
           Port = 3000
@@ -861,6 +928,9 @@ function New-SelfTestEvidence {
           Scheduled = $true
           ScheduleType = "windows-task"
           TaskExists = $true
+          TaskActionChecked = $true
+          TaskActionUsesHealthCheckScript = $true
+          TaskActionUsesConfigPath = $true
           TaskLastResult = 0
           TaskMissedRuns = 0
           StateExists = $true
@@ -893,6 +963,7 @@ function New-SelfTestEvidence {
             SiteName = "example-next-app"
             SiteExists = $true
             SiteState = "Started"
+            SiteStarted = $true
             SitePathName = "example-next-app"
             ConfiguredSitePathName = "example-next-app"
             SitePathMatchesConfig = $true
@@ -929,6 +1000,7 @@ function New-SelfTestEvidence {
         serviceManager = "systemd"
         serviceActiveStatus = "active"
         serviceEnabledStatus = "enabled"
+        serviceDefinition = $systemdServiceDefinitionEvidence
         appRuntime = "node"
         port = $unixPortEvidence
         health = $unixHealthEvidence
@@ -985,6 +1057,7 @@ function New-SelfTestEvidence {
         serviceManager = "launchd"
         serviceActiveStatus = "active"
         serviceEnabledStatus = "enabled"
+        serviceDefinition = $launchdServiceDefinitionEvidence
         appRuntime = "node"
         port = $unixPortEvidence
         health = $unixHealthEvidence
@@ -1038,6 +1111,7 @@ function New-SelfTestEvidence {
         serviceManager = "bsdrc"
         serviceActiveStatus = "active"
         serviceEnabledStatus = "enabled"
+        serviceDefinition = $bsdrcServiceDefinitionEvidence
         appRuntime = "node"
         port = $unixPortEvidence
         health = $unixHealthEvidence
@@ -1091,6 +1165,7 @@ function New-SelfTestEvidence {
         serviceManager = "bsdrc"
         serviceActiveStatus = "active"
         serviceEnabledStatus = "enabled"
+        serviceDefinition = $bsdrcServiceDefinitionEvidence
         appRuntime = "node"
         port = $unixPortEvidence
         health = $unixHealthEvidence
@@ -1144,6 +1219,7 @@ function New-SelfTestEvidence {
         serviceManager = "bsdrc"
         serviceActiveStatus = "active"
         serviceEnabledStatus = "enabled"
+        serviceDefinition = $bsdrcServiceDefinitionEvidence
         appRuntime = "node"
         port = $unixPortEvidence
         health = $unixHealthEvidence
@@ -1214,6 +1290,19 @@ function Invoke-ExpectHostEvidenceFailure {
   }
   if ($outputText -notlike "*$ExpectedMessage*") {
     throw "Expected host evidence validation failure containing '$ExpectedMessage', got: $outputText"
+  }
+}
+
+function Invoke-ExpectHostEvidenceSuccess {
+  param(
+    [hashtable]$Parameters,
+    [string]$Name
+  )
+
+  try {
+    $null = & $PSCommandPath @Parameters 6>&1 2>&1
+  } catch {
+    throw "Expected host evidence validation success for '$Name', got: $($_.Exception.Message)"
   }
 }
 
@@ -1351,6 +1440,29 @@ function Test-EvidenceFile {
   if (-not (Test-ServiceEnabledEvidence -Status $serviceEvidence.EnabledStatus)) {
     $Issues.Add("$($File.FullName) does not prove service boot enablement (status: $($serviceEvidence.EnabledStatus)).") | Out-Null
   }
+  if ($serviceManager -in @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
+    if ($serviceEvidence.DefinitionChecked -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the managed service definition was checked.") | Out-Null
+    }
+    if ($serviceEvidence.DefinitionExists -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the managed service definition exists.") | Out-Null
+    }
+    if ($serviceManager -eq "winsw" -and $serviceEvidence.ServiceWrapperMatchesConfig -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the WinSW service wrapper path matches the current ServiceDirectory/AppName.") | Out-Null
+    }
+    if ($serviceEvidence.NodeExeMatchesConfig -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the managed service Node executable matches the current config.") | Out-Null
+    }
+    if ($serviceEvidence.WorkingDirectoryMatchesConfig -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the managed service working directory matches the current app directory.") | Out-Null
+    }
+    if ($serviceEvidence.ArgumentsMatchConfig -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the managed service arguments match the current start command and arguments.") | Out-Null
+    }
+    if ($serviceManager -eq "launchd" -and $serviceEvidence.RunnerScriptMatchesConfig -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the launchd service plist references the configured runner script.") | Out-Null
+    }
+  }
   if ($portEvidence.Checked -ne $true) {
     $Issues.Add("$($File.FullName) does not prove the configured app port check was performed.") | Out-Null
   }
@@ -1429,6 +1541,15 @@ function Test-EvidenceFile {
   if ((Normalize-Target $healthMonitorEvidence.ScheduleType) -eq "windows-task") {
     if ($healthMonitorEvidence.TaskExists -ne $true) {
       $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task exists.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskActionChecked -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task action was checked.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskActionUsesHealthCheckScript -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task runs this kit's health-check script.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskActionUsesConfigPath -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task uses the current config path.") | Out-Null
     }
     if ($null -eq $healthMonitorEvidence.TaskMissedRuns -or $healthMonitorEvidence.TaskMissedRuns -ne 0) {
       $Issues.Add("$($File.FullName) does not prove zero missed Windows health check task runs.") | Out-Null
@@ -1524,6 +1645,9 @@ function Test-EvidenceFile {
       if ($reverseProxyEvidence.IisSiteExists -ne $true) {
         $Issues.Add("$($File.FullName) does not prove the configured IIS site exists.") | Out-Null
       }
+      if ($reverseProxyEvidence.IisSiteStarted -ne $true) {
+        $Issues.Add("$($File.FullName) does not prove the configured IIS site is started.") | Out-Null
+      }
       if ($reverseProxyEvidence.IisSitePathMatchesConfig -ne $true) {
         $Issues.Add("$($File.FullName) does not prove the IIS site physical path matches the configured IisSitePath.") | Out-Null
       }
@@ -1592,6 +1716,101 @@ if ($SelfTest) {
     $RequireMinimumUptimeHours = 72
   }
   New-SelfTestEvidence -Path $EvidencePath
+
+  Invoke-ExpectHostEvidenceSuccess -Name "expected Windows Server standalone WinSW IIS evidence" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
+  }
+
+  $stoppedIisEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-stopped-iis-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $stoppedIisEvidencePath
+  $stoppedIisFile = Join-Path $stoppedIisEvidencePath "windows-server-2022.json"
+  $stoppedIisEvidence = Get-Content -LiteralPath $stoppedIisFile -Raw | ConvertFrom-Json
+  $stoppedIisEvidence.reverseProxy.iis.siteState = "Stopped"
+  $stoppedIisEvidence.reverseProxy.iis.siteStarted = $false
+  $stoppedIisEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $stoppedIisFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "configured IIS site is started" -Parameters @{
+    EvidencePath = $stoppedIisEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
+  }
+
+  $wrongHealthConfigEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-health-task-config-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $wrongHealthConfigEvidencePath
+  $wrongHealthConfigFile = Join-Path $wrongHealthConfigEvidencePath "windows-server-2022.json"
+  $wrongHealthConfigEvidence = Get-Content -LiteralPath $wrongHealthConfigFile -Raw | ConvertFrom-Json
+  $wrongHealthConfigEvidence.healthMonitor.taskActionUsesConfigPath = $false
+  $wrongHealthConfigEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongHealthConfigFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Windows health check scheduled task uses the current config path" -Parameters @{
+    EvidencePath = $wrongHealthConfigEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
+  }
+
+  $wrongServiceDefinitionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-service-definition-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $wrongServiceDefinitionEvidencePath
+  $wrongServiceDefinitionFile = Join-Path $wrongServiceDefinitionEvidencePath "windows-server-2022.json"
+  $wrongServiceDefinitionEvidence = Get-Content -LiteralPath $wrongServiceDefinitionFile -Raw | ConvertFrom-Json
+  $wrongServiceDefinitionEvidence.serviceDefinition.workingDirectoryMatchesConfig = $false
+  $wrongServiceDefinitionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongServiceDefinitionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "managed service working directory matches the current app directory" -Parameters @{
+    EvidencePath = $wrongServiceDefinitionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
+  }
+
+  Invoke-ExpectHostEvidenceSuccess -Name "expected Ubuntu standalone systemd nginx evidence" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  $wrongUnixServiceDefinitionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-unix-service-definition-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $wrongUnixServiceDefinitionEvidencePath
+  $wrongUnixServiceDefinitionFile = Join-Path $wrongUnixServiceDefinitionEvidencePath "ubuntu.json"
+  $wrongUnixServiceDefinitionEvidence = Get-Content -LiteralPath $wrongUnixServiceDefinitionFile -Raw | ConvertFrom-Json
+  $wrongUnixServiceDefinitionEvidence.serviceDefinition.argumentsMatchConfig = $false
+  $wrongUnixServiceDefinitionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongUnixServiceDefinitionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "managed service arguments match the current start command and arguments" -Parameters @{
+    EvidencePath = $wrongUnixServiceDefinitionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
 
   $syntheticEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-synthetic-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $syntheticEvidencePath
@@ -1694,6 +1913,39 @@ if ($SelfTest) {
     ExpectedNextJsMode = "next-start"
     ExpectedServiceManager = "systemd"
     ExpectedReverseProxy = "nginx"
+  }
+
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "target 'debian'" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "debian"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "service manager 'launchd'" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "launchd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "reverse proxy 'apache'" -Parameters @{
+    EvidencePath = $EvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "apache"
   }
 }
 

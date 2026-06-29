@@ -60,7 +60,8 @@ detect_platform_family() {
 }
 
 recommended_service_manager_for_family() {
-  local family="${1:-$(detect_platform_family)}"
+  local family
+  family="${1:-$(detect_platform_family)}"
   case "$family" in
     macos)
       echo "launchd"
@@ -78,7 +79,8 @@ recommended_service_manager_for_family() {
 }
 
 default_service_manager() {
-  local family="${1:-$(detect_platform_family)}"
+  local family
+  family="${1:-$(detect_platform_family)}"
   case "$family" in
     macos)
       echo "launchd"

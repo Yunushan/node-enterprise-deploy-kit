@@ -387,6 +387,9 @@ function New-ClaimSelfTestEvidence {
     Scheduled = $true
     ScheduleType = "windows-task"
     TaskExists = $true
+    TaskActionChecked = $true
+    TaskActionUsesHealthCheckScript = $true
+    TaskActionUsesConfigPath = $true
     TaskLastResult = 0
     TaskMissedRuns = 0
     StateExists = $true
@@ -519,6 +522,20 @@ function New-ClaimSelfTestEvidence {
               Win32StartMode = "Auto"
               ProcessId = 2234
             }
+            ServiceDefinition = [ordered]@{
+              Checked = $true
+              Manager = $serviceManagerValue
+              DefinitionSource = switch ($serviceManagerValue) {
+                "nssm" { "nssm-registry" }
+                "pm2" { "pm2-ecosystem" }
+                default { "winsw-xml" }
+              }
+              DefinitionExists = $true
+              ServiceWrapperMatchesConfig = if ($serviceManagerValue -eq "winsw") { $true } else { $null }
+              NodeExeMatchesConfig = $true
+              WorkingDirectoryMatchesConfig = $true
+              ArgumentsMatchConfig = $true
+            }
             Port = $windowsPort
             Health = $windowsHealth
             Uptime = $windowsUptime
@@ -542,6 +559,7 @@ function New-ClaimSelfTestEvidence {
                 Applicable = $true
                 ModuleAvailable = $true
                 SiteExists = $true
+                SiteStarted = $true
                 SitePathMatchesConfig = $true
                 BindingMatchesConfig = $true
                 DuplicateBindingConflict = $false
@@ -596,6 +614,22 @@ function New-ClaimSelfTestEvidence {
             serviceManager = $serviceManagerValue
             serviceActiveStatus = "active"
             serviceEnabledStatus = "enabled"
+            serviceDefinition = [ordered]@{
+              checked = $true
+              manager = $serviceManagerValue
+              definitionSource = switch ($serviceManagerValue) {
+                "launchd" { "launchd-plist" }
+                "bsdrc" { "bsdrc-init" }
+                "openrc" { "openrc-init" }
+                "systemv" { "systemv-init" }
+                default { "systemd-unit" }
+              }
+              definitionExists = $true
+              nodeExeMatchesConfig = $true
+              workingDirectoryMatchesConfig = $true
+              argumentsMatchConfig = $true
+              runnerScriptMatchesConfig = ($serviceManagerValue -eq "launchd")
+            }
             platform = $platform
             port = $unixPort
             health = $unixHealth

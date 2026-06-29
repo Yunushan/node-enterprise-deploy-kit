@@ -312,7 +312,7 @@ function Test-NextJsDeploymentLayout($Config) {
 
     $startCommand = [string](Get-ConfigString $Config "StartCommand" "server.js")
     if ([string]::IsNullOrWhiteSpace($startCommand) -or $startCommand -match '\s') {
-        Add-Warning "Next.js layout validation skipped because StartCommand is empty or contains shell-style arguments."
+        Add-Error "StartCommand must be a single file path for Next.js layout validation. Put script arguments in NodeArguments."
         return
     }
 
@@ -696,6 +696,9 @@ if (-not $SkipReverseProxy) {
                     $configuredSitePath = Get-NormalizedPathForCompare ([string]$config.IisSitePath)
                     if ($actualSitePath -and $configuredSitePath -and $actualSitePath -ine $configuredSitePath) {
                         Add-Warning "IIS site '$siteName' currently points to a different physical path. The IIS installer will update it to IisSitePath."
+                    }
+                    if ([string]$existingSite.State -ne "Started") {
+                        Add-Warning "IIS site '$siteName' is currently $($existingSite.State). The IIS installer will start it."
                     }
                 }
                 if ($iisSetForwardedHeaders) {

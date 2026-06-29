@@ -26,10 +26,11 @@ The verifier checks:
 - Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
 - React static package validation plus Windows/Unix preflight success/failure behavior
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
-- Local Node.js runtime smoke coverage for the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract used by standalone Next.js services
+- Local Node.js runtime smoke coverage for standalone and next-start Next.js services using the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract
 - release package hygiene and required release files
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
+- hosted Windows static verification on pinned Windows Server runner images (`windows-2022` and `windows-2025`)
 - support-claim gate self-test for strict Next.js mode, service-manager, and reverse-proxy evidence coverage
 - support evidence plan and workflow dispatch command generation from the machine-readable matrix
 - support evidence bundle generation with per-file SHA256, source-control provenance, CI provenance, support matrix SHA256, and collector provenance manifest
@@ -229,6 +230,8 @@ Next.js mode, service manager, and reverse proxy inputs from the support
 evidence plan or generated dispatch commands; mismatched evidence is rejected.
 The workflow refuses GitHub-hosted labels and requires `runner_labels` to include
 `self-hosted` plus the expected target label before evidence collection starts.
+Hosted labels such as `ubuntu-latest`, `ubuntu-24.04`, `windows-2022`,
+`windows-2025`, and `macos-15` are blocked for real-host evidence collection.
 Those expected target/mode/service/proxy inputs are required for dispatch.
 The workflow accepts only declared matrix values for expected Next.js mode,
 service manager, and reverse proxy, then validates the full combination against
@@ -256,6 +259,25 @@ For Unix-like hosts without PowerShell, run:
 ```bash
 bash scripts/dev/test-unix-nextjs-support.sh
 ```
+
+On GitHub-hosted Ubuntu runners, the CI workflow also runs target or
+target-family Linux userland smoke checks for Ubuntu, Debian, Linux Mint,
+RHEL/UBI, Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora,
+and Alpine:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
+```
+
+The wrapper has a no-Docker self-test for local repository verification:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --self-test
+```
+
+That job catches shell, package-manager, archive, and Node.js runtime
+differences in public target or target-family containers. It does not replace
+the real-host evidence bundle required for a final support claim.
 
 To build application artifacts for a Next.js standalone app, use the package
 helpers from a build workspace after `npm run build`:
@@ -310,6 +332,16 @@ available. If Ansible or the required collections are not installed on the
 validation machine, that optional check is skipped. CI installs `ansible-core`
 and `ansible/requirements.yml` before repository verification so the playbook
 syntax check runs deterministically in GitHub Actions.
+
+ShellCheck is a required GitHub Actions gate for Bash deployment scripts. CI
+installs ShellCheck before running:
+
+```bash
+bash scripts/dev/lint-shellcheck.sh
+```
+
+Run the same command locally after installing ShellCheck to catch portability
+warnings before pushing.
 
 ## Release Package
 

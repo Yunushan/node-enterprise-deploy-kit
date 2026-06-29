@@ -27,11 +27,12 @@ $repoRoot = $PSScriptRoot
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot $ConfigPath
 }
-if (-not (Test-Path $ConfigPath)) {
+$ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     throw "Config not found: $ConfigPath"
 }
 
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 $serviceName = [string]$config.AppName
 $escapedServiceName = $serviceName.Replace("'", "''")
 $configuredPort = [int]$config.Port
@@ -59,6 +60,7 @@ $script:reverseProxyEvidence = [pscustomobject]@{
         SiteName = ""
         SiteExists = $false
         SiteState = ""
+        SiteStarted = $null
         SitePathName = ""
         ConfiguredSitePathName = ""
         SitePathMatchesConfig = $null
@@ -108,11 +110,24 @@ $script:uptimeEvidence = [pscustomobject]@{
     MinimumSatisfied = $null
     ServiceStartKnown = $false
 }
+$script:serviceDefinitionEvidence = [pscustomobject]@{
+    Checked = $false
+    Manager = ""
+    DefinitionSource = ""
+    DefinitionExists = $false
+    ServiceWrapperMatchesConfig = $null
+    NodeExeMatchesConfig = $null
+    WorkingDirectoryMatchesConfig = $null
+    ArgumentsMatchConfig = $null
+}
 $script:healthMonitorEvidence = [pscustomobject]@{
     Status = "unknown"
     Scheduled = $false
     ScheduleType = "windows-task"
     TaskExists = $false
+    TaskActionChecked = $false
+    TaskActionUsesHealthCheckScript = $null
+    TaskActionUsesConfigPath = $null
     TaskLastResult = $null
     TaskMissedRuns = $null
     StateExists = $false
@@ -450,6 +465,170 @@ function Get-NormalizedPathForCompare([string]$Path) {
         return $expanded.TrimEnd([char[]]@('\', '/'))
     }
 }
+function Get-CommandArgumentValue {
+    param(
+        [string] $Arguments,
+        [string] $Name
+    )
+    if ([string]::IsNullOrWhiteSpace($Arguments) -or [string]::IsNullOrWhiteSpace($Name)) { return "" }
+
+    $pattern = '(?i)(?:^|\s)-' + [regex]::Escape($Name) + '(?:\s+|:)(?:"([^"]*)"|''([^'']*)''|(\S+))'
+    $match = [regex]::Match($Arguments, $pattern)
+    if (-not $match.Success) { return "" }
+
+    foreach ($index in 1..3) {
+        if ($match.Groups[$index].Success) {
+            return [string]$match.Groups[$index].Value
+        }
+    }
+    return ""
+}
+function Test-ConfiguredPathValue {
+    param(
+        [string] $Actual,
+        [string] $Expected
+    )
+    if ([string]::IsNullOrWhiteSpace($Actual) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+
+    $actualValue = $Actual.Trim().Trim('"')
+    $expectedValue = $Expected.Trim().Trim('"')
+    if ([System.IO.Path]::IsPathRooted($actualValue) -and [System.IO.Path]::IsPathRooted($expectedValue)) {
+        return ((Get-NormalizedPathForCompare $actualValue) -ieq (Get-NormalizedPathForCompare $expectedValue))
+    }
+    return ($actualValue -ieq $expectedValue)
+}
+function Test-TextContainsConfiguredPath {
+    param(
+        [string] $Text,
+        [string] $Expected
+    )
+    if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+
+    $normalizedExpected = Get-NormalizedPathForCompare $Expected
+    if ([string]::IsNullOrWhiteSpace($normalizedExpected)) { return $false }
+    return ($Text.IndexOf($normalizedExpected, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+function Get-ExpectedServiceArguments($Config) {
+    $startCommand = Get-ConfigString $Config "StartCommand" ""
+    $nodeArguments = Get-ConfigString $Config "NodeArguments" ""
+    return ("{0} {1}" -f $startCommand, $nodeArguments).Trim()
+}
+function Test-ConfiguredArgumentsValue {
+    param(
+        [string] $Actual,
+        [string] $Expected
+    )
+    return ([string]$Actual).Trim() -eq ([string]$Expected).Trim()
+}
+function Add-ServiceDefinitionMismatchFindings($Evidence) {
+    if ($Evidence.DefinitionExists -ne $true) {
+        Add-Finding -Severity Critical -Message "Windows service definition was not found for the configured service manager."
+        return
+    }
+    if ($Evidence.ServiceWrapperMatchesConfig -eq $false) {
+        Add-Finding -Severity Critical -Message "Windows service wrapper path does not match the current ServiceDirectory/AppName."
+    }
+    if ($Evidence.NodeExeMatchesConfig -ne $true) {
+        Add-Finding -Severity Critical -Message "Windows service NodeExe does not match the current deployment config."
+    }
+    if ($Evidence.WorkingDirectoryMatchesConfig -ne $true) {
+        Add-Finding -Severity Critical -Message "Windows service working directory does not match the current AppDirectory."
+    }
+    if ($Evidence.ArgumentsMatchConfig -ne $true) {
+        Add-Finding -Severity Critical -Message "Windows service arguments do not match the current StartCommand/NodeArguments."
+    }
+}
+function Get-WindowsServiceDefinitionEvidence($Config, $ServiceProcess) {
+    $manager = Normalize-Name (Get-ConfigString $Config "ServiceManager" "winsw")
+    $appName = Get-ConfigString $Config "AppName" ""
+    $serviceDirectory = Get-ConfigString $Config "ServiceDirectory" ""
+    $appDirectory = Get-ConfigString $Config "AppDirectory" ""
+    $nodeExe = Get-ConfigString $Config "NodeExe" "node"
+    $expectedArguments = Get-ExpectedServiceArguments $Config
+
+    $evidence = [pscustomobject]@{
+        Checked = $true
+        Manager = $manager
+        DefinitionSource = ""
+        DefinitionExists = $false
+        ServiceWrapperMatchesConfig = $null
+        NodeExeMatchesConfig = $null
+        WorkingDirectoryMatchesConfig = $null
+        ArgumentsMatchConfig = $null
+    }
+
+    switch ($manager) {
+        "winsw" {
+            $evidence.DefinitionSource = "winsw-xml"
+            $serviceExe = if ($serviceDirectory -and $appName) { Join-Path $serviceDirectory "$appName.exe" } else { "" }
+            $serviceXml = if ($serviceDirectory -and $appName) { Join-Path $serviceDirectory "$appName.xml" } else { "" }
+            if ($serviceProcess -and $serviceExe) {
+                $evidence.ServiceWrapperMatchesConfig = Test-TextContainsConfiguredPath -Text ([string]$serviceProcess.PathName) -Expected $serviceExe
+            }
+            if ($serviceXml -and (Test-Path -LiteralPath $serviceXml -PathType Leaf)) {
+                $evidence.DefinitionExists = $true
+                try {
+                    [xml]$definition = Get-Content -LiteralPath $serviceXml -Raw
+                    $evidence.NodeExeMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$definition.service.executable) -Expected $nodeExe
+                    $evidence.WorkingDirectoryMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$definition.service.workingdirectory) -Expected $appDirectory
+                    $evidence.ArgumentsMatchConfig = Test-ConfiguredArgumentsValue -Actual ([string]$definition.service.arguments) -Expected $expectedArguments
+                } catch {
+                    Add-Finding -Severity Critical -Message "Windows WinSW service XML exists but could not be parsed."
+                }
+            }
+        }
+        "nssm" {
+            $evidence.DefinitionSource = "nssm-registry"
+            $registryPath = Join-Path "HKLM:\SYSTEM\CurrentControlSet\Services" "$appName\Parameters"
+            if (Test-Path -LiteralPath $registryPath) {
+                $evidence.DefinitionExists = $true
+                try {
+                    $definition = Get-ItemProperty -LiteralPath $registryPath
+                    $evidence.NodeExeMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$definition.Application) -Expected $nodeExe
+                    $evidence.WorkingDirectoryMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$definition.AppDirectory) -Expected $appDirectory
+                    $evidence.ArgumentsMatchConfig = Test-ConfiguredArgumentsValue -Actual ([string]$definition.AppParameters) -Expected $expectedArguments
+                } catch {
+                    Add-Finding -Severity Critical -Message "Windows NSSM service registry parameters exist but could not be read."
+                }
+            }
+        }
+        "pm2" {
+            $evidence.DefinitionSource = "pm2-ecosystem"
+            $ecosystemPath = if ($serviceDirectory -and $appName) { Join-Path $serviceDirectory "$appName.pm2.config.cjs" } else { "" }
+            if ($ecosystemPath -and (Test-Path -LiteralPath $ecosystemPath -PathType Leaf)) {
+                $evidence.DefinitionExists = $true
+                try {
+                    $content = Get-Content -LiteralPath $ecosystemPath -Raw
+                    $json = ($content -replace '^\s*module\.exports\s*=\s*', '') -replace ';\s*$', ''
+                    $ecosystem = $json | ConvertFrom-Json
+                    $definition = @($ecosystem.apps | Where-Object { [string]$_.name -eq $appName } | Select-Object -First 1)
+                    if ($definition.Count -gt 0) {
+                        $appDefinition = $definition[0]
+                        $evidence.NodeExeMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$appDefinition.interpreter) -Expected $nodeExe
+                        $evidence.WorkingDirectoryMatchesConfig = Test-ConfiguredPathValue -Actual ([string]$appDefinition.cwd) -Expected $appDirectory
+                        $scriptMatchesConfig = ([string]$appDefinition.script).Trim() -eq (Get-ConfigString $Config "StartCommand" "").Trim()
+                        $argumentsMatchConfig = Test-ConfiguredArgumentsValue -Actual ([string]$appDefinition.args) -Expected (Get-ConfigString $Config "NodeArguments" "")
+                        $evidence.ArgumentsMatchConfig = ($scriptMatchesConfig -and $argumentsMatchConfig)
+                    } else {
+                        Add-Finding -Severity Critical -Message "Windows PM2 ecosystem file does not contain the configured app name."
+                    }
+                } catch {
+                    Add-Finding -Severity Critical -Message "Windows PM2 ecosystem file exists but could not be parsed."
+                }
+            }
+        }
+        default {
+            $evidence.Checked = $false
+            $evidence.DefinitionSource = "unsupported"
+            Add-Finding -Severity Warning -Message "Windows service definition verification does not support service manager '$manager'."
+        }
+    }
+
+    if ($evidence.Checked) {
+        Add-ServiceDefinitionMismatchFindings $evidence
+    }
+    return $evidence
+}
 function Get-IisExpectedBindingInformation([string]$Protocol, [int]$Port, [string]$HostHeader) {
     if ([string]::IsNullOrWhiteSpace($HostHeader)) { return "*:${Port}:" }
     return "*:${Port}:$HostHeader"
@@ -476,6 +655,7 @@ function Get-IisReverseProxyEvidence($Config, [string]$Mode) {
         SiteName = ""
         SiteExists = $false
         SiteState = ""
+        SiteStarted = $null
         SitePathName = ""
         ConfiguredSitePathName = ""
         SitePathMatchesConfig = $null
@@ -505,6 +685,7 @@ function Get-IisReverseProxyEvidence($Config, [string]$Mode) {
         SiteName = $siteName
         SiteExists = $false
         SiteState = ""
+        SiteStarted = $false
         SitePathName = ""
         ConfiguredSitePathName = Get-SafePathLeaf $configuredSitePath
         SitePathMatchesConfig = $null
@@ -533,6 +714,10 @@ function Get-IisReverseProxyEvidence($Config, [string]$Mode) {
     if ($site) {
         $evidence.SiteExists = $true
         $evidence.SiteState = [string]$site.State
+        $evidence.SiteStarted = ([string]$site.State) -ieq "Started"
+        if (-not $evidence.SiteStarted) {
+            Add-Finding -Severity Critical -Message "Configured IIS reverse proxy site is not started."
+        }
         $evidence.SitePathName = Get-SafePathLeaf ([string]$site.PhysicalPath)
         if (-not [string]::IsNullOrWhiteSpace($configuredSitePath)) {
             $evidence.SitePathMatchesConfig = (
@@ -767,7 +952,8 @@ function Show-NextJsRuntimeLayout {
             $runtimeRoot = Split-Path -Parent $startPath
         }
     } elseif ($mode -eq "standalone") {
-        Add-Finding -Severity Warning -Message "Next.js standalone layout verification skipped StartCommand path because it contains arguments."
+        Add-Finding -Severity Critical -Message "Next.js standalone StartCommand must be a single file path. Put script arguments in NodeArguments."
+        $layoutFailed = $true
     }
 
     $serverPath = if ($startPath) { $startPath } else { Join-Path $runtimeRoot "server.js" }
@@ -953,6 +1139,11 @@ if ($serviceProcess) {
     }
 }
 
+$script:serviceDefinitionEvidence = Get-WindowsServiceDefinitionEvidence -Config $config -ServiceProcess $serviceProcess
+$script:serviceDefinitionEvidence |
+    Select-Object Checked, Manager, DefinitionSource, DefinitionExists, ServiceWrapperMatchesConfig, NodeExeMatchesConfig, WorkingDirectoryMatchesConfig, ArgumentsMatchConfig |
+    Format-List
+
 $serviceProcessIds = @()
 if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessId -gt 0) {
     $serviceProcessIds += [int]$serviceProcess.ProcessId
@@ -1125,7 +1316,7 @@ if ([string]::IsNullOrWhiteSpace($reverseProxyMode) -or $reverseProxyMode -eq "n
 }
 if ($script:reverseProxyEvidence.Iis -and $script:reverseProxyEvidence.Iis.Applicable) {
     $script:reverseProxyEvidence.Iis |
-        Select-Object SiteName, SiteExists, SiteState, SitePathName, ConfiguredSitePathName, SitePathMatchesConfig, PublicPort, BindingProtocol, BindingMatchesConfig, DuplicateBindingCount |
+        Select-Object SiteName, SiteExists, SiteState, SiteStarted, SitePathName, ConfiguredSitePathName, SitePathMatchesConfig, PublicPort, BindingProtocol, BindingMatchesConfig, DuplicateBindingCount |
         Format-List
 }
 
@@ -1136,6 +1327,30 @@ $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($task) {
     $script:healthMonitorEvidence.Scheduled = $true
     $script:healthMonitorEvidence.TaskExists = $true
+    $expectedHealthCheckScript = Join-Path $repoRoot "scripts\windows\Invoke-NodeHealthCheck.ps1"
+    $taskAction = @($task.Actions | Select-Object -First 1)
+    if ($taskAction.Count -gt 0) {
+        $script:healthMonitorEvidence.TaskActionChecked = $true
+        $taskArguments = [string]$taskAction[0].Arguments
+        $taskScriptPath = Get-CommandArgumentValue -Arguments $taskArguments -Name "File"
+        $taskConfigPath = Get-CommandArgumentValue -Arguments $taskArguments -Name "ConfigPath"
+        $script:healthMonitorEvidence.TaskActionUsesHealthCheckScript = (
+            (Get-NormalizedPathForCompare $taskScriptPath) -ieq
+            (Get-NormalizedPathForCompare $expectedHealthCheckScript)
+        )
+        $script:healthMonitorEvidence.TaskActionUsesConfigPath = (
+            (Get-NormalizedPathForCompare $taskConfigPath) -ieq
+            (Get-NormalizedPathForCompare $ConfigPath)
+        )
+        if ($script:healthMonitorEvidence.TaskActionUsesHealthCheckScript -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not run this kit's Invoke-NodeHealthCheck.ps1 script."
+        }
+        if ($script:healthMonitorEvidence.TaskActionUsesConfigPath -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not use the current deployment config path."
+        }
+    } else {
+        Add-Finding -Severity Critical -Message "Health check scheduled task exists, but no task action could be read."
+    }
     $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
     if ($taskInfo) {
         $taskInfo |
@@ -1228,6 +1443,9 @@ if ($healthLogSummary) {
 
 $script:healthMonitorEvidence.Status = if (
     $script:healthMonitorEvidence.TaskExists -and
+    $script:healthMonitorEvidence.TaskActionChecked -and
+    ($script:healthMonitorEvidence.TaskActionUsesHealthCheckScript -eq $true) -and
+    ($script:healthMonitorEvidence.TaskActionUsesConfigPath -eq $true) -and
     $script:healthMonitorEvidence.StateExists -and
     $script:healthMonitorEvidence.LastSuccessFresh -and
     $script:healthMonitorEvidence.ConsecutiveFailures -eq 0 -and
@@ -1308,6 +1526,16 @@ $statusEvidence = [pscustomobject]@{
         Win32StartMode = if ($serviceProcess) { [string]$serviceProcess.StartMode } else { "" }
         ProcessId = if ($serviceProcess) { [int]$serviceProcess.ProcessId } else { 0 }
     }
+    ServiceDefinition = [pscustomobject]@{
+        Checked = [bool]$script:serviceDefinitionEvidence.Checked
+        Manager = [string]$script:serviceDefinitionEvidence.Manager
+        DefinitionSource = [string]$script:serviceDefinitionEvidence.DefinitionSource
+        DefinitionExists = [bool]$script:serviceDefinitionEvidence.DefinitionExists
+        ServiceWrapperMatchesConfig = $script:serviceDefinitionEvidence.ServiceWrapperMatchesConfig
+        NodeExeMatchesConfig = $script:serviceDefinitionEvidence.NodeExeMatchesConfig
+        WorkingDirectoryMatchesConfig = $script:serviceDefinitionEvidence.WorkingDirectoryMatchesConfig
+        ArgumentsMatchConfig = $script:serviceDefinitionEvidence.ArgumentsMatchConfig
+    }
     Port = [pscustomobject]@{
         Checked = [bool]$script:portEvidence.Checked
         Port = [int]$script:portEvidence.Port
@@ -1337,6 +1565,9 @@ $statusEvidence = [pscustomobject]@{
         Scheduled = [bool]$script:healthMonitorEvidence.Scheduled
         ScheduleType = [string]$script:healthMonitorEvidence.ScheduleType
         TaskExists = [bool]$script:healthMonitorEvidence.TaskExists
+        TaskActionChecked = [bool]$script:healthMonitorEvidence.TaskActionChecked
+        TaskActionUsesHealthCheckScript = $script:healthMonitorEvidence.TaskActionUsesHealthCheckScript
+        TaskActionUsesConfigPath = $script:healthMonitorEvidence.TaskActionUsesConfigPath
         TaskLastResult = $script:healthMonitorEvidence.TaskLastResult
         TaskMissedRuns = $script:healthMonitorEvidence.TaskMissedRuns
         StateExists = [bool]$script:healthMonitorEvidence.StateExists

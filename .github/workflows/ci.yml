@@ -12,6 +12,8 @@ jobs:
       - name: Install CI tooling
         shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
           python3 -m pip install --user ansible-core
           export PATH="$HOME/.local/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -21,17 +23,19 @@ jobs:
       - name: Repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1
-      - name: Optional ShellCheck
+      - name: ShellCheck
         shell: bash
-        run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck --severity=warning deploy.sh scripts/dev/*.sh scripts/linux/*.sh
-          else
-            echo "shellcheck not found; skipping optional ShellCheck validation."
-          fi
+        run: bash scripts/dev/lint-shellcheck.sh
 
   windows-checks:
-    runs-on: windows-latest
+    name: windows-checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
     steps:
       - uses: actions/checkout@v7
       - name: Windows repository verification
@@ -64,6 +68,31 @@ jobs:
       - name: Platform family mapping
         shell: bash
         run: bash scripts/dev/test-platform-matrix.sh --case "${{ matrix.platform }}"
+
+  linux-container-smoke:
+    name: linux-container-smoke (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        platform:
+          - ubuntu
+          - debian
+          - linux-mint
+          - rhel
+          - oracle-linux
+          - centos
+          - centos-stream
+          - rocky
+          - almalinux
+          - fedora
+          - alpine
+    steps:
+      - uses: actions/checkout@v7
+      - name: Linux container Unix/Next.js smoke
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}"
 
   macos-checks:
     runs-on: macos-15

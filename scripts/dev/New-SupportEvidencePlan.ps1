@@ -611,26 +611,64 @@ if ($SelfTest) {
   if ($firstStrict.workflowDispatchSupported -ne $true) {
     throw "Support evidence plan self-test failed: first strict evidence entry should support workflow dispatch."
   }
-  if (-not $firstStrict.PSObject.Properties["workflowInputs"]) {
-    throw "Support evidence plan self-test failed: workflowInputs missing from strict evidence entry."
+  $allPlanEntries = @($parsed.strictEvidence) + @($parsed.serviceOnlyEvidence) + @($parsed.fallbackEvidence)
+  $workflowSupportedEntries = @($allPlanEntries | Where-Object { $_.workflowDispatchSupported -eq $true })
+  if ($workflowSupportedEntries.Count -lt 1) {
+    throw "Support evidence plan self-test failed: expected at least one workflow-dispatch-supported evidence entry."
   }
-  if ($firstStrict.workflowInputs.expected_target_id -ne $firstStrict.targetId) {
-    throw "Support evidence plan self-test failed: expected_target_id does not match targetId."
-  }
-  if ($firstStrict.workflowInputs.expected_nextjs_mode -ne $firstStrict.nextJsMode) {
-    throw "Support evidence plan self-test failed: expected_nextjs_mode does not match nextJsMode."
-  }
-  if ($firstStrict.workflowInputs.expected_service_manager -ne $firstStrict.serviceManager) {
-    throw "Support evidence plan self-test failed: expected_service_manager does not match serviceManager."
-  }
-  if ($firstStrict.workflowInputs.expected_reverse_proxy -ne $firstStrict.reverseProxy) {
-    throw "Support evidence plan self-test failed: expected_reverse_proxy does not match reverseProxy."
-  }
-  if (-not ([string]$firstStrict.workflowDispatchCommand).Contains("gh workflow run")) {
-    throw "Support evidence plan self-test failed: workflowDispatchCommand is missing gh workflow run."
-  }
-  if (-not ([string]$firstStrict.workflowDispatchCommand).Contains("expected_target_id=$($firstStrict.targetId)")) {
-    throw "Support evidence plan self-test failed: workflowDispatchCommand is missing expected_target_id."
+  foreach ($entry in $workflowSupportedEntries) {
+    $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
+    if (-not $entry.PSObject.Properties["workflowInputs"]) {
+      throw "Support evidence plan self-test failed: workflowInputs missing from $context."
+    }
+    foreach ($requiredInput in @(
+        "runner_labels",
+        "platform",
+        "config_path",
+        "evidence_name",
+        "expected_target_id",
+        "expected_nextjs_mode",
+        "expected_service_manager",
+        "expected_reverse_proxy",
+        "minimum_uptime_hours",
+        "require_reverse_proxy",
+        "fail_on_warnings",
+        "upload_retention_days"
+      )) {
+      if (-not $entry.workflowInputs.PSObject.Properties[$requiredInput]) {
+        throw "Support evidence plan self-test failed: workflowInputs.$requiredInput missing from $context."
+      }
+    }
+    if ($entry.workflowInputs.expected_target_id -ne $entry.targetId) {
+      throw "Support evidence plan self-test failed: expected_target_id does not match targetId for $context."
+    }
+    if ($entry.workflowInputs.expected_nextjs_mode -ne $entry.nextJsMode) {
+      throw "Support evidence plan self-test failed: expected_nextjs_mode does not match nextJsMode for $context."
+    }
+    if ($entry.workflowInputs.expected_service_manager -ne $entry.serviceManager) {
+      throw "Support evidence plan self-test failed: expected_service_manager does not match serviceManager for $context."
+    }
+    if ($entry.workflowInputs.expected_reverse_proxy -ne $entry.reverseProxy) {
+      throw "Support evidence plan self-test failed: expected_reverse_proxy does not match reverseProxy for $context."
+    }
+    if ([int]$entry.workflowInputs.minimum_uptime_hours -ne [int]$entry.requiredMinimumUptimeHours) {
+      throw "Support evidence plan self-test failed: minimum_uptime_hours does not match requiredMinimumUptimeHours for $context."
+    }
+    $command = [string]$entry.workflowDispatchCommand
+    if (-not $command.Contains("gh workflow run")) {
+      throw "Support evidence plan self-test failed: workflowDispatchCommand is missing gh workflow run for $context."
+    }
+    foreach ($expectedFragment in @(
+        "expected_target_id=$($entry.targetId)",
+        "expected_nextjs_mode=$($entry.nextJsMode)",
+        "expected_service_manager=$($entry.serviceManager)",
+        "expected_reverse_proxy=$($entry.reverseProxy)",
+        "minimum_uptime_hours=$($entry.requiredMinimumUptimeHours)"
+      )) {
+      if (-not $command.Contains($expectedFragment)) {
+        throw "Support evidence plan self-test failed: workflowDispatchCommand is missing $expectedFragment for $context."
+      }
+    }
   }
   $planMarkdown = ConvertTo-PlanMarkdown -Plan $plan
   if ($planMarkdown.Contains('$targetCell') -or $planMarkdown.Contains('$workflowCell')) {

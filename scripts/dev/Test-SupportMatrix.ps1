@@ -206,9 +206,10 @@ $reverseProxyArtifacts = @{
 $ciWorkflowText = Get-Content -LiteralPath (Join-Path $RepoRoot ".github\workflows\ci.yml") -Raw
 $platformMatrixText = Get-Content -LiteralPath (Join-Path $RepoRoot "scripts\dev\test-platform-matrix.sh") -Raw
 $staticVerificationJobRequirements = @{
-  "basic-checks" = @("Test-Repository.ps1")
-  "windows-checks" = @("Test-Repository.ps1", "-SkipShellSyntax")
+  "basic-checks" = @("Test-Repository.ps1", "apt-get install -y shellcheck", "lint-shellcheck.sh")
+  "windows-checks" = @("Test-Repository.ps1", "-SkipShellSyntax", "windows-2022", "windows-2025")
   "linux-family-static-checks" = @("test-platform-matrix.sh", '${{ matrix.platform }}')
+  "linux-container-smoke" = @("test-linux-container-smoke.sh", '${{ matrix.platform }}', "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora", "alpine")
   "macos-checks" = @("test-platform-matrix.sh --case macos", "test-unix-nextjs-support.sh")
 }
 $ciWorkflowJobBlocks = @{}
@@ -335,6 +336,9 @@ foreach ($target in $targets) {
         Add-Issue $issues "$id must set platformMatrixCase."
       } elseif ($platformMatrixText -notmatch "(?m)^\s*$([regex]::Escape([string]$target.platformMatrixCase))\)") {
         Add-Issue $issues "$id platformMatrixCase is not handled by test-platform-matrix.sh."
+      }
+      if ($staticVerification -notcontains "linux-container-smoke") {
+        Add-Issue $issues "$id must include linux-container-smoke for target or target-family Linux userland CI coverage."
       }
       if ($evidenceTargets -notcontains "linux") {
         Add-Issue $issues "$id evidenceTargets must include linux."

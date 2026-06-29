@@ -24,10 +24,20 @@ function Backup-ScheduledTaskIfExists([string]$TaskName, [string]$BackupDirector
     Export-ScheduledTask -TaskName $TaskName | Set-Content -Path $backupPath -Encoding UTF8
     Write-Host "Backed up scheduled task $TaskName to $backupPath"
 }
+function Resolve-ConfigPath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
 
 Assert-Admin
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+$ConfigPath = Resolve-ConfigPath $ConfigPath
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    throw "Config not found: $ConfigPath"
+}
+$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 $scriptPath = Join-Path $repoRoot "scripts\windows\Invoke-NodeHealthCheck.ps1"
 $taskName = "$($config.AppName)-HealthCheck"
 $backupDirectory = Get-BackupDirectory $config

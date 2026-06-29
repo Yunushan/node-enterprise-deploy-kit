@@ -60,6 +60,28 @@ function Get-ConfigValue($Config, [string]$Name, $Default) {
     return $Default
 }
 
+function Get-ConfigBool($Config, [string]$Name, [bool]$Default) {
+    if (-not $Config.PSObject.Properties[$Name]) { return $Default }
+    $value = $Config.$Name
+    if ($value -is [bool]) { return [bool]$value }
+    switch -Regex ([string]$value) {
+        '^(true|1|yes)$' { return $true }
+        '^(false|0|no)$' { return $false }
+        default { return $Default }
+    }
+}
+
+function Get-IisPublicProtocol($Config) {
+    if (Get-ConfigBool $Config "TlsEnabled" $false) { return "https" }
+    return "http"
+}
+
+function Get-IisPublicPort($Config) {
+    $tlsEnabled = Get-ConfigBool $Config "TlsEnabled" $false
+    $defaultPort = if ($tlsEnabled) { 443 } else { 80 }
+    return [int](Get-ConfigValue $Config "PublicPort" $defaultPort)
+}
+
 function Get-ReleaseSortTime($Directory) {
     $name = [System.IO.Path]::GetFileName($Directory.FullName)
     if ($name -match '(\d{8})-(\d{4}|\d{6})$') {
@@ -136,6 +158,15 @@ function Write-GeneratedConfig($Config, [string]$Path) {
     $Config | ConvertTo-Json -Depth 40 | Set-Content -Path $Path -Encoding UTF8
 }
 
+function Get-DefaultGeneratedConfigPath($Config) {
+    $safeName = ([string]$Config.AppName) -replace '[^A-Za-z0-9_.-]', '_'
+    $serviceDirectory = [string](Get-ConfigValue $Config "ServiceDirectory" "")
+    if (-not [string]::IsNullOrWhiteSpace($serviceDirectory)) {
+        return (Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.json")
+    }
+    return (Join-Path $repoRoot ".tmp\windows-live-deploy\$safeName.latest-release.json")
+}
+
 function Get-ServiceXmlPath($Config) {
     if (-not $Config.PSObject.Properties["ServiceDirectory"] -or [string]::IsNullOrWhiteSpace([string]$Config.ServiceDirectory)) {
         return ""
@@ -154,6 +185,7 @@ function Get-CurrentIisSiteState($Config) {
             Name = $siteName
             PhysicalPath = [string]$site.PhysicalPath
             ApplicationPool = [string]$site.ApplicationPool
+            State = [string]$site.State
         }
     } catch {
         Write-Warning "Could not snapshot IIS site state for rollback. $($_.Exception.Message)"
@@ -172,6 +204,11 @@ function Restore-IisSiteState($State) {
             if (-not [string]::IsNullOrWhiteSpace($State.ApplicationPool)) {
                 Set-ItemProperty "IIS:\Sites\$($State.Name)" -Name applicationPool -Value $State.ApplicationPool
             }
+            if ([string]$State.State -eq "Started") {
+                Start-Website -Name $State.Name -ErrorAction SilentlyContinue | Out-Null
+            } elseif ([string]$State.State -eq "Stopped") {
+                Stop-Website -Name $State.Name -ErrorAction SilentlyContinue | Out-Null
+            }
             Write-Warning "Restored IIS site '$($State.Name)' to previous physical path."
         }
     } catch {
@@ -181,13 +218,14 @@ function Restore-IisSiteState($State) {
 
 function Get-ExistingPublicPortBindings($Config) {
     $siteName = [string](Get-ConfigValue $Config "IisSiteName" $Config.AppName)
-    $publicPort = [int](Get-ConfigValue $Config "PublicPort" 80)
+    $protocol = Get-IisPublicProtocol $Config
+    $publicPort = Get-IisPublicPort $Config
     try {
         Import-Module WebAdministration -ErrorAction Stop
         return @(Get-ChildItem IIS:\Sites | ForEach-Object {
             $site = $_
             $site.Bindings.Collection |
-                Where-Object { $_.protocol -eq "http" -and $_.bindingInformation -like "*:${publicPort}:*" } |
+                Where-Object { $_.protocol -eq $protocol -and $_.bindingInformation -like "*:${publicPort}:*" } |
                 ForEach-Object {
                     [pscustomobject]@{
                         SiteName = $site.Name
@@ -257,8 +295,7 @@ if (-not [string]::IsNullOrWhiteSpace($normalizedHealthPath)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($GeneratedConfigPath)) {
-    $safeName = ([string]$runtimeConfig.AppName) -replace '[^A-Za-z0-9_.-]', '_'
-    $GeneratedConfigPath = Join-Path $repoRoot ".tmp\windows-live-deploy\$safeName.generated.json"
+    $GeneratedConfigPath = Get-DefaultGeneratedConfigPath $runtimeConfig
 } else {
     $GeneratedConfigPath = Resolve-RepoPath $GeneratedConfigPath
 }
@@ -266,6 +303,7 @@ Write-GeneratedConfig -Config $runtimeConfig -Path $GeneratedConfigPath
 
 Write-Host "Selected release folder: $selectedReleasePath" -ForegroundColor Cyan
 Write-Host "Generated config: $GeneratedConfigPath"
+Write-Host "Generated config is retained because the Windows health-check task uses it."
 Write-Host "Service: $($runtimeConfig.AppName)"
 Write-Host "IIS site: $($runtimeConfig.IisSiteName)"
 Write-Host "IIS path: $($runtimeConfig.IisSitePath)"
@@ -318,6 +356,6 @@ try {
     throw
 } finally {
     if (-not $KeepGeneratedConfig -and (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf)) {
-        Remove-Item -LiteralPath $GeneratedConfigPath -Force
+        Write-Host "Generated config retained: $GeneratedConfigPath"
     }
 }

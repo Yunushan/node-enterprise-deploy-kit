@@ -154,6 +154,14 @@ The full repository verifier runs the matrix check automatically:
 .\scripts\dev\Test-Repository.ps1
 ```
 
+Linux targets must reference the `linux-family-static-checks` job and the
+`linux-container-smoke` job. The static job checks the declared platform
+mapping for every Linux, macOS, and BSD row. The container smoke job runs the
+Unix deployment and Next.js checks inside public target or target-family
+containers for Ubuntu, Debian, Linux Mint, RHEL/UBI, Oracle Linux,
+CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine before any
+release evidence is collected.
+
 It also runs `Test-WindowsServiceManagers.ps1` and
 `Test-SupportClaim.ps1 -SelfTest`, which validates the strict claim gate
 against generated evidence for every target in the matrix across the declared

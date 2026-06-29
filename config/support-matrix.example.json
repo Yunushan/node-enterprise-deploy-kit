@@ -109,7 +109,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["ubuntu", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -121,7 +121,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["debian", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -133,7 +133,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["linux-mint", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -145,7 +145,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["rhel", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -157,7 +157,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["oracle-linux", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -169,7 +169,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["centos", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -181,7 +181,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["centos-stream", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -193,7 +193,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["rocky", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -205,7 +205,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["almalinux", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -217,7 +217,7 @@
       "serviceManagers": ["systemd"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["fedora", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },
@@ -229,7 +229,7 @@
       "serviceManagers": ["openrc"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
       "evidenceTargets": ["alpine", "linux"],
       "minimumClaimLevel": "real-host-verified"
     },

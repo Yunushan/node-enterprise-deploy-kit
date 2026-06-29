@@ -130,10 +130,14 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
 
 function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js runtime layout"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js standalone StartCommand must be a single file path."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js next-start mode requires NodeArguments to start with 'start'."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "DuplicateBindingCount"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Configured IIS reverse proxy site is not started."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Configured IIS site does not own the expected public binding."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "OwnedByService"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/windows/Install-IISReverseProxy.ps1") -ExpectedText "Ensure-WebsiteStarted"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the configured IIS site is started."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Health = [pscustomobject]"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Uptime = [pscustomobject]"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "HealthMonitor = [pscustomobject]"
@@ -870,6 +874,29 @@ try {
   New-WindowsConfig -Path $windowsMissingBuildIdConfig -AppDirectory $windowsMissingBuildIdApp -ServiceDirectory (Join-Path $windowsMissingBuildIdRoot "svc") -LogDirectory (Join-Path $windowsMissingBuildIdRoot "logs") -Port 39124
   Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsMissingBuildIdConfig -ExpectedText "BUILD_ID"
   Invoke-ExpectRuntimeLayoutPowerShellFailure -ConfigPath $windowsMissingBuildIdConfig -ExpectedText "BUILD_ID"
+
+  $windowsShellStyleStartRoot = Join-Path $testRoot "windows-shell-style-start-command"
+  $windowsShellStyleStartApp = Join-Path $windowsShellStyleStartRoot "app"
+  New-StandaloneLayout -AppDirectory $windowsShellStyleStartApp -WithoutStatic
+  Write-Utf8NoBom -Path (Join-Path $windowsShellStyleStartApp "node server.js") -Text "console.log('placeholder');`n"
+  $windowsShellStyleStartConfig = Join-Path $windowsShellStyleStartRoot "app.config.json"
+  New-WindowsConfig -Path $windowsShellStyleStartConfig -AppDirectory $windowsShellStyleStartApp -ServiceDirectory (Join-Path $windowsShellStyleStartRoot "svc") -LogDirectory (Join-Path $windowsShellStyleStartRoot "logs") -Port 39125 -StartCommand "node server.js"
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsShellStyleStartConfig -ExpectedText "StartCommand must be a single file path for Next.js layout validation"
+  Invoke-ExpectRuntimeLayoutPowerShellFailure -ConfigPath $windowsShellStyleStartConfig -ExpectedText "StartCommand must be a single file path"
+  if (Test-WindowsStatusSmokeSupported) {
+    $windowsShellStyleStatusJson = Join-Path $windowsShellStyleStartRoot "status.json"
+    & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsShellStyleStartConfig -HealthTimeoutSeconds 1 -JsonPath $windowsShellStyleStatusJson *>&1 | Out-Null
+    $windowsShellStyleEvidence = Get-Content -Path $windowsShellStyleStatusJson -Raw | ConvertFrom-Json
+    if ($windowsShellStyleEvidence.NextJsRuntime.Status -ne "failed") {
+      throw "Windows status JSON should mark shell-style StartCommand Next.js layout as failed."
+    }
+    if ([int]$windowsShellStyleEvidence.Critical -lt 1) {
+      throw "Windows status JSON should report a critical finding for shell-style StartCommand."
+    }
+    if (@($windowsShellStyleEvidence.Findings | Where-Object { [string]$_.Message -match "StartCommand must be a single file path" }).Count -lt 1) {
+      throw "Windows status JSON should include the shell-style StartCommand finding."
+    }
+  }
 
   $windowsNextStartRoot = Join-Path $testRoot "windows-next-start"
   $windowsNextStartApp = Join-Path $windowsNextStartRoot "app"

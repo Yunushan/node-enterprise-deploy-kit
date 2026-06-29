@@ -54,8 +54,10 @@ name, verdict, finding counts, sanitized health URL, deployment/build identity,
 path basenames, platform metadata, normalized `supportTargetId`, safe Node.js
 runtime and Next.js package version strings when available, live collector
 metadata in `evidenceCollection`, the collector SHA256 digest when available,
-explicit `synthetic: false`, `mock: false`, and `sample: false` provenance
-markers, optional safe CI collection provenance, and redacted finding messages.
+managed service-definition proof for Windows and Unix-like service managers,
+Windows scheduled-task action proof, explicit `synthetic: false`, `mock: false`,
+and `sample: false` provenance markers, optional safe CI collection provenance,
+and redacted finding messages.
 CI collection provenance is limited to provider, workflow name, run ID, run
 attempt, event name, ref name, and commit SHA; it does not include runtime
 environment values, raw host identity, full filesystem paths, raw logs, HTTP
@@ -75,8 +77,9 @@ names, or secrets in workflow inputs.
 The workflow validates `runner_labels` and expected collection dimensions before
 collection. Labels must be a JSON array containing `self-hosted` and the exact
 `expected_target_id` label. GitHub-hosted labels such as `ubuntu-latest`,
-`windows-latest`, and `macos-latest` are rejected because they cannot prove
-real-host support.
+`ubuntu-24.04`, `windows-latest`, `windows-2022`, `windows-2025`,
+`macos-latest`, and `macos-15` are rejected because they cannot prove real-host
+support.
 
 The local config files `config/windows/app.config.json` and
 `config/linux/app.env` are ignored by git. On self-hosted runners, create the
@@ -360,9 +363,9 @@ Evidence is acceptable when:
 - For reverse-proxy deployments, `-RequireReverseProxy` proves the proxy health
   route returned a successful HTTP status.
 - For Windows IIS reverse-proxy deployments, `-RequireReverseProxy` also proves
-  the configured IIS site exists, its physical path matches the configured
-  deployment path, it owns the expected public binding, and no other IIS site
-  has the same binding.
+  the configured IIS site exists, is started, its physical path matches the
+  configured deployment path, it owns the expected public binding, and no other
+  IIS site has the same binding.
 - For Unix-like Nginx, Apache, HAProxy, and Traefik deployments,
   `-RequireReverseProxy` also proves the expected proxy config file exists and
   contains this kit's managed marker for the app. Evidence records only safe
@@ -400,8 +403,8 @@ Evidence is not enough when:
 - The reverse proxy was not probed, was skipped, or returned a non-successful
   health status.
 - A Windows IIS deployment has a healthy Node service but IIS still points to an
-  old release folder, a different site owns the public binding, or duplicate
-  IIS sites share the same public binding.
+  old release folder, the configured IIS site is stopped, a different site owns
+  the public binding, or duplicate IIS sites share the same public binding.
 - A Unix-like reverse-proxy deployment has a healthy backend health endpoint
   but the expected Nginx, Apache, HAProxy, or Traefik config file is missing or
   does not carry this kit's managed marker for the app.

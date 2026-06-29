@@ -270,7 +270,8 @@ nextjs_runtime_summary() {
         next_start_script_path="${app_dir%/}/$start_script"
       fi
     fi
-    case "$(printf '%s' "$next_start_script_path" | tr '\\' '/')" in
+    normalized_next_start_script_path="${next_start_script_path//\\//}"
+    case "$normalized_next_start_script_path" in
       */node_modules/next/*) next_start_under_next_package="true" ;;
       *) next_start_under_next_package="false" ;;
     esac

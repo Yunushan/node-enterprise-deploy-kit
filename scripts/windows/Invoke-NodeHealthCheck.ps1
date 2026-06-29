@@ -1,6 +1,17 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)] [string] $ConfigPath)
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+function Resolve-ConfigPath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
+$ConfigPath = Resolve-ConfigPath $ConfigPath
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    throw "Config not found: $ConfigPath"
+}
+$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
 $logFile = Join-Path $config.LogDirectory "healthcheck.log"
 $stateFile = Join-Path $config.LogDirectory "healthcheck.state.json"

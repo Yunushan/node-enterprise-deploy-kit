@@ -478,6 +478,16 @@ function New-SelfTestEvidence {
       Win32StartMode = "Auto"
       ProcessId = 1234
     }
+    ServiceDefinition = [ordered]@{
+      Checked = $true
+      Manager = "winsw"
+      DefinitionSource = "winsw-xml"
+      DefinitionExists = $true
+      ServiceWrapperMatchesConfig = $true
+      NodeExeMatchesConfig = $true
+      WorkingDirectoryMatchesConfig = $true
+      ArgumentsMatchConfig = $true
+    }
     Port = [ordered]@{
       Checked = $true
       Port = 3000
@@ -507,6 +517,9 @@ function New-SelfTestEvidence {
       Scheduled = $true
       ScheduleType = "windows-task"
       TaskExists = $true
+      TaskActionChecked = $true
+      TaskActionUsesHealthCheckScript = $true
+      TaskActionUsesConfigPath = $true
       TaskLastResult = 0
       TaskMissedRuns = 0
       StateExists = $true
@@ -539,6 +552,7 @@ function New-SelfTestEvidence {
         SiteName = "example-next-app"
         SiteExists = $true
         SiteState = "Started"
+        SiteStarted = $true
         SitePathName = "example-next-app"
         ConfiguredSitePathName = "example-next-app"
         SitePathMatchesConfig = $true

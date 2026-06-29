@@ -206,6 +206,16 @@ function Ensure-SslBinding([int]$Port, [string]$HostHeader, [string]$Thumbprint)
         Get-Item $certPath | New-Item $sslPath -SSLFlags $sslFlags | Out-Null
     }
 }
+function Ensure-WebsiteStarted([string]$SiteName) {
+    $site = Get-Website -Name $SiteName -ErrorAction SilentlyContinue
+    if (-not $site) {
+        throw "IIS site was not found after configuration: $SiteName"
+    }
+    if ([string]$site.State -ne "Started") {
+        Start-Website -Name $SiteName | Out-Null
+        Write-Host "Started IIS site: $SiteName"
+    }
+}
 
 Assert-Admin
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -292,6 +302,7 @@ if ($PSCmdlet.ShouldProcess($siteName, "Configure IIS site")) {
     if ($tlsEnabled) {
         Ensure-SslBinding -Port $publicPort -HostHeader $publicHostName -Thumbprint $thumbprint
     }
+    Ensure-WebsiteStarted -SiteName $siteName
 }
 
 Write-Host "IIS web.config created: $out" -ForegroundColor Green

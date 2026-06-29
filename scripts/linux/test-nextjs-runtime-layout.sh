@@ -244,7 +244,8 @@ elif [[ "$MODE" == "next-start" ]]; then
       next_start_script_path="${APP_DIR%/}/$START_SCRIPT"
     fi
     [[ -f "$next_start_script_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $next_start_script_path"
-    case "$(printf '%s' "$next_start_script_path" | tr '\\' '/')" in
+    normalized_next_start_script_path="${next_start_script_path//\\//}"
+    case "$normalized_next_start_script_path" in
       */node_modules/next/*) ;;
       *) add_error "Next.js next-start START_SCRIPT should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next." ;;
     esac

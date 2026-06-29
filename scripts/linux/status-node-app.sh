@@ -103,6 +103,7 @@ SERVICE_NAME="${SERVICE_NAME:-${APP_NAME:-}}"
 if [[ "$APP_RUNTIME_NORMALIZED" == "tomcat" || "$APP_RUNTIME_NORMALIZED" == "apache-tomcat" ]]; then
   SERVICE_NAME="${TOMCAT_SERVICE:-$SERVICE_NAME}"
 fi
+RUNNER_SCRIPT="${RUNNER_SCRIPT:-/usr/local/sbin/${APP_NAME}-runner.sh}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-${HEALTHCHECK_TIMEOUT:-10}}"
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME:-app}}"
 HEALTHCHECK_STATE_FILE="$HEALTHCHECK_STATE_DIR/healthcheck.state"
@@ -112,6 +113,7 @@ SERVICE_ACTIVE_STATUS="unknown"
 SERVICE_ENABLED_STATUS="unknown"
 NEXTJS_LAYOUT_APPLICABLE="false"
 NEXTJS_LAYOUT_STATUS="not-applicable"
+NEXTJS_RUNTIME_ROOT=""
 REVERSE_PROXY_APPLICABLE="false"
 REVERSE_PROXY_STATUS="not-applicable"
 REVERSE_PROXY_PROBE_URL=""
@@ -138,6 +140,14 @@ HOST_UPTIME_SECONDS=""
 SERVICE_UPTIME_SECONDS=""
 UPTIME_MINIMUM_SATISFIED=""
 SERVICE_START_KNOWN="false"
+SERVICE_DEFINITION_CHECKED="false"
+SERVICE_DEFINITION_MANAGER="$SERVICE_MANAGER_NORMALIZED"
+SERVICE_DEFINITION_SOURCE="not-checked"
+SERVICE_DEFINITION_EXISTS="false"
+SERVICE_DEFINITION_NODE_EXE_MATCHES_CONFIG="false"
+SERVICE_DEFINITION_WORKING_DIRECTORY_MATCHES_CONFIG="false"
+SERVICE_DEFINITION_ARGUMENTS_MATCH_CONFIG="false"
+SERVICE_DEFINITION_RUNNER_SCRIPT_MATCHES_CONFIG="false"
 HEALTH_MONITOR_STATUS="unknown"
 HEALTH_MONITOR_SCHEDULED="false"
 HEALTH_MONITOR_SCHEDULE_TYPE="state-log"
@@ -441,7 +451,7 @@ first_line_from_file() {
 
 next_build_id() {
   local root value
-  root="${APP_DIR:-}"
+  root="${NEXTJS_RUNTIME_ROOT:-${APP_DIR:-}}"
   [[ -n "$root" ]] || return 1
   value="$(first_line_from_file "${root%/}/.next/BUILD_ID" 2>/dev/null || true)"
   if [[ -n "$value" ]]; then
@@ -645,6 +655,182 @@ process_elapsed_seconds() {
   fi
   elapsed="$(ps -p "$pid" -o etime= 2>/dev/null || true)"
   parse_etime_seconds "$elapsed"
+}
+
+trim_config_value() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s\n' "$value"
+}
+
+normalize_existing_path_for_compare() {
+  local value
+  value="$(trim_config_value "${1:-}")"
+  if [[ -d "$value" ]]; then
+    (cd "$value" 2>/dev/null && pwd -P) || printf '%s\n' "${value%/}"
+  else
+    printf '%s\n' "${value%/}"
+  fi
+}
+
+path_matches_config() {
+  local actual expected
+  actual="$(normalize_existing_path_for_compare "${1:-}")"
+  expected="$(normalize_existing_path_for_compare "${2:-}")"
+  [[ -n "$actual" && -n "$expected" && "$actual" == "$expected" ]]
+}
+
+expected_service_command() {
+  printf '%s\n' "$(trim_config_value "${NODE_BIN:-}") $(trim_config_value "${START_SCRIPT:-}") $(trim_config_value "${NODE_ARGUMENTS:-}")" |
+    sed -E 's/[[:space:]]+$//'
+}
+
+expected_script_arguments() {
+  printf '%s\n' "$(trim_config_value "${START_SCRIPT:-}") $(trim_config_value "${NODE_ARGUMENTS:-}")" |
+    sed -E 's/[[:space:]]+$//'
+}
+
+file_key_value() {
+  local file="$1" key="$2"
+  awk -F= -v key="$key" '
+    $1 == key {
+      value=$0
+      sub("^[^=]*=", "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"/, "", value)
+      gsub(/"$/, "", value)
+      print value
+      found=1
+      exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file" 2>/dev/null || true
+}
+
+plist_key_string_value() {
+  local file="$1" key="$2"
+  awk -v key="$key" '
+    $0 ~ "<key>" key "</key>" {
+      while (getline > 0) {
+        if ($0 ~ /<string>/) {
+          value=$0
+          sub(/^.*<string>/, "", value)
+          sub(/<\/string>.*$/, "", value)
+          print value
+          found=1
+          exit
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file" 2>/dev/null || true
+}
+
+set_service_definition_result() {
+  SERVICE_DEFINITION_CHECKED="true"
+  SERVICE_DEFINITION_MANAGER="$SERVICE_MANAGER_NORMALIZED"
+  SERVICE_DEFINITION_SOURCE="$1"
+  SERVICE_DEFINITION_EXISTS="$2"
+  SERVICE_DEFINITION_NODE_EXE_MATCHES_CONFIG="$3"
+  SERVICE_DEFINITION_WORKING_DIRECTORY_MATCHES_CONFIG="$4"
+  SERVICE_DEFINITION_ARGUMENTS_MATCH_CONFIG="$5"
+  SERVICE_DEFINITION_RUNNER_SCRIPT_MATCHES_CONFIG="${6:-false}"
+}
+
+check_shell_assignment_service_definition() {
+  local source="$1" file="$2" node_bin app_dir start_script node_arguments args_match
+  if [[ ! -f "$file" ]]; then
+    set_service_definition_result "$source" "false" "false" "false" "false" "false"
+    return
+  fi
+  node_bin="$(file_key_value "$file" "NODE_BIN")"
+  app_dir="$(file_key_value "$file" "APP_DIR")"
+  start_script="$(file_key_value "$file" "START_SCRIPT")"
+  node_arguments="$(file_key_value "$file" "NODE_ARGUMENTS")"
+  args_match="false"
+  if [[ "$(trim_config_value "$start_script")" == "$(trim_config_value "${START_SCRIPT:-}")" &&
+        "$(trim_config_value "$node_arguments")" == "$(trim_config_value "${NODE_ARGUMENTS:-}")" ]]; then
+    args_match="true"
+  fi
+  set_service_definition_result "$source" "true" \
+    "$(if path_matches_config "$node_bin" "${NODE_BIN:-}"; then echo true; else echo false; fi)" \
+    "$(if path_matches_config "$app_dir" "${APP_DIR:-}"; then echo true; else echo false; fi)" \
+    "$args_match" \
+    "false"
+}
+
+service_definition_summary() {
+  local unit_file init_file plist_file runner_file exec_start working_directory node_match workdir_match args_match runner_match command command_args directory
+  if is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
+    set_service_definition_result "skipped" "false" "false" "false" "false" "false"
+    return
+  fi
+
+  case "$SERVICE_MANAGER_NORMALIZED" in
+    systemd)
+      unit_file="/etc/systemd/system/${SERVICE_NAME}.service"
+      if [[ ! -f "$unit_file" ]]; then
+        set_service_definition_result "systemd-unit" "false" "false" "false" "false" "false"
+        return
+      fi
+      exec_start="$(file_key_value "$unit_file" "ExecStart")"
+      working_directory="$(file_key_value "$unit_file" "WorkingDirectory")"
+      [[ "$(trim_config_value "$exec_start")" == "$(expected_service_command)" ]] && args_match="true" || args_match="false"
+      case "$(trim_config_value "$exec_start")" in
+        "$(trim_config_value "${NODE_BIN:-}")"|"$(trim_config_value "${NODE_BIN:-}") "*) node_match="true" ;;
+        *) node_match="false" ;;
+      esac
+      if path_matches_config "$working_directory" "${APP_DIR:-}"; then workdir_match="true"; else workdir_match="false"; fi
+      set_service_definition_result "systemd-unit" "true" "$node_match" "$workdir_match" "$args_match" "false"
+      ;;
+    systemv|sysv|sysvinit|initd|init-d)
+      check_shell_assignment_service_definition "systemv-init" "/etc/init.d/${SERVICE_NAME}"
+      ;;
+    openrc)
+      init_file="/etc/init.d/${SERVICE_NAME}"
+      if [[ ! -f "$init_file" ]]; then
+        set_service_definition_result "openrc-init" "false" "false" "false" "false" "false"
+        return
+      fi
+      command="$(file_key_value "$init_file" "command")"
+      command_args="$(file_key_value "$init_file" "command_args")"
+      directory="$(file_key_value "$init_file" "directory")"
+      if path_matches_config "$command" "${NODE_BIN:-}"; then node_match="true"; else node_match="false"; fi
+      if path_matches_config "$directory" "${APP_DIR:-}"; then workdir_match="true"; else workdir_match="false"; fi
+      [[ "$(trim_config_value "$command_args")" == "$(expected_script_arguments)" ]] && args_match="true" || args_match="false"
+      set_service_definition_result "openrc-init" "true" "$node_match" "$workdir_match" "$args_match" "false"
+      ;;
+    launchd)
+      plist_file="/Library/LaunchDaemons/${SERVICE_NAME}.plist"
+      runner_file="${RUNNER_SCRIPT:-/usr/local/sbin/${SERVICE_NAME}-runner.sh}"
+      if [[ ! -f "$plist_file" || ! -f "$runner_file" ]]; then
+        set_service_definition_result "launchd-plist" "false" "false" "false" "false" "false"
+        return
+      fi
+      working_directory="$(plist_key_string_value "$plist_file" "WorkingDirectory")"
+      runner_match="false"
+      if path_matches_config "$(plist_key_string_value "$plist_file" "ProgramArguments")" "$runner_file"; then
+        runner_match="true"
+      fi
+      if grep -Fq "exec \"${NODE_BIN:-}\" \"${START_SCRIPT:-}\"" "$runner_file" 2>/dev/null; then node_match="true"; else node_match="false"; fi
+      if path_matches_config "$working_directory" "${APP_DIR:-}" && grep -Fq "cd \"${APP_DIR:-}\"" "$runner_file" 2>/dev/null; then workdir_match="true"; else workdir_match="false"; fi
+      if grep -Fq "exec \"${NODE_BIN:-}\" \"${START_SCRIPT:-}\" ${NODE_ARGUMENTS:-}" "$runner_file" 2>/dev/null; then args_match="true"; else args_match="false"; fi
+      set_service_definition_result "launchd-plist" "true" "$node_match" "$workdir_match" "$args_match" "$runner_match"
+      ;;
+    bsdrc|bsd-rc|rcd|rc.d)
+      if [[ -f "/usr/local/etc/rc.d/${SERVICE_NAME}" ]]; then
+        check_shell_assignment_service_definition "bsdrc-init" "/usr/local/etc/rc.d/${SERVICE_NAME}"
+      else
+        check_shell_assignment_service_definition "bsdrc-init" "/etc/rc.d/${SERVICE_NAME}"
+      fi
+      ;;
+    *)
+      set_service_definition_result "unsupported" "false" "false" "false" "false" "false"
+      ;;
+  esac
 }
 
 service_main_pid() {
@@ -888,7 +1074,7 @@ cron_daemon_is_active() {
     printf '%s\n' "process:active"
     return 0
   fi
-  if ps -A -o comm= 2>/dev/null | grep -Eq '^(cron|crond)$'; then
+  if ps -A -o comm= 2>/dev/null | awk '$1 == "cron" || $1 == "crond" { found=1 } END { exit found ? 0 : 1 }'; then
     printf '%s\n' "process:active"
     return 0
   fi
@@ -1134,6 +1320,16 @@ write_json_output() {
     printf '  "serviceManager": "%s",\n' "$(json_escape "$SERVICE_MANAGER_NORMALIZED")"
     printf '  "serviceActiveStatus": "%s",\n' "$(json_escape "$SERVICE_ACTIVE_STATUS")"
     printf '  "serviceEnabledStatus": "%s",\n' "$(json_escape "$SERVICE_ENABLED_STATUS")"
+    printf '  "serviceDefinition": {\n'
+    printf '    "checked": %s,\n' "$SERVICE_DEFINITION_CHECKED"
+    printf '    "manager": "%s",\n' "$(json_escape "$SERVICE_DEFINITION_MANAGER")"
+    printf '    "definitionSource": "%s",\n' "$(json_escape "$SERVICE_DEFINITION_SOURCE")"
+    printf '    "definitionExists": %s,\n' "$SERVICE_DEFINITION_EXISTS"
+    printf '    "nodeExeMatchesConfig": %s,\n' "$SERVICE_DEFINITION_NODE_EXE_MATCHES_CONFIG"
+    printf '    "workingDirectoryMatchesConfig": %s,\n' "$SERVICE_DEFINITION_WORKING_DIRECTORY_MATCHES_CONFIG"
+    printf '    "argumentsMatchConfig": %s,\n' "$SERVICE_DEFINITION_ARGUMENTS_MATCH_CONFIG"
+    printf '    "runnerScriptMatchesConfig": %s\n' "$SERVICE_DEFINITION_RUNNER_SCRIPT_MATCHES_CONFIG"
+    printf '  },\n'
     printf '  "appRuntime": "%s",\n' "$(json_escape "$APP_RUNTIME_NORMALIZED")"
     printf '  "configFileName": "%s",\n' "$(json_escape "$(safe_path_name "$CONFIG_FILE")")"
     printf '  "appPort": "%s",\n' "$(json_escape "${APP_PORT:-}")"
@@ -1219,7 +1415,7 @@ write_json_output() {
     printf '    "mode": "%s",\n' "$(json_escape "$NEXTJS_DEPLOYMENT_MODE_NORMALIZED")"
     printf '    "nodeVersion": "%s",\n' "$(json_escape "$NODE_RUNTIME_VERSION")"
     printf '    "nextVersion": "%s",\n' "$(json_escape "$NEXT_PACKAGE_VERSION")"
-    printf '    "runtimeRootName": "%s"\n' "$(json_escape "$(safe_path_name "${APP_DIR:-}")")"
+    printf '    "runtimeRootName": "%s"\n' "$(json_escape "$(safe_path_name "${NEXTJS_RUNTIME_ROOT:-${APP_DIR:-}}")")"
     printf '  },\n'
     printf '  "reverseProxy": {\n'
     printf '    "applicable": %s,\n' "$REVERSE_PROXY_APPLICABLE"
@@ -1290,7 +1486,7 @@ write_json_output() {
 }
 
 run_nextjs_layout_check() {
-  local output exit_code
+  local output exit_code runtime_root
   NODE_RUNTIME_VERSION="$(node_runtime_version)"
   NEXT_PACKAGE_VERSION="$(next_package_version)"
   case "$APP_FRAMEWORK_NORMALIZED" in
@@ -1311,6 +1507,12 @@ run_nextjs_layout_check() {
   exit_code=$?
   set -e
   printf '%s\n' "$output"
+  runtime_root="$(printf '%s\n' "$output" | awk -v key="RuntimeRoot" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
+  if [[ -n "$runtime_root" ]]; then
+    NEXTJS_RUNTIME_ROOT="$runtime_root"
+  else
+    NEXTJS_RUNTIME_ROOT="${APP_DIR:-}"
+  fi
   if [[ "$exit_code" -ne 0 ]]; then
     NEXTJS_LAYOUT_STATUS="failed"
     add_critical "Next.js runtime layout check failed."
@@ -1355,6 +1557,7 @@ echo "Service"
 if is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
   SERVICE_ACTIVE_STATUS="skipped"
   SERVICE_ENABLED_STATUS="skipped"
+  set_service_definition_result "skipped" "false" "false" "false" "false" "false"
   echo "Service manager check skipped."
 else
   if service_is_active; then
@@ -1378,6 +1581,31 @@ else
     systemctl show "$SERVICE_NAME" --no-pager \
       --property=Id,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainCode,ExecMainStatus,NRestarts,ActiveEnterTimestamp \
       2>/dev/null || true
+  fi
+  service_definition_summary
+  echo "ServiceDefinitionChecked=$SERVICE_DEFINITION_CHECKED"
+  echo "ServiceDefinitionSource=$SERVICE_DEFINITION_SOURCE"
+  echo "ServiceDefinitionExists=$SERVICE_DEFINITION_EXISTS"
+  echo "ServiceDefinitionNodeExeMatchesConfig=$SERVICE_DEFINITION_NODE_EXE_MATCHES_CONFIG"
+  echo "ServiceDefinitionWorkingDirectoryMatchesConfig=$SERVICE_DEFINITION_WORKING_DIRECTORY_MATCHES_CONFIG"
+  echo "ServiceDefinitionArgumentsMatchConfig=$SERVICE_DEFINITION_ARGUMENTS_MATCH_CONFIG"
+  if [[ "$SERVICE_MANAGER_NORMALIZED" == "launchd" ]]; then
+    echo "ServiceDefinitionRunnerScriptMatchesConfig=$SERVICE_DEFINITION_RUNNER_SCRIPT_MATCHES_CONFIG"
+  fi
+  if [[ "$SERVICE_DEFINITION_EXISTS" != "true" ]]; then
+    add_critical "Managed service definition for '$SERVICE_NAME' was not found under $SERVICE_MANAGER_NORMALIZED."
+  fi
+  if [[ "$SERVICE_DEFINITION_NODE_EXE_MATCHES_CONFIG" != "true" ]]; then
+    add_critical "Managed service definition Node executable does not match NODE_BIN."
+  fi
+  if [[ "$SERVICE_DEFINITION_WORKING_DIRECTORY_MATCHES_CONFIG" != "true" ]]; then
+    add_critical "Managed service definition working directory does not match APP_DIR."
+  fi
+  if [[ "$SERVICE_DEFINITION_ARGUMENTS_MATCH_CONFIG" != "true" ]]; then
+    add_critical "Managed service definition command arguments do not match START_SCRIPT/NODE_ARGUMENTS."
+  fi
+  if [[ "$SERVICE_MANAGER_NORMALIZED" == "launchd" && "$SERVICE_DEFINITION_RUNNER_SCRIPT_MATCHES_CONFIG" != "true" ]]; then
+    add_critical "Launchd service plist does not reference the configured runner script."
   fi
 fi
 service_pid="$(service_main_pid)"

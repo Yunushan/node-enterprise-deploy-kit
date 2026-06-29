@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TEST_ROOT="$REPO_ROOT/.tmp/unix-nextjs-support-$$"
+TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/.tmp/unix-nextjs-support-$$}"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -466,20 +466,40 @@ test_node_runtime_smoke() {
     echo "Windows node.exe under Linux/WSL does not preserve Unix inline env reliably; skipping Unix Next.js runtime smoke."
     return
   fi
-  local port
-  port="$("$node_cmd" -e "const net=require('net'); const s=net.createServer(); s.listen(0,'127.0.0.1',()=>{ console.log(s.address().port); s.close(); });")"
-  if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
-    echo "Could not allocate a free loopback port for Unix runtime smoke." >&2
-    exit 1
-  fi
-  local runtime_root="$TEST_ROOT/runtime-smoke"
-  local app_dir="$runtime_root/app"
-  local pid=""
-  mkdir -p "$app_dir/.next/static" "$app_dir/node_modules"
-  write_file "$app_dir/.next/static/app.js" "console.log('static');"
-  cat > "$app_dir/server.js" <<'NODE'
+  run_node_runtime_smoke_case "$node_cmd" "standalone"
+  run_node_runtime_smoke_case "$node_cmd" "next-start"
+}
+
+write_node_runtime_smoke_server() {
+  local output_path="$1"
+  cat > "$output_path" <<'NODE'
 const http = require('http');
-const host = process.env.HOSTNAME || process.env.HOST || '127.0.0.1';
+
+const mode = process.env.NEXTJS_DEPLOYMENT_MODE || 'standalone';
+const args = process.argv.slice(2);
+let cliHost = '';
+for (let i = 0; i < args.length; i += 1) {
+  if ((args[i] === '-H' || args[i] === '--hostname') && i + 1 < args.length) {
+    cliHost = args[i + 1];
+  } else if (args[i].startsWith('--hostname=')) {
+    cliHost = args[i].slice('--hostname='.length);
+  } else if (args[i].startsWith('-H=')) {
+    cliHost = args[i].slice('-H='.length);
+  }
+}
+
+if (mode === 'next-start') {
+  if (args[0] !== 'start') {
+    console.error(`expected first Next.js CLI argument to be start, got ${args[0] || '<empty>'}`);
+    process.exit(2);
+  }
+  if (cliHost !== (process.env.BIND_ADDRESS || '127.0.0.1')) {
+    console.error(`expected Next.js CLI hostname ${process.env.BIND_ADDRESS || '127.0.0.1'}, got ${cliHost || '<empty>'}`);
+    process.exit(2);
+  }
+}
+
+const host = cliHost || process.env.HOSTNAME || process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || process.env.APP_PORT || 3000);
 const appName = process.env.APP_NAME || 'unknown-app';
 const server = http.createServer((req, res) => {
@@ -488,6 +508,9 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true,
       appName,
+      host,
+      mode,
+      args,
       envPort: process.env.PORT || '',
       envHostname: process.env.HOSTNAME || ''
     }));
@@ -500,7 +523,11 @@ server.listen(port, host, () => console.log(`listening ${host}:${port}`));
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('SIGINT', () => server.close(() => process.exit(0)));
 NODE
-  cat > "$runtime_root/health-client.js" <<'NODE'
+}
+
+write_node_runtime_smoke_client() {
+  local output_path="$1"
+  cat > "$output_path" <<'NODE'
 const http = require('http');
 
 const url = process.argv[2];
@@ -523,17 +550,56 @@ request.setTimeout(1500, () => {
   process.exit(3);
 });
 NODE
+}
+
+print_file_to_stderr() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line" >&2
+  done < "$file_path"
+}
+
+run_node_runtime_smoke_case() {
+  local node_cmd="$1" mode="$2"
+  local port
+  port="$("$node_cmd" -e "const net=require('net'); const s=net.createServer(); s.listen(0,'127.0.0.1',()=>{ console.log(s.address().port); s.close(); });")"
+  if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+    echo "Could not allocate a free loopback port for Unix runtime smoke." >&2
+    exit 1
+  fi
+  local runtime_root="$TEST_ROOT/runtime-smoke-$mode"
+  local app_dir="$runtime_root/app"
+  local pid=""
+  mkdir -p "$app_dir/.next/static" "$app_dir/node_modules"
+  write_file "$app_dir/.next/BUILD_ID" "example-build"
+  write_file "$app_dir/.next/static/app.js" "console.log('static');"
+  write_node_runtime_smoke_client "$runtime_root/health-client.js"
+
+  local app_name="example-next-runtime-smoke-$mode"
+  local command_args=()
+  if [[ "$mode" == "next-start" ]]; then
+    local next_cli="$app_dir/node_modules/next/dist/bin/next"
+    mkdir -p "$(dirname "$next_cli")"
+    write_node_runtime_smoke_server "$next_cli"
+    write_file "$app_dir/package.json" '{"scripts":{"start":"next start"},"dependencies":{"next":"0.0.0-smoke"}}'
+    command_args=("node_modules/next/dist/bin/next" "start" "-H" "127.0.0.1")
+  else
+    write_node_runtime_smoke_server "$app_dir/server.js"
+    command_args=("server.js")
+  fi
 
   (
     cd "$app_dir"
     NODE_ENV="production" \
       PORT="$port" \
       APP_PORT="$port" \
-      APP_NAME="example-next-runtime-smoke" \
+      APP_NAME="$app_name" \
+      NEXTJS_DEPLOYMENT_MODE="$mode" \
       BIND_ADDRESS="127.0.0.1" \
       HOST="127.0.0.1" \
       HOSTNAME="127.0.0.1" \
-      "$node_cmd" server.js > "$runtime_root/stdout.log" 2> "$runtime_root/stderr.log"
+      "$node_cmd" "${command_args[@]}" > "$runtime_root/stdout.log" 2> "$runtime_root/stderr.log"
   ) &
   pid="$!"
 
@@ -542,8 +608,8 @@ NODE
   while (( SECONDS < deadline )); do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "Unix runtime smoke process exited early." >&2
-      cat "$runtime_root/stdout.log" >&2 || true
-      cat "$runtime_root/stderr.log" >&2 || true
+      print_file_to_stderr "$runtime_root/stdout.log"
+      print_file_to_stderr "$runtime_root/stderr.log"
       exit 1
     fi
     if body="$("$node_cmd" "$runtime_root/health-client.js" "http://127.0.0.1:$port/health" 2>/dev/null)"; then
@@ -556,23 +622,36 @@ NODE
   wait "$pid" 2>/dev/null || true
 
   if [[ -z "$body" ]]; then
-    echo "Unix runtime smoke health check did not return a response." >&2
-    cat "$runtime_root/stdout.log" >&2 || true
-    cat "$runtime_root/stderr.log" >&2 || true
+    echo "Unix $mode runtime smoke health check did not return a response." >&2
+    print_file_to_stderr "$runtime_root/stdout.log"
+    print_file_to_stderr "$runtime_root/stderr.log"
     exit 1
   fi
-  if [[ "$body" != *'"appName":"example-next-runtime-smoke"'* ]]; then
-    echo "Unix runtime smoke appName mismatch: $body" >&2
+  if [[ "$body" != *"\"appName\":\"$app_name\""* ]]; then
+    echo "Unix $mode runtime smoke appName mismatch: $body" >&2
+    exit 1
+  fi
+  if [[ "$body" != *"\"mode\":\"$mode\""* ]]; then
+    echo "Unix $mode runtime smoke mode mismatch: $body" >&2
+    exit 1
+  fi
+  if [[ "$body" != *'"host":"127.0.0.1"'* ]]; then
+    echo "Unix $mode runtime smoke host mismatch: $body" >&2
     exit 1
   fi
   if [[ "$body" != *"\"envPort\":\"$port\""* ]]; then
-    echo "Unix runtime smoke PORT mismatch for port $port: $body" >&2
+    echo "Unix $mode runtime smoke PORT mismatch for port $port: $body" >&2
     exit 1
   fi
   if [[ "$body" != *'"envHostname":"127.0.0.1"'* ]]; then
-    echo "Unix runtime smoke HOSTNAME mismatch: $body" >&2
+    echo "Unix $mode runtime smoke HOSTNAME mismatch: $body" >&2
     exit 1
   fi
+  if [[ "$mode" == "next-start" && "$body" != *'"args":["start","-H","127.0.0.1"]'* ]]; then
+    echo "Unix next-start runtime smoke arguments mismatch: $body" >&2
+    exit 1
+  fi
+  echo "Unix $mode runtime smoke OK on 127.0.0.1:$port"
 }
 
 echo "==> Unix Next.js support"
@@ -597,6 +676,9 @@ expect_success "standalone safe status" bash "$REPO_ROOT/scripts/linux/status-no
 assert_contains "$STATUS_JSON" '"appName": "example-next-smoke"'
 assert_contains "$STATUS_JSON" '"supportTargetId": "'
 assert_contains "$STATUS_JSON" '"serviceEnabledStatus": "skipped"'
+assert_contains "$STATUS_JSON" '"serviceDefinition": {'
+assert_contains "$STATUS_JSON" '"definitionSource": "skipped"'
+assert_contains "$STATUS_JSON" '"definitionExists": false'
 assert_contains "$STATUS_JSON" '"port": {'
 assert_contains "$STATUS_JSON" '"checked": false'
 assert_contains "$STATUS_JSON" '"health": {'
@@ -627,6 +709,19 @@ assert_contains "$STATUS_JSON" '"reverseProxy": {'
 assert_contains "$STATUS_JSON" '"status": "not-applicable"'
 assert_contains "$STATUS_JSON" '"verdict": "Warning"'
 assert_contains "$STATUS_JSON" '"critical": 0'
+
+SUBDIR_ROOT="$TEST_ROOT/standalone-subdir-runtime"
+mkdir -p "$SUBDIR_ROOT/app"
+new_standalone_layout "$SUBDIR_ROOT/app/runtime"
+write_env "$SUBDIR_ROOT/app.env" "$SUBDIR_ROOT" 39220 "standalone" "runtime/server.js" "launchd"
+expect_success "standalone subdir preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$SUBDIR_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+expect_success "standalone subdir runtime layout" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$SUBDIR_ROOT/app.env"
+SUBDIR_STATUS_JSON="$SUBDIR_ROOT/status.json"
+expect_success "standalone subdir safe status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$SUBDIR_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$SUBDIR_STATUS_JSON" --fail-on-critical
+assert_contains "$SUBDIR_STATUS_JSON" '"runtimeRootName": "runtime"'
+assert_contains "$SUBDIR_STATUS_JSON" '"appDirectoryName": "app"'
+assert_contains "$SUBDIR_STATUS_JSON" '"nextBuildId": "example-build"'
+assert_not_contains "$SUBDIR_STATUS_JSON" "$SUBDIR_ROOT"
 
 test_reverse_proxy_config_status() {
   local proxy="$1" config_dir_name="$2" config_file_name="$3" extra_env="$4"
@@ -745,6 +840,13 @@ write_env "$BAD_ROOT/app.env" "$BAD_ROOT" 39201 "standalone" "server.js" "launch
 expect_failure "standalone missing static preflight" ".next/static" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$BAD_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
 expect_failure "standalone missing static runtime layout" ".next/static" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$BAD_ROOT/app.env"
 expect_failure "standalone missing static safe status" ".next/static" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$BAD_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --fail-on-critical
+
+BAD_SHELL_START_ROOT="$TEST_ROOT/standalone-shell-style-start"
+mkdir -p "$BAD_SHELL_START_ROOT/app/.next" "$BAD_SHELL_START_ROOT/app/node_modules"
+write_file "$BAD_SHELL_START_ROOT/app/node server.js" "console.log('placeholder');"
+write_env "$BAD_SHELL_START_ROOT/app.env" "$BAD_SHELL_START_ROOT" 39219 "standalone" "node server.js" "launchd"
+expect_failure "standalone shell-style start preflight" "START_SCRIPT must be a single file path" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$BAD_SHELL_START_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+expect_failure "standalone shell-style start runtime layout" "START_SCRIPT must be a single file path" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$BAD_SHELL_START_ROOT/app.env"
 
 NEXT_START_ROOT="$TEST_ROOT/next-start-ok"
 mkdir -p "$NEXT_START_ROOT"
