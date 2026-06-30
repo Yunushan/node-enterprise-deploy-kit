@@ -63,6 +63,41 @@ function Test-ReactFramework([string]$Framework) {
     return (Normalize-Name $Framework) -in @("react", "reactjs", "react-js")
 }
 
+function Test-StaticIisDeploymentMode($Config) {
+    return (Normalize-Name (Get-ConfigString $Config "DeploymentMode" "")) -eq "static-iis"
+}
+
+function Test-StaticIisFramework([string]$Framework) {
+    return (Normalize-Name $Framework) -in @("tanstack-start", "vite-spa")
+}
+
+function Get-NormalizedStaticRelativePath([string]$Path, [string]$Default) {
+    $value = $Path
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+    $value = ($value -replace "\\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+    return $value
+}
+
+function Get-StaticOutputDirectory($Config) {
+    return Get-NormalizedStaticRelativePath (Get-ConfigString $Config "StaticOutputDirectory" "dist/client") "dist/client"
+}
+
+function Get-SpaShellFile($Config) {
+    return Get-NormalizedStaticRelativePath (Get-ConfigString $Config "SpaShellFile" "_shell.html") "_shell.html"
+}
+
+function Join-StaticRelativePath([string]$Root, [string]$Leaf) {
+    $rootValue = ($Root -replace "\\", "/").Trim("/")
+    $leafValue = ($Leaf -replace "\\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($rootValue)) { return $leafValue }
+    return "$rootValue/$leafValue"
+}
+
 function Get-BackupDirectory($Config) {
     if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
         return [string]$Config.BackupDirectory
@@ -142,6 +177,9 @@ function Get-ExpectedPackageFiles {
             return @($value | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         }
         return @(([string]$value) -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    if (Test-StaticIisDeploymentMode $Config) {
+        return @((Join-StaticRelativePath (Get-StaticOutputDirectory $Config) (Get-SpaShellFile $Config)))
     }
     return @((Get-ConfigString $Config "StartCommand" "server.js"))
 }
@@ -248,6 +286,43 @@ function Test-ReactPackageIfNeeded {
     & $validator @arguments
 }
 
+function Test-StaticIisPackageIfNeeded {
+    param(
+        $Config,
+        [string]$Path,
+        [bool]$StripSingleTopLevelDirectory
+    )
+
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+    if (-not (Test-StaticIisDeploymentMode $Config) -and -not (Test-StaticIisFramework $framework)) {
+        return
+    }
+    if (-not (Test-StaticIisDeploymentMode $Config)) {
+        throw "Static IIS package validation requires DeploymentMode=static_iis."
+    }
+    if (-not (Test-StaticIisFramework $framework)) {
+        throw "static_iis AppFramework must be tanstack-start or vite-spa."
+    }
+
+    $validator = Join-Path $PSScriptRoot "Test-StaticIisPackage.ps1"
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        throw "Static IIS package validator not found: $validator"
+    }
+
+    $arguments = @{
+        PackagePath = $Path
+        StaticOutputDirectory = Get-StaticOutputDirectory $Config
+        SpaShellFile = Get-SpaShellFile $Config
+    }
+    if ($StripSingleTopLevelDirectory) {
+        $arguments.StripSingleTopLevelDirectory = $true
+    }
+    if (Get-ConfigBool $Config "IisStaticAllowUrlRewrite" $false) {
+        $arguments.AllowRewrite = $true
+    }
+    & $validator @arguments
+}
+
 function Stop-AppServiceIfPresent {
     param([string]$Name)
 
@@ -310,9 +385,12 @@ function Write-DeploymentManifest {
         schema = "node-enterprise-deploy-kit/import-manifest/v1"
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         appName = [string]$Config.AppName
+        deploymentMode = Normalize-Name (Get-ConfigString $Config "DeploymentMode" "")
         appFramework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
         nextjsMode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "")
         reactDocumentRoot = Get-ReactDocumentRoot $Config
+        staticOutputDirectory = Get-StaticOutputDirectory $Config
+        spaShellFile = Get-SpaShellFile $Config
         packageName = [System.IO.Path]::GetFileName($PackagePath)
         packageSha256 = $packageHash
         deploymentId = Get-DeploymentIdFromConfig $Config
@@ -321,7 +399,11 @@ function Write-DeploymentManifest {
     $manifest |
         ConvertTo-Json -Depth 10 |
         Set-Content -LiteralPath $manifestPath -Encoding UTF8
-    Write-Host "Deployment manifest written: $manifestPath"
+    if (Test-StaticIisDeploymentMode $Config) {
+        Write-Host "Deployment manifest written."
+    } else {
+        Write-Host "Deployment manifest written: $manifestPath"
+    }
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -358,6 +440,7 @@ if ($backupDirectory.StartsWith($appDirectory.TrimEnd('\') + '\', [System.String
 Assert-ZipPackageSafe -Path $PackagePath
 Test-NextJsPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
 Test-ReactPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
+Test-StaticIisPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-package-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
@@ -370,7 +453,9 @@ try {
     Assert-ExpectedFiles -SourceRoot $sourceRoot -ExpectedFiles $expectedFiles
 
     if ($PSCmdlet.ShouldProcess($appDirectory, "Import application package $PackagePath")) {
-        Stop-AppServiceIfPresent -Name ([string]$config.AppName)
+        if (-not (Test-StaticIisDeploymentMode $config)) {
+            Stop-AppServiceIfPresent -Name ([string]$config.AppName)
+        }
         New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appDirectory) | Out-Null
 
@@ -378,7 +463,11 @@ try {
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss")
             $backupPath = Join-Path $backupDirectory ("app.{0}.{1}.bak" -f $timestamp, $PID)
             Move-Item -LiteralPath $appDirectory -Destination $backupPath -Force
-            Write-Host "Backed up existing AppDirectory to: $backupPath"
+            if (Test-StaticIisDeploymentMode $config) {
+                Write-Host "Backed up existing AppDirectory."
+            } else {
+                Write-Host "Backed up existing AppDirectory to: $backupPath"
+            }
         }
 
         New-Item -ItemType Directory -Force -Path $appDirectory | Out-Null
@@ -399,7 +488,11 @@ try {
             throw
         }
 
-        Write-Host "Imported package into AppDirectory: $appDirectory" -ForegroundColor Green
+        if (Test-StaticIisDeploymentMode $config) {
+            Write-Host "Imported package into AppDirectory." -ForegroundColor Green
+        } else {
+            Write-Host "Imported package into AppDirectory: $appDirectory" -ForegroundColor Green
+        }
     }
 }
 finally {

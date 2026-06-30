@@ -283,12 +283,35 @@ function Test-SafeRelativeFilePath([string]$Path) {
 function Test-ReactFramework([string]$Framework) {
     return (Normalize-Name $Framework) -in @("react", "reactjs", "react-js")
 }
+function Test-StaticIisDeploymentMode($Config) {
+    return (Normalize-Name (Get-ConfigString $Config "DeploymentMode" "")) -eq "static-iis"
+}
+function Test-StaticIisFramework([string]$Framework) {
+    return (Normalize-Name $Framework) -in @("tanstack-start", "vite-spa")
+}
 function Get-ReactDocumentRoot($Config) {
     $documentRoot = (Get-ConfigString $Config "ReactDocumentRoot" "build").Trim()
     if ([string]::IsNullOrWhiteSpace($documentRoot)) {
         $documentRoot = "build"
     }
     return ($documentRoot -replace "\\", "/").Trim("/")
+}
+function Get-NormalizedStaticRelativePath([string]$Path, [string]$Default) {
+    $value = $Path
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+    $value = ($value -replace "\\", "/").Trim("/")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = $Default
+    }
+    return $value
+}
+function Get-StaticOutputDirectory($Config) {
+    return Get-NormalizedStaticRelativePath (Get-ConfigString $Config "StaticOutputDirectory" "dist/client") "dist/client"
+}
+function Get-SpaShellFile($Config) {
+    return Get-NormalizedStaticRelativePath (Get-ConfigString $Config "SpaShellFile" "_shell.html") "_shell.html"
 }
 function Join-AppRelativePath([string]$Root, [string]$RelativePath) {
     $normalized = ($RelativePath -replace "\\", "/").Trim("/")
@@ -461,28 +484,210 @@ function Test-ReactDeploymentLayout($Config) {
     }
 }
 
-@(
-    "AppName",
-    "DisplayName",
-    "AppDirectory",
-    "StartCommand",
-    "NodeExe",
-    "Port",
-    "HealthUrl",
-    "ServiceManager",
-    "ReverseProxy",
-    "ServiceDirectory",
-    "LogDirectory"
-) | ForEach-Object { Test-RequiredString $config $_ }
+function Test-WindowsFeatureInstalled([string]$ServerFeatureName, [string]$OptionalFeatureName) {
+    if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
+        $feature = Get-WindowsFeature -Name $ServerFeatureName -ErrorAction SilentlyContinue
+        if ($null -eq $feature) { return $false }
+        return [bool]$feature.Installed
+    }
+    if (Get-Command Get-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName $OptionalFeatureName -ErrorAction SilentlyContinue
+        if ($null -eq $feature) { return $false }
+        return ([string]$feature.State -eq "Enabled")
+    }
+    return $null
+}
+
+function Test-DirectoryWriteAccess([string]$Path) {
+    $probe = Join-Path $Path (".static-iis-write-test.{0}.tmp" -f $PID)
+    try {
+        [System.IO.File]::WriteAllText($probe, "ok", [System.Text.UTF8Encoding]::new($false))
+        return $true
+    }
+    catch {
+        Add-Warning "Write permission check failed for the configured static IIS deployment path. $($_.Exception.Message)"
+        return $false
+    }
+    finally {
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-PlainIisWebConfig {
+    param(
+        [string]$Path,
+        [string]$ShellFile,
+        [bool]$RewriteAllowed
+    )
+
+    try {
+        [xml]$xml = Get-Content -LiteralPath $Path -Raw
+    }
+    catch {
+        Add-Error "web.config is not valid XML. $($_.Exception.Message)"
+        return
+    }
+
+    $rewriteNodes = @($xml.SelectNodes("//*[local-name()='rewrite']"))
+    if ($rewriteNodes.Count -gt 0 -and -not $RewriteAllowed) {
+        Add-Error "web.config contains an unsupported <rewrite> section for static_iis mode."
+    }
+
+    $defaultDocumentValues = @($xml.SelectNodes("//*[local-name()='defaultDocument']/*[local-name()='files']/*[local-name()='add']") |
+        ForEach-Object { [string]$_.value })
+    if ($defaultDocumentValues -notcontains $ShellFile) {
+        Add-Error "web.config must configure defaultDocument to include ${ShellFile}."
+    }
+
+    $expectedFallbackPath = "/" + $ShellFile
+    $fallbacks = @($xml.SelectNodes("//*[local-name()='httpErrors']/*[local-name()='error']") |
+        Where-Object {
+            [string]$_.statusCode -eq "404" -and
+            [string]$_.path -eq $expectedFallbackPath -and
+            [string]$_.responseMode -eq "ExecuteURL"
+        })
+    if ($fallbacks.Count -eq 0) {
+        Add-Error "web.config must configure httpErrors 404 ExecuteURL fallback to ${expectedFallbackPath}."
+    }
+}
+
+function Test-StaticIisDeploymentLayout($Config) {
+    if (-not (Test-StaticIisDeploymentMode $Config)) { return }
+
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "")
+    if (-not (Test-StaticIisFramework $framework)) {
+        Add-Error "static_iis AppFramework must be tanstack-start or vite-spa."
+    }
+
+    $staticOutputDirectory = Get-StaticOutputDirectory $Config
+    $spaShellFile = Get-SpaShellFile $Config
+    if (-not (Test-SafeRelativeFilePath $staticOutputDirectory)) {
+        Add-Error "StaticOutputDirectory must be a safe relative directory path."
+        return
+    }
+    if (-not (Test-SafeRelativeFilePath $spaShellFile) -or $spaShellFile.Contains("/") -or $spaShellFile.Contains("\")) {
+        Add-Error "SpaShellFile must be a safe relative file name."
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $Config.AppDirectory -PathType Container)) {
+        return
+    }
+
+    $staticRoot = Join-AppRelativePath -Root $Config.AppDirectory -RelativePath $staticOutputDirectory
+    if (-not (Test-Path -LiteralPath $staticRoot -PathType Container)) {
+        Add-Warning "StaticOutputDirectory does not exist yet. BuildCommand should create it before IIS static deployment."
+        return
+    }
+
+    $shellPath = Join-Path $staticRoot $spaShellFile
+    if (-not (Test-Path -LiteralPath $shellPath -PathType Leaf)) {
+        Add-Error "Static output directory is missing SPA shell file."
+    }
+
+    $assetsPath = Join-Path $staticRoot "assets"
+    if (Test-Path -LiteralPath $assetsPath -PathType Container) {
+        $assetFiles = @(Get-ChildItem -LiteralPath $assetsPath -File -Recurse -ErrorAction SilentlyContinue)
+        if ($assetFiles.Count -eq 0) {
+            Add-Warning "Assets directory exists but contains no files."
+        }
+    }
+
+    $allowRewrite = $false
+    try { $allowRewrite = Get-ConfigBool $Config "IisStaticAllowUrlRewrite" $false } catch { Add-Error $_.Exception.Message }
+    $webConfigPath = Join-Path $staticRoot "web.config"
+    if (Test-Path -LiteralPath $webConfigPath -PathType Leaf) {
+        Test-PlainIisWebConfig -Path $webConfigPath -ShellFile $spaShellFile -RewriteAllowed $allowRewrite
+    }
+}
+
+function Test-StaticIisPreflight($Config) {
+    Test-RequiredString $Config "IisSitePath"
+    Test-RequiredString $Config "IisSiteName"
+    Test-RequiredString $Config "IisAppPoolName"
+
+    $spaShellFile = Get-SpaShellFile $Config
+    $allowRewrite = $false
+    try { $allowRewrite = Get-ConfigBool $Config "IisStaticAllowUrlRewrite" $false } catch { Add-Error $_.Exception.Message }
+
+    $iisInstalled = Test-WindowsFeatureInstalled -ServerFeatureName "Web-Server" -OptionalFeatureName "IIS-WebServerRole"
+    if ($iisInstalled -ne $true) {
+        Add-Error "IIS is not installed or could not be verified. Install the IIS Web Server role before static_iis deployment."
+    }
+    $staticContentInstalled = Test-WindowsFeatureInstalled -ServerFeatureName "Web-Static-Content" -OptionalFeatureName "IIS-StaticContent"
+    if ($staticContentInstalled -ne $true) {
+        Add-Error "IIS Static Content feature is not installed. Install Web-Static-Content before static_iis deployment."
+    }
+    if (-not (Get-Module -ListAvailable -Name WebAdministration)) {
+        Add-Error "IIS WebAdministration module was not found. Install IIS management tools before static_iis deployment."
+    }
+
+    if ($Config.PSObject.Properties["IisSitePath"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.IisSitePath)) {
+        $sitePath = [System.IO.Path]::GetFullPath([string]$Config.IisSitePath)
+        if (Test-Path -LiteralPath $sitePath -PathType Container) {
+            if (-not (Test-DirectoryWriteAccess $sitePath)) {
+                Add-Error "Deploy user does not have write permission for IisSitePath."
+            }
+            $existingItems = @(Get-ChildItem -LiteralPath $sitePath -Force -ErrorAction SilentlyContinue)
+            if ($existingItems.Count -gt 0 -and -not (Test-Path -LiteralPath (Join-Path $sitePath $spaShellFile) -PathType Leaf)) {
+                Add-Error "Existing deployed IIS folder is missing SPA shell file: $spaShellFile"
+            }
+            $deployedWebConfig = Join-Path $sitePath "web.config"
+            if (Test-Path -LiteralPath $deployedWebConfig -PathType Leaf) {
+                Test-PlainIisWebConfig -Path $deployedWebConfig -ShellFile $spaShellFile -RewriteAllowed $allowRewrite
+            }
+        } else {
+            $parentPath = Split-Path -Parent $sitePath
+            if ([string]::IsNullOrWhiteSpace($parentPath) -or -not (Test-Path -LiteralPath $parentPath -PathType Container)) {
+                Add-Error "IisSitePath parent directory does not exist and cannot be verified for creation."
+            } elseif (-not (Test-DirectoryWriteAccess $parentPath)) {
+                Add-Error "Deploy user does not have write permission to create IisSitePath under its parent directory."
+            }
+        }
+    }
+}
+
+$isStaticIis = Test-StaticIisDeploymentMode $config
+
+if ($isStaticIis) {
+    @(
+        "AppName",
+        "DisplayName",
+        "DeploymentMode",
+        "AppFramework",
+        "AppDirectory",
+        "InstallCommand",
+        "BuildCommand",
+        "StaticOutputDirectory",
+        "SpaShellFile",
+        "IisSitePath",
+        "IisSiteName",
+        "IisAppPoolName"
+    ) | ForEach-Object { Test-RequiredString $config $_ }
+} else {
+    @(
+        "AppName",
+        "DisplayName",
+        "AppDirectory",
+        "StartCommand",
+        "NodeExe",
+        "Port",
+        "HealthUrl",
+        "ServiceManager",
+        "ReverseProxy",
+        "ServiceDirectory",
+        "LogDirectory"
+    ) | ForEach-Object { Test-RequiredString $config $_ }
+}
 
 if ($config.AppName -and ([string]$config.AppName -notmatch '^[A-Za-z0-9_.-]+$')) {
     Add-Error "AppName should contain only letters, numbers, dot, underscore, or dash for service compatibility."
 }
 
-if ($config.NodeExe -and -not (Test-Path $config.NodeExe)) {
+if (-not $isStaticIis -and $config.NodeExe -and -not (Test-Path $config.NodeExe)) {
     Add-Error "NodeExe not found: $($config.NodeExe)"
 }
-if ($config.NodeExe -and -not [System.IO.Path]::IsPathRooted([string]$config.NodeExe)) {
+if (-not $isStaticIis -and $config.NodeExe -and -not [System.IO.Path]::IsPathRooted([string]$config.NodeExe)) {
     Add-Warning "NodeExe is not an absolute path. Use an explicit trusted Node.js path in production."
 }
 
@@ -499,7 +704,7 @@ foreach ($pathCheck in @("AppDirectory", "ServiceDirectory", "LogDirectory", "Ba
     }
 }
 
-if ($config.AppDirectory -and $config.StartCommand -and (Test-Path $config.AppDirectory)) {
+if (-not $isStaticIis -and $config.AppDirectory -and $config.StartCommand -and (Test-Path $config.AppDirectory)) {
     $startCommand = [string]$config.StartCommand
     if (-not [System.IO.Path]::IsPathRooted($startCommand)) {
         $startCommandPath = Join-Path $config.AppDirectory $startCommand
@@ -513,13 +718,14 @@ if ($config.AppDirectory -and $config.StartCommand -and (Test-Path $config.AppDi
 
 Test-NextJsDeploymentLayout $config
 Test-ReactDeploymentLayout $config
+Test-StaticIisDeploymentLayout $config
 
 $port = 0
-if (-not [int]::TryParse([string]$config.Port, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+if (-not $isStaticIis -and (-not [int]::TryParse([string]$config.Port, [ref]$port) -or $port -lt 1 -or $port -gt 65535)) {
     Add-Error "Port must be an integer between 1 and 65535."
 }
 
-if ($config.PSObject.Properties["Environment"] -and $config.Environment -and $config.Environment.PSObject.Properties["PORT"]) {
+if (-not $isStaticIis -and $config.PSObject.Properties["Environment"] -and $config.Environment -and $config.Environment.PSObject.Properties["PORT"]) {
     $envPort = [string]$config.Environment.PORT
     if ($envPort -and $envPort -ne [string]$config.Port) {
         Add-Warning "Environment.PORT does not match Port. The service may listen on an unexpected port."
@@ -527,16 +733,18 @@ if ($config.PSObject.Properties["Environment"] -and $config.Environment -and $co
 }
 
 $healthUri = $null
-try {
-    $healthUri = [Uri][string]$config.HealthUrl
-    if ($healthUri.Scheme -notin @("http", "https")) {
-        Add-Error "HealthUrl must use http or https."
+if (-not $isStaticIis) {
+    try {
+        $healthUri = [Uri][string]$config.HealthUrl
+        if ($healthUri.Scheme -notin @("http", "https")) {
+            Add-Error "HealthUrl must use http or https."
+        }
+        if ($healthUri.Port -gt 0 -and $port -gt 0 -and $healthUri.Port -ne $port) {
+            Add-Warning "HealthUrl port ($($healthUri.Port)) does not match Port ($port)."
+        }
+    } catch {
+        Add-Error "HealthUrl is not a valid URI: $($config.HealthUrl)"
     }
-    if ($healthUri.Port -gt 0 -and $port -gt 0 -and $healthUri.Port -ne $port) {
-        Add-Warning "HealthUrl port ($($healthUri.Port)) does not match Port ($port)."
-    }
-} catch {
-    Add-Error "HealthUrl is not a valid URI: $($config.HealthUrl)"
 }
 
 if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
@@ -562,101 +770,111 @@ if ($sensitiveEnvironmentNames.Count -gt 0) {
     Add-Warning "Environment contains secret-like key name(s): $($sensitiveEnvironmentNames -join ', '). Keep values out of committed config and prefer a secret manager or target-local private config."
 }
 
-$serviceManager = ([string]$config.ServiceManager).ToLowerInvariant()
-switch ($serviceManager) {
-    "winsw" {
-        $winswCandidate = Resolve-ToolPath $WinSWPath
-        $winswAutoDownload = $true
-        try {
-            $winswAutoDownload = Get-ConfigBool $config "AutoDownloadWinSW" $true
-        } catch {
-            Add-Error $_.Exception.Message
-        }
-        if ($SkipWinSWDownload) {
-            $winswAutoDownload = $false
-        }
-        $requireWinSWSha256 = $true
-        try {
-            $requireWinSWSha256 = Get-ConfigBool $config "RequireWinSWDownloadSha256" $true
-        } catch {
-            Add-Error $_.Exception.Message
-        }
+if ($isStaticIis) {
+    $staticServiceManager = Normalize-Name (Get-ConfigString $config "ServiceManager" "none")
+    if ($staticServiceManager -notin @("", "none")) {
+        Add-Warning "DeploymentMode=static_iis does not install a Node service; ServiceManager is ignored."
+    }
+} else {
+    $serviceManager = ([string]$config.ServiceManager).ToLowerInvariant()
+    switch ($serviceManager) {
+        "winsw" {
+            $winswCandidate = Resolve-ToolPath $WinSWPath
+            $winswAutoDownload = $true
+            try {
+                $winswAutoDownload = Get-ConfigBool $config "AutoDownloadWinSW" $true
+            } catch {
+                Add-Error $_.Exception.Message
+            }
+            if ($SkipWinSWDownload) {
+                $winswAutoDownload = $false
+            }
+            $requireWinSWSha256 = $true
+            try {
+                $requireWinSWSha256 = Get-ConfigBool $config "RequireWinSWDownloadSha256" $true
+            } catch {
+                Add-Error $_.Exception.Message
+            }
 
-        $effectiveWinSWDownloadUrl = Get-ConfigString $config "WinSWDownloadUrl" $DefaultWinSWDownloadUrl
-        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) {
-            $effectiveWinSWDownloadUrl = $WinSWDownloadUrl
-        }
-        $effectiveWinSWDownloadSha256 = Get-ConfigString $config "WinSWDownloadSha256" ""
-        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) {
-            $effectiveWinSWDownloadSha256 = $WinSWDownloadSha256
-        }
-        if (-not (Test-ValidSha256 $effectiveWinSWDownloadSha256)) {
-            Add-Error "WinSWDownloadSha256 must be a 64-character SHA256 hex digest."
-        }
-        if ($requireWinSWSha256 -and [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
-            Add-Error "WinSWDownloadSha256 is required when RequireWinSWDownloadSha256 is true."
-        }
-        if ($winswAutoDownload -and -not (Test-HttpsUri $effectiveWinSWDownloadUrl)) {
-            Add-Error "WinSWDownloadUrl must be a valid https URL."
-        }
-        if (-not (Test-Path $winswCandidate)) {
-            if ($winswAutoDownload) {
-                Add-Warning "WinSW executable not found locally: $winswCandidate. Deployment will download the configured pinned WinSW release before service install."
-            } else {
-                Add-Error "WinSW executable not found: $winswCandidate"
+            $effectiveWinSWDownloadUrl = Get-ConfigString $config "WinSWDownloadUrl" $DefaultWinSWDownloadUrl
+            if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) {
+                $effectiveWinSWDownloadUrl = $WinSWDownloadUrl
             }
-        } elseif (-not [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
-            $actualHash = (Get-FileHash -LiteralPath $winswCandidate -Algorithm SHA256).Hash
-            if ($actualHash -ine $effectiveWinSWDownloadSha256) {
-                Add-Error "Existing WinSW executable failed SHA256 verification: $winswCandidate"
+            $effectiveWinSWDownloadSha256 = Get-ConfigString $config "WinSWDownloadSha256" ""
+            if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) {
+                $effectiveWinSWDownloadSha256 = $WinSWDownloadSha256
+            }
+            if (-not (Test-ValidSha256 $effectiveWinSWDownloadSha256)) {
+                Add-Error "WinSWDownloadSha256 must be a 64-character SHA256 hex digest."
+            }
+            if ($requireWinSWSha256 -and [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
+                Add-Error "WinSWDownloadSha256 is required when RequireWinSWDownloadSha256 is true."
+            }
+            if ($winswAutoDownload -and -not (Test-HttpsUri $effectiveWinSWDownloadUrl)) {
+                Add-Error "WinSWDownloadUrl must be a valid https URL."
+            }
+            if (-not (Test-Path $winswCandidate)) {
+                if ($winswAutoDownload) {
+                    Add-Warning "WinSW executable not found locally: $winswCandidate. Deployment will download the configured pinned WinSW release before service install."
+                } else {
+                    Add-Error "WinSW executable not found: $winswCandidate"
+                }
+            } elseif (-not [string]::IsNullOrWhiteSpace($effectiveWinSWDownloadSha256)) {
+                $actualHash = (Get-FileHash -LiteralPath $winswCandidate -Algorithm SHA256).Hash
+                if ($actualHash -ine $effectiveWinSWDownloadSha256) {
+                    Add-Error "Existing WinSW executable failed SHA256 verification: $winswCandidate"
+                }
+            }
+            $serviceAccount = Get-ConfigString $config "ServiceAccount" "LocalSystem"
+            $serviceAccountCredential = Get-ConfigString $config "ServiceAccountPassword" ""
+            if (-not (Test-BuiltInServiceAccount $serviceAccount) -and -not $serviceAccount.Trim().EndsWith('$') -and [string]::IsNullOrWhiteSpace($serviceAccountCredential)) {
+                Add-Error "ServiceAccount '$serviceAccount' needs ServiceAccountPassword unless it is LocalSystem, LocalService, NetworkService, or a gMSA ending in '$'."
+            }
+            if ($serviceAccount.Trim().ToLowerInvariant() -eq "localsystem") {
+                Add-Warning "ServiceAccount is LocalSystem. Prefer NetworkService or a gMSA/dedicated least-privilege account for production."
+            }
+            if (-not [string]::IsNullOrWhiteSpace($serviceAccountCredential)) {
+                Add-Warning "ServiceAccountPassword is configured. Prefer a gMSA for production so passwords are not stored in deployment config."
             }
         }
-        $serviceAccount = Get-ConfigString $config "ServiceAccount" "LocalSystem"
-        $serviceAccountCredential = Get-ConfigString $config "ServiceAccountPassword" ""
-        if (-not (Test-BuiltInServiceAccount $serviceAccount) -and -not $serviceAccount.Trim().EndsWith('$') -and [string]::IsNullOrWhiteSpace($serviceAccountCredential)) {
-            Add-Error "ServiceAccount '$serviceAccount' needs ServiceAccountPassword unless it is LocalSystem, LocalService, NetworkService, or a gMSA ending in '$'."
+        "nssm" {
+            $nssmCandidate = Resolve-ToolPath "tools\nssm\nssm.exe"
+            if (-not (Test-Path $nssmCandidate)) {
+                Add-Warning "NSSM selected, but default nssm.exe was not found: $nssmCandidate"
+            }
         }
-        if ($serviceAccount.Trim().ToLowerInvariant() -eq "localsystem") {
-            Add-Warning "ServiceAccount is LocalSystem. Prefer NetworkService or a gMSA/dedicated least-privilege account for production."
+        "pm2" {
+            if (-not (Get-Command pm2 -ErrorAction SilentlyContinue)) {
+                Add-Error "PM2 selected, but pm2 was not found in PATH."
+            }
         }
-        if (-not [string]::IsNullOrWhiteSpace($serviceAccountCredential)) {
-            Add-Warning "ServiceAccountPassword is configured. Prefer a gMSA for production so passwords are not stored in deployment config."
+        default {
+            Add-Error "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2."
         }
-    }
-    "nssm" {
-        $nssmCandidate = Resolve-ToolPath "tools\nssm\nssm.exe"
-        if (-not (Test-Path $nssmCandidate)) {
-            Add-Warning "NSSM selected, but default nssm.exe was not found: $nssmCandidate"
-        }
-    }
-    "pm2" {
-        if (-not (Get-Command pm2 -ErrorAction SilentlyContinue)) {
-            Add-Error "PM2 selected, but pm2 was not found in PATH."
-        }
-    }
-    default {
-        Add-Error "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2."
     }
 }
 
 $reverseProxy = ([string]$config.ReverseProxy).ToLowerInvariant()
 $bindAddress = Get-ConfigString $config "BindAddress" "127.0.0.1"
-if ($reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $bindAddress)) {
+if (-not $isStaticIis -and $reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $bindAddress)) {
     Add-Warning "BindAddress is '$bindAddress' while ReverseProxy is '$($config.ReverseProxy)'. Bind Node.js to 127.0.0.1 unless direct exposure is intentional."
 }
-if ($healthUri -and $reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $healthUri.Host)) {
+if (-not $isStaticIis -and $healthUri -and $reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $healthUri.Host)) {
     Add-Warning "HealthUrl host is '$($healthUri.Host)'. For reverse-proxy deployments, health checks should normally target localhost/127.0.0.1."
 }
 foreach ($envBindName in @("BIND_ADDRESS", "HOST", "HOSTNAME")) {
     if ($config.PSObject.Properties["Environment"] -and $config.Environment -and $config.Environment.PSObject.Properties[$envBindName]) {
         $envBindValue = [string]$config.Environment.$envBindName
-        if ($reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $envBindValue)) {
+        if (-not $isStaticIis -and $reverseProxy -ne "none" -and $reverseProxy -ne "" -and -not (Test-LoopbackHost $envBindValue)) {
             Add-Warning "Environment.$envBindName is '$envBindValue'. For reverse-proxy deployments, prefer 127.0.0.1."
         }
     }
 }
 if (-not $SkipReverseProxy) {
-    switch ($reverseProxy) {
+    if ($isStaticIis) {
+        Test-StaticIisPreflight $config
+    } else {
+        switch ($reverseProxy) {
         "iis" {
             Test-RequiredString $config "IisSitePath"
             $siteName = Get-ConfigString $config "IisSiteName" ([string]$config.AppName)
@@ -775,13 +993,14 @@ if (-not $SkipReverseProxy) {
         }
         "none" {}
         "" {}
-        default {
-            Add-Error "Unsupported ReverseProxy: $($config.ReverseProxy). Use iis or none on Windows. Apache, HAProxy, and Traefik installers are Linux/Unix scripts in this kit."
+            default {
+                Add-Error "Unsupported ReverseProxy: $($config.ReverseProxy). Use iis or none on Windows. Apache, HAProxy, and Traefik installers are Linux/Unix scripts in this kit."
+            }
         }
     }
 }
 
-if (-not $SkipHealthCheck) {
+if (-not $SkipHealthCheck -and -not $isStaticIis) {
     $interval = 0
     if (-not [int]::TryParse([string]$config.HealthCheckIntervalMinutes, [ref]$interval) -or $interval -lt 1) {
         Add-Warning "HealthCheckIntervalMinutes is missing or below 1. The installer will use 1 minute."
@@ -801,7 +1020,7 @@ if (-not $SkipHealthCheck) {
     }
 }
 
-if ($port -gt 0 -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+if (-not $isStaticIis -and $port -gt 0 -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
     $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($listeners) {
         $ownerIds = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)

@@ -496,6 +496,14 @@ build root containing `index.html`. Create React App usually uses
   -StripSingleTopLevelDirectory
 ```
 
+For TanStack Start or Vite SPAs that deploy as static files only on Windows
+Server + IIS, use `config/windows/static-iis.app.config.example.json` with
+`DeploymentMode: "static_iis"`, `StaticOutputDirectory: "dist/client"`, and
+`SpaShellFile: "_shell.html"`. This mode runs `npm ci --include=dev` and
+`npm run build`, copies only the static output contents to the IIS physical
+path, uses a No Managed Code app pool, and does not require URL Rewrite, ARR,
+or a Node service. See [Windows Deployment](docs/WINDOWS_DEPLOYMENT.md).
+
 After import or manual copy, validate the live runtime folder without touching
 service state:
 
@@ -510,14 +518,14 @@ by the built-in import flow because they require external tools. Package import
 rejects symlinks, NTFS reparse points, and special-file entries; ship regular
 files and directories in deployment artifacts.
 
-For IIS deployments, install IIS URL Rewrite and Application Request Routing
-first. The IIS installer can enable ARR proxy mode, allow the URL Rewrite
-server variables needed for forwarded headers, render a dedicated health proxy
-path, start the configured IIS site after updating it, and warn when WebSocket
-support is missing. `IisRequireUrlRewrite` and
-`IisRequireArrProxy` default to `true`, so preflight and direct IIS install stop
-instead of writing a broken reverse-proxy config when required IIS modules are
-missing.
+For IIS reverse-proxy deployments, install IIS URL Rewrite and Application
+Request Routing first. The IIS reverse-proxy installer can enable ARR proxy
+mode, allow the URL Rewrite server variables needed for forwarded headers,
+render a dedicated health proxy path, start the configured IIS site after
+updating it, and warn when WebSocket support is missing.
+`IisRequireUrlRewrite` and `IisRequireArrProxy` default to `true`, so preflight
+and direct IIS reverse-proxy install stop instead of writing a broken proxy
+config when required IIS modules are missing.
 
 For artifact-only deployments where dependencies are already installed and the app is already built:
 

@@ -33,6 +33,11 @@ if (-not (Test-Path $ConfigPath)) {
     throw "Config not found: $ConfigPath. Copy config/windows/app.config.example.json first."
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+function Normalize-Name([string]$Value) {
+    return ([string]$Value).Trim().ToLowerInvariant().Replace("_", "-").Replace(" ", "-")
+}
+$deploymentMode = Normalize-Name ([string]$config.DeploymentMode)
+$isStaticIis = ($deploymentMode -eq "static-iis")
 
 $effectivePackagePath = $PackagePath
 if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
@@ -55,7 +60,7 @@ if (-not $SkipPreflight) {
     & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
 }
 
-if ([string]$config.ServiceManager -eq "winsw") {
+if (-not $isStaticIis -and [string]$config.ServiceManager -eq "winsw") {
     $winswArgs = @{
         ConfigPath = $ConfigPath
         WinSWPath = $WinSWPath
@@ -92,35 +97,52 @@ if (-not $SkipAppPreparation) {
     & (Join-Path $repoRoot "scripts\windows\Invoke-AppPreparation.ps1") @prepareArgs
 }
 
-switch ($config.ServiceManager) {
-    "winsw" {
-        $serviceArgs = @{
-            ConfigPath = $ConfigPath
-            WinSWPath = $WinSWPath
+if ($isStaticIis) {
+    Write-Host "DeploymentMode=static_iis; skipping Node service installation."
+} else {
+    switch ($config.ServiceManager) {
+        "winsw" {
+            $serviceArgs = @{
+                ConfigPath = $ConfigPath
+                WinSWPath = $WinSWPath
+            }
+            if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $serviceArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
+            if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $serviceArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
+            if ($SkipWinSWDownload) { $serviceArgs.SkipWinSWDownload = $true }
+            & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") @serviceArgs
         }
-        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $serviceArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
-        if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $serviceArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
-        if ($SkipWinSWDownload) { $serviceArgs.SkipWinSWDownload = $true }
-        & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") @serviceArgs
+        "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }
+        "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }
+        default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }
     }
-    "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }
-    "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }
-    default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }
 }
 
 if (-not $SkipReverseProxy) {
-    $reverseProxyArgs = @{
-        ConfigPath = $ConfigPath
-    }
-    if ($WhatIfPreference) {
-        & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs -WhatIf
+    if ($isStaticIis) {
+        $staticIisArgs = @{
+            ConfigPath = $ConfigPath
+        }
+        if ($WhatIfPreference) {
+            & (Join-Path $repoRoot "scripts\windows\Install-IISStaticSite.ps1") @staticIisArgs -WhatIf
+        } else {
+            & (Join-Path $repoRoot "scripts\windows\Install-IISStaticSite.ps1") @staticIisArgs
+        }
     } else {
-        & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs
+        $reverseProxyArgs = @{
+            ConfigPath = $ConfigPath
+        }
+        if ($WhatIfPreference) {
+            & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs -WhatIf
+        } else {
+            & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs
+        }
     }
 }
 
-if (-not $SkipHealthCheck) {
+if (-not $SkipHealthCheck -and -not $isStaticIis) {
     & (Join-Path $repoRoot "scripts\windows\Register-HealthCheckTask.ps1") -ConfigPath $ConfigPath
+} elseif (-not $SkipHealthCheck -and $isStaticIis) {
+    Write-Host "DeploymentMode=static_iis; skipping Node health-check task."
 }
 
 Write-Host "Deployment finished for $($config.AppName)." -ForegroundColor Green

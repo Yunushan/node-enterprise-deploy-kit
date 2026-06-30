@@ -1,0 +1,32 @@
+{
+  "AppName": "ExampleStaticSpa",
+  "DisplayName": "Example Static SPA",
+  "Description": "Example TanStack Start or Vite static SPA served by IIS.",
+  "DeploymentMode": "static_iis",
+  "AppFramework": "tanstack-start",
+  "StaticOutputDirectory": "dist/client",
+  "SpaShellFile": "_shell.html",
+  "AppDirectory": "C:\\apps\\ExampleStaticSpa",
+  "PackagePath": "",
+  "PackageExpectedFiles": [
+    "dist/client/_shell.html",
+    "dist/client/assets",
+    "dist/client/web.config"
+  ],
+  "PackageStripSingleTopLevelDirectory": true,
+  "InstallCommand": "npm ci --include=dev",
+  "BuildCommand": "npm run build",
+  "ServiceManager": "none",
+  "ReverseProxy": "iis",
+  "IisSitePath": "C:\\inetpub\\ExampleStaticSpa",
+  "IisSiteName": "ExampleStaticSpa",
+  "IisAppPoolName": "ExampleStaticSpa-AppPool",
+  "PublicHostName": "app.example.local",
+  "PublicPort": 80,
+  "TlsEnabled": false,
+  "IisCertificateThumbprint": "",
+  "IisRequireUrlRewrite": false,
+  "IisRequireArrProxy": false,
+  "IisStaticAllowUrlRewrite": false,
+  "BackupDirectory": "C:\\inetpub\\ExampleStaticSpaBackups"
+}

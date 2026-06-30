@@ -7,9 +7,11 @@
 | App name | `AppName` | `APP_NAME` | Short service-safe name |
 | Display name | `DisplayName` | `APP_DISPLAY_NAME` | Human-friendly service name |
 | App runtime | n/a | `APP_RUNTIME` | `node` for Node.js service mode, `tomcat` for WAR deployment mode |
-| App framework | `AppFramework` | `APP_FRAMEWORK` | `node` for generic Node.js, `nextjs` for Next.js layout validation, `reactjs` for React static build validation |
+| App framework | `AppFramework` | `APP_FRAMEWORK` | `node` for generic Node.js, `nextjs` for Next.js layout validation, `reactjs` for React static build validation, `tanstack-start` or `vite-spa` for Windows static IIS SPA deployment |
 | Next.js deployment mode | `NextjsDeploymentMode` | `NEXTJS_DEPLOYMENT_MODE` | `standalone` for `.next/standalone/server.js`, or `next-start` for full app runtime |
 | React document root | `ReactDocumentRoot` | `REACT_DOCUMENT_ROOT` | Relative directory containing the React `index.html`, usually `build` for Create React App or `dist` for Vite |
+| Static output directory | `StaticOutputDirectory` | n/a | Relative static SPA output directory for `DeploymentMode=static_iis`, for example `dist/client` |
+| SPA shell file | `SpaShellFile` | n/a | Browser shell file served as the IIS default document and 404 ExecuteURL fallback, for example `_shell.html` |
 | Next.js require static assets | `NextjsRequireStaticAssets` | `NEXTJS_REQUIRE_STATIC_ASSETS` | Require `.next/static` under the standalone runtime root |
 | Next.js require public directory | `NextjsRequirePublicDirectory` | `NEXTJS_REQUIRE_PUBLIC_DIR` | Require `public` under the standalone runtime root when the app serves public files |
 | Next.js require Server Actions key | `NextjsRequireServerActionsEncryptionKey` | `NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY` | When true, preflight requires `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in private runtime config and validates base64 AES key length |
@@ -65,6 +67,7 @@
 | IIS ARR proxy | `IisEnableArrProxy` | n/a | Enable and configure IIS ARR proxy mode for localhost reverse proxying |
 | IIS URL Rewrite required | `IisRequireUrlRewrite` | n/a | Fail Windows IIS proxy preflight/install if URL Rewrite is missing |
 | IIS ARR required | `IisRequireArrProxy` | n/a | Fail Windows IIS proxy preflight/install if ARR is missing |
+| IIS static rewrite opt-in | `IisStaticAllowUrlRewrite` | n/a | Allow a `<rewrite>` section only for a separate rewrite-enabled static IIS mode; keep false for plain `static_iis` |
 | IIS forwarded headers | `IisSetForwardedHeaders` | n/a | Add `X-Forwarded-*` server variables in the generated IIS rewrite rule |
 | IIS health proxy path | `IisHealthProxyPath` | n/a | Public relative path that proxies to `HealthUrl`, for example `health` |
 | IIS WebSocket support | `IisWebSocketSupport` | n/a | Warn when IIS WebSocket Protocol support is missing |
@@ -92,6 +95,7 @@
 | Unix-like service manager | systemd on mainstream Linux, launchd on macOS, bsdrc on BSD |
 | Next.js service mode | `AppFramework=nextjs`, `NextjsDeploymentMode=standalone`, `StartCommand=server.js` |
 | React service mode | `AppFramework=reactjs`, `ReactDocumentRoot=build`, `StartCommand=server.js` |
+| Windows static IIS SPA mode | `DeploymentMode=static_iis`, `AppFramework=tanstack-start` or `vite-spa`, `StaticOutputDirectory=dist/client`, `SpaShellFile=_shell.html` |
 | Windows reverse proxy | IIS |
 | Unix-like reverse proxy | Nginx, Apache, HAProxy, or Traefik |
 | Restart policy | Always restart after service failure |

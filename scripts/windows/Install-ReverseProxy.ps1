@@ -21,6 +21,10 @@ function Get-ConfigString($Config, [string]$Name, [string]$Default) {
     return $Default
 }
 
+function Normalize-Name([string]$Value) {
+    return ([string]$Value).Trim().ToLowerInvariant().Replace("_", "-").Replace(" ", "-")
+}
+
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $ConfigPath))
 }
@@ -30,6 +34,18 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+$deploymentMode = Normalize-Name (Get-ConfigString $config "DeploymentMode" "")
+if ($deploymentMode -eq "static-iis") {
+    $installer = Join-Path $repoRoot "scripts\windows\Install-IISStaticSite.ps1"
+    if ($DryRun) {
+        Write-Output "Would install IIS static site with: powershell -ExecutionPolicy Bypass -File `"$installer`" -ConfigPath `"$ConfigPath`""
+        return
+    }
+    if ($PSCmdlet.ShouldProcess("IIS static site", "Run Install-IISStaticSite.ps1")) {
+        & $installer -ConfigPath $ConfigPath
+    }
+    return
+}
 $reverseProxy = (Get-ConfigString $config "ReverseProxy" "none").Trim().ToLowerInvariant()
 
 switch ($reverseProxy) {

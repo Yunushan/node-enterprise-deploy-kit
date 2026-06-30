@@ -248,6 +248,98 @@ function Test-WindowsExampleConfig {
   return $config
 }
 
+function Test-WindowsStaticIisExampleConfig {
+  Write-Step "Windows static IIS example config"
+  $path = Join-Path $RepoRoot "config/windows/static-iis.app.config.example.json"
+  $config = Get-Content -Path $path -Raw | ConvertFrom-Json
+  $values = ConvertTo-StringMap $config
+
+  Assert-RequiredValue $values @(
+    "AppName",
+    "DisplayName",
+    "Description",
+    "DeploymentMode",
+    "AppFramework",
+    "StaticOutputDirectory",
+    "SpaShellFile",
+    "AppDirectory",
+    "PackageExpectedFiles",
+    "PackageStripSingleTopLevelDirectory",
+    "InstallCommand",
+    "BuildCommand",
+    "ServiceManager",
+    "ReverseProxy",
+    "IisSitePath",
+    "IisSiteName",
+    "IisAppPoolName",
+    "PublicHostName",
+    "PublicPort",
+    "TlsEnabled",
+    "IisRequireUrlRewrite",
+    "IisRequireArrProxy",
+    "IisStaticAllowUrlRewrite",
+    "BackupDirectory"
+  ) "config/windows/static-iis.app.config.example.json"
+
+  if ([string]$config.AppName -ne "ExampleStaticSpa") {
+    throw "static_iis example AppName must use the neutral ExampleStaticSpa placeholder."
+  }
+  if ([string]$config.DeploymentMode -ne "static_iis") {
+    throw "static_iis example must set DeploymentMode to static_iis."
+  }
+  if ([string]$config.AppFramework -notin @("tanstack-start", "vite-spa")) {
+    throw "static_iis example AppFramework must be tanstack-start or vite-spa."
+  }
+  if ([string]$config.StaticOutputDirectory -ne "dist/client") {
+    throw "static_iis example StaticOutputDirectory must be dist/client."
+  }
+  if ([string]$config.SpaShellFile -ne "_shell.html") {
+    throw "static_iis example SpaShellFile must be _shell.html."
+  }
+  if ([string]$config.InstallCommand -ne "npm ci --include=dev") {
+    throw "static_iis example InstallCommand must use npm ci --include=dev."
+  }
+  if ([string]$config.BuildCommand -ne "npm run build") {
+    throw "static_iis example BuildCommand must use npm run build."
+  }
+  if ([string]$config.ServiceManager -ne "none") {
+    throw "static_iis example must not configure a Node service manager."
+  }
+  if ([string]$config.IisSiteName -ne "ExampleStaticSpa") {
+    throw "static_iis example IIS site name must use ExampleStaticSpa."
+  }
+  if ([string]$config.IisSitePath -ne "C:\inetpub\ExampleStaticSpa") {
+    throw "static_iis example deploy path must use C:\inetpub\ExampleStaticSpa."
+  }
+  if ([string]$config.PublicHostName -ne "app.example.local") {
+    throw "static_iis example public host must use app.example.local."
+  }
+  Assert-Port ([string]$config.PublicPort) "Static IIS PublicPort"
+  foreach ($name in @("TlsEnabled", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisStaticAllowUrlRewrite", "PackageStripSingleTopLevelDirectory")) {
+    Assert-BoolString ([string]$config.$name) $name
+  }
+  if ($config.IisRequireUrlRewrite -ne $false -or $config.IisRequireArrProxy -ne $false) {
+    throw "static_iis example must not require URL Rewrite or ARR."
+  }
+  if ($config.IisStaticAllowUrlRewrite -ne $false) {
+    throw "static_iis example must block rewrite rules by default."
+  }
+
+  $expectedFiles = @($config.PackageExpectedFiles | ForEach-Object { [string]$_ })
+  foreach ($expected in @("dist/client/_shell.html", "dist/client/assets", "dist/client/web.config")) {
+    if ($expectedFiles -notcontains $expected) {
+      throw "static_iis PackageExpectedFiles is missing $expected."
+    }
+  }
+  foreach ($forbidden in @("server.js", "node_modules", ".next/standalone/server.js")) {
+    if ($expectedFiles -contains $forbidden) {
+      throw "static_iis PackageExpectedFiles must not require $forbidden."
+    }
+  }
+
+  Write-Host "Windows static IIS example config OK"
+}
+
 function Test-LinuxExampleConfig {
   Write-Step "Linux example env"
   $path = Join-Path $RepoRoot "config/linux/app.env.example"
@@ -745,6 +837,7 @@ function Test-AnsibleSyntaxIfAvailable {
 }
 
 $windowsConfig = Test-WindowsExampleConfig
+Test-WindowsStaticIisExampleConfig
 $linuxEnv = Test-LinuxExampleConfig
 Test-AnsibleDefaults
 Test-JinjaDelimiters

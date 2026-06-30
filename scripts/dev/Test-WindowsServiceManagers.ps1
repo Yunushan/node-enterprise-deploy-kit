@@ -93,7 +93,7 @@ function Assert-DeployRouting {
   Write-Step "Windows deploy service-manager routing"
 
   foreach ($expected in @(
-      'if ([string]$config.ServiceManager -eq "winsw")',
+      'if (-not $isStaticIis -and [string]$config.ServiceManager -eq "winsw")',
       'scripts\windows\Ensure-WinSW.ps1',
       'switch ($config.ServiceManager)',
       '"winsw" {',
@@ -186,6 +186,78 @@ function Assert-WindowsReverseProxyRouting {
     if ($_.Exception.Message -notmatch "Unsupported Windows ReverseProxy") {
       throw
     }
+  }
+}
+
+function Assert-WindowsStaticIisRouting {
+  Write-Step "Windows static IIS deployment routing"
+
+  foreach ($expected in @(
+      '$isStaticIis = ($deploymentMode -eq "static-iis")',
+      'DeploymentMode=static_iis; skipping Node service installation.',
+      'scripts\windows\Install-IISStaticSite.ps1',
+      'DeploymentMode=static_iis; skipping Node health-check task.'
+    )) {
+    Assert-FileContainsText -Path "deploy.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      '$deploymentMode = Normalize-Name (Get-ConfigString $config "DeploymentMode" "")',
+      'Install-IISStaticSite.ps1',
+      'Would install IIS static site with:'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Install-ReverseProxy.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      'Install-IISStaticSite.ps1 requires DeploymentMode=static_iis.',
+      'StaticOutputDirectory was not found after build',
+      'Deployed folder is missing SPA shell file after copy',
+      'web.config contains an unsupported <rewrite> section',
+      'managedRuntimeVersion -Value ""',
+      'Restart-StaticIisTarget',
+      'Static IIS deployment finished'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Install-IISStaticSite.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      'static_iis AppFramework must be tanstack-start or vite-spa.',
+      'IIS Static Content feature is not installed',
+      'web.config contains an unsupported <rewrite> section for static_iis mode',
+      'Existing deployed IIS folder is missing SPA shell file',
+      'Deploy user does not have write permission'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Test-DeploymentPreflight.ps1" -ExpectedText $expected
+  }
+
+  foreach ($expected in @(
+      'Package is missing static_iis SPA shell file',
+      'static_iis mode does not require URL Rewrite or ARR',
+      'must configure httpErrors 404 ExecuteURL fallback'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Test-StaticIisPackage.ps1" -ExpectedText $expected
+  }
+
+  $staticConfigPath = Resolve-RepoFile "config/windows/static-iis.app.config.example.json"
+  $staticConfig = Get-Content -Path $staticConfigPath -Raw | ConvertFrom-Json
+  if ([string]$staticConfig.DeploymentMode -ne "static_iis") {
+    throw "config/windows/static-iis.app.config.example.json should set DeploymentMode to static_iis."
+  }
+  if ([string]$staticConfig.ServiceManager -ne "none") {
+    throw "config/windows/static-iis.app.config.example.json should not configure a Node service manager."
+  }
+  if ($staticConfig.IisRequireUrlRewrite -ne $false -or $staticConfig.IisRequireArrProxy -ne $false) {
+    throw "config/windows/static-iis.app.config.example.json should not require URL Rewrite or ARR."
+  }
+
+  $tempRoot = Join-Path $RepoRoot ".tmp\windows-static-iis-dispatcher"
+  New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+  $dispatchConfigPath = Join-Path $tempRoot "static-iis.json"
+  $staticConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $dispatchConfigPath -Encoding UTF8
+  $dispatchOutput = & (Resolve-RepoFile "scripts/windows/Install-ReverseProxy.ps1") -ConfigPath $dispatchConfigPath -DryRun 2>&1 | Out-String
+  if ($dispatchOutput -notmatch "Install-IISStaticSite\.ps1") {
+    throw "Install-ReverseProxy.ps1 dry-run did not route DeploymentMode=static_iis to Install-IISStaticSite.ps1."
   }
 }
 
@@ -454,6 +526,7 @@ function Assert-WindowsExampleConfigContract {
 
 Assert-DeployRouting
 Assert-WindowsReverseProxyRouting
+Assert-WindowsStaticIisRouting
 Assert-WindowsServiceEnvironmentContract
 Assert-WindowsUninstallRouting
 Assert-WindowsStatusEvidenceContract

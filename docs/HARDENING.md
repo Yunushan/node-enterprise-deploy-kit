@@ -17,7 +17,8 @@
 
 - Use WinSW or NSSM, not an interactive PowerShell session.
 - Configure Windows Service recovery.
-- Use IIS TLS certificates and URL Rewrite/ARR if IIS is the frontend.
+- Use IIS TLS certificates for public IIS sites; URL Rewrite/ARR are required
+  for IIS reverse proxy mode, not for plain static IIS SPA hosting.
 - Prefer `NetworkService`, `LocalService`, a dedicated local/domain account, or
   a gMSA over `LocalSystem`.
 - Collect Windows Event Logs into Wazuh or Graylog.

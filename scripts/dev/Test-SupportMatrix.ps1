@@ -197,7 +197,7 @@ $serviceManagerArtifacts = @{
   bsdrc = @("scripts\linux\install-node-service.sh", "templates\linux\bsdrc-node-app.init.tpl")
 }
 $reverseProxyArtifacts = @{
-  iis = @("scripts\windows\Install-ReverseProxy.ps1", "scripts\windows\Install-IISReverseProxy.ps1", "templates\windows\iis-web.config.tpl")
+  iis = @("scripts\windows\Install-ReverseProxy.ps1", "scripts\windows\Install-IISReverseProxy.ps1", "scripts\windows\Install-IISStaticSite.ps1", "templates\windows\iis-web.config.tpl")
   nginx = @("scripts\linux\install-reverse-proxy.sh", "scripts\linux\install-nginx-reverse-proxy.sh", "templates\linux\nginx-site.conf.tpl")
   apache = @("scripts\linux\install-reverse-proxy.sh", "scripts\linux\install-apache-reverse-proxy.sh", "templates\linux\apache-vhost.conf.tpl")
   haproxy = @("scripts\linux\install-reverse-proxy.sh", "scripts\linux\install-haproxy-reverse-proxy.sh", "templates\linux\haproxy.cfg.tpl")

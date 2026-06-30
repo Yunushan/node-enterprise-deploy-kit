@@ -262,6 +262,10 @@ function Test-ReactSupport {
   & (Join-Path $ScriptDir "Test-ReactSupport.ps1")
 }
 
+function Test-StaticIisSupport {
+  & (Join-Path $ScriptDir "Test-StaticIisSupport.ps1")
+}
+
 function Test-NextJsRuntimeSmoke {
   & (Join-Path $ScriptDir "Test-NextJsRuntimeSmoke.ps1")
 }
@@ -331,6 +335,7 @@ Test-LinuxContainerSmokeSelfTest
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
 Test-ReactSupport
+Test-StaticIisSupport
 Test-NextJsRuntimeSmoke
 Test-ReleasePackageHygiene
 Test-HostEvidenceSelfTest

@@ -128,6 +128,102 @@ before deployment:
 The Windows package import flow runs this validator automatically when
 `AppFramework` is `react`, `reactjs`, or `react-js`.
 
+For TanStack Start or Vite apps that build to a static SPA, use
+`DeploymentMode: "static_iis"` instead of a Node service. This mode runs the
+configured npm commands, validates `StaticOutputDirectory`, accepts
+`SpaShellFile: "_shell.html"` as the browser entry file, copies only the static
+output contents to the IIS physical path, configures an IIS app pool with
+No Managed Code, and restarts the IIS site/app pool. It does not require a
+Node service, URL Rewrite, or ARR.
+
+Use the placeholder example config as the starting point:
+
+```powershell
+Copy-Item config\windows\static-iis.app.config.example.json config\windows\app.config.json
+```
+
+The important static IIS values are:
+
+```json
+{
+  "AppName": "ExampleStaticSpa",
+  "DeploymentMode": "static_iis",
+  "AppFramework": "tanstack-start",
+  "StaticOutputDirectory": "dist/client",
+  "SpaShellFile": "_shell.html",
+  "InstallCommand": "npm ci --include=dev",
+  "BuildCommand": "npm run build",
+  "ServiceManager": "none",
+  "ReverseProxy": "iis",
+  "IisSiteName": "ExampleStaticSpa",
+  "IisSitePath": "C:\\inetpub\\ExampleStaticSpa",
+  "PublicHostName": "app.example.local",
+  "IisRequireUrlRewrite": false,
+  "IisRequireArrProxy": false,
+  "IisStaticAllowUrlRewrite": false
+}
+```
+
+For Vite-only SPAs, set `AppFramework` to `vite-spa`. If you import a zip, the
+static package validator accepts `_shell.html`, `assets`, and a plain IIS
+`web.config` under `dist/client` without requiring `server.js`:
+
+```powershell
+.\scripts\windows\Test-StaticIisPackage.ps1 `
+  -PackagePath C:\deploy\example-static-spa.zip `
+  -StaticOutputDirectory dist/client `
+  -SpaShellFile _shell.html `
+  -StripSingleTopLevelDirectory
+```
+
+If `dist\client\web.config` is present, `static_iis` validates it as XML and
+rejects `<rewrite>` unless `IisStaticAllowUrlRewrite` is explicitly enabled for
+a separate rewrite mode. If no `web.config` is present in the built output, the
+IIS static installer generates this plain IIS config:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <staticContent>
+      <remove fileExtension=".json" />
+      <remove fileExtension=".webmanifest" />
+      <remove fileExtension=".mjs" />
+      <remove fileExtension=".wasm" />
+      <remove fileExtension=".svg" />
+      <remove fileExtension=".woff2" />
+      <mimeMap fileExtension=".json" mimeType="application/json" />
+      <mimeMap fileExtension=".webmanifest" mimeType="application/manifest+json" />
+      <mimeMap fileExtension=".mjs" mimeType="text/javascript" />
+      <mimeMap fileExtension=".wasm" mimeType="application/wasm" />
+      <mimeMap fileExtension=".svg" mimeType="image/svg+xml" />
+      <mimeMap fileExtension=".woff2" mimeType="font/woff2" />
+    </staticContent>
+
+    <defaultDocument enabled="true">
+      <files>
+        <clear />
+        <add value="_shell.html" />
+        <add value="index.html" />
+      </files>
+    </defaultDocument>
+
+    <httpErrors errorMode="Custom" existingResponse="Replace">
+      <remove statusCode="404" subStatusCode="-1" />
+      <error statusCode="404" path="/_shell.html" responseMode="ExecuteURL" />
+    </httpErrors>
+  </system.webServer>
+</configuration>
+```
+
+Static IIS preflight checks that IIS and the Static Content feature are
+installed, the deploy path exists or can be created, the deploy user can write
+there, any existing `web.config` is valid plain IIS XML, the deployed folder
+contains the configured SPA shell when it already has content, and unsupported
+`<rewrite>` sections are absent. During deployment, the previous static folder
+contents are backed up under `BackupDirectory` before replacement so rollback
+can restore the earlier files.
+
 For Next.js standalone deployments, build with `output: 'standalone'`, package
 the contents of `.next\standalone`, and copy `.next\static` to
 `.next\standalone\.next\static` before creating the zip. Copy `public` to
@@ -307,6 +403,7 @@ so normal service updates should not need `-AllowPortInUse`.
 .\scripts\windows\Install-ReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json -DryRun
 .\scripts\windows\Install-ReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Install-IISReverseProxy.ps1 -ConfigPath .\config\windows\app.config.json
+.\scripts\windows\Install-IISStaticSite.ps1 -ConfigPath .\config\windows\app.config.json
 .\scripts\windows\Register-HealthCheckTask.ps1 -ConfigPath .\config\windows\app.config.json
 ```
 

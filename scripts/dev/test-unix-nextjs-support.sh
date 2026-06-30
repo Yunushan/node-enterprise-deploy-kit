@@ -257,10 +257,14 @@ new_fake_dependency_bootstrap_path() {
 test_dependency_bootstrap_requires_package_manager() {
   local macos_root="$TEST_ROOT/dependency-bootstrap-macos"
   local macos_fake_bin="$macos_root/fake-bin"
+  local macos_expected="Homebrew was not found"
   mkdir -p "$macos_root"
   new_fake_dependency_bootstrap_path "$macos_fake_bin" "Darwin"
 
-  expect_failure "macOS dependency bootstrap without Homebrew" "Homebrew was not found" env PATH="$macos_fake_bin" "$BASH" "$REPO_ROOT/scripts/linux/install-dependencies.sh"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    macos_expected="Run macOS dependency bootstrap without sudo"
+  fi
+  expect_failure "macOS dependency bootstrap without Homebrew" "$macos_expected" env PATH="$macos_fake_bin" "$BASH" "$REPO_ROOT/scripts/linux/install-dependencies.sh"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Neither dnf nor yum was found"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "pkgin was not found"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Unsupported/unknown OS family"
