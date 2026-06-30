@@ -291,6 +291,8 @@ function Assert-WindowsStatusEvidenceContract {
       'ServiceManager = Get-ConfigString $config "ServiceManager" "winsw"',
       'ReverseProxy = Get-ConfigString $config "ReverseProxy" ""',
       'NextjsDeploymentMode = Get-ConfigString $config "NextjsDeploymentMode" ""',
+      '[switch] $FailOnWarnings',
+      'if ($FailOnWarnings -and $warningCount -gt 0)',
       'function Get-WindowsServiceDefinitionEvidence',
       'ServiceDefinition = [pscustomobject]@',
       'DefinitionSource = "winsw-xml"',

@@ -1,10 +1,14 @@
 param(
   [string]$MatrixPath = "",
   [string]$OutputPath = "",
+  [string[]]$TargetId = @(),
+  [string[]]$Category = @(),
   [ValidateSet("Json", "Markdown", "Csv", "DispatchMarkdown", "DispatchPowerShell")]
   [string]$Format = "Markdown",
   [string]$WorkflowFile = "host-evidence.yml",
   [string]$WorkflowRef = "main",
+  [switch]$ProductionRecommendedOnly,
+  [switch]$FailOnWarnings,
   [switch]$Quiet,
   [switch]$SelfTest
 )
@@ -43,6 +47,45 @@ function Get-OptionalPropertyValue {
   if ($null -eq $Object) { return $null }
   if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
   return $null
+}
+
+function Test-ProductionRecommendedTarget {
+  param([object]$Target)
+
+  $nodeRuntimeSupport = Get-OptionalPropertyValue -Object $Target -Name "nodeRuntimeSupport"
+  if ($null -eq $nodeRuntimeSupport) { return $false }
+  $property = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
+  return ($property -and $property.Value -is [bool] -and [bool]$property.Value)
+}
+
+function Select-MatrixTargets {
+  param(
+    [object[]]$Targets,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly
+  )
+
+  $selected = @($Targets)
+  if ($TargetId.Count -gt 0) {
+    $wanted = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wanted -contains (Normalize-Token ([string]$_.id)) })
+    $missing = @($wanted | Where-Object { $targetIdValue = $_; -not @($Targets | Where-Object { (Normalize-Token ([string]$_.id)) -eq $targetIdValue }) })
+    if ($missing.Count -gt 0) {
+      throw "Unknown support matrix target id(s): $($missing -join ', ')"
+    }
+  }
+  if ($Category.Count -gt 0) {
+    $wantedCategories = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    $selected = @($selected | Where-Object { $wantedCategories -contains (Normalize-Token ([string]$_.category)) })
+  }
+  if ($ProductionRecommendedOnly) {
+    $selected = @($selected | Where-Object { Test-ProductionRecommendedTarget -Target $_ })
+  }
+  if ($selected.Count -eq 0) {
+    throw "No support matrix targets matched the requested evidence plan filters."
+  }
+  return $selected
 }
 
 function Get-MatrixRequiredMinimumUptimeHours {
@@ -92,13 +135,61 @@ function Get-CollectionCommand {
   param(
     [string]$Category,
     [string]$EvidenceFile,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
   )
   if ($Category -in @("windows-client", "windows-server")) {
     $windowsPath = $EvidenceFile.Replace("/", "\")
-    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours $RequiredMinimumUptimeHours -JsonPath .\$windowsPath -FailOnCritical"
+    $strictFlag = if ($FailOnWarnings) { " -FailOnWarnings" } else { "" }
+    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours $RequiredMinimumUptimeHours -JsonPath .\$windowsPath -FailOnCritical$strictFlag"
   }
-  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours $RequiredMinimumUptimeHours --json-output ./$EvidenceFile --fail-on-critical"
+  $strictOption = if ($FailOnWarnings) { " --fail-on-warnings" } else { "" }
+  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours $RequiredMinimumUptimeHours --json-output ./$EvidenceFile --fail-on-critical$strictOption"
+}
+
+function Get-ValidationCommand {
+  param(
+    [string]$EvidenceFile,
+    [string]$TargetId,
+    [string]$Mode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
+  )
+
+  $windowsPath = $EvidenceFile.Replace("/", "\")
+  $args = New-Object System.Collections.Generic.List[string]
+  foreach ($arg in @(
+      ".\scripts\dev\Test-HostEvidence.ps1",
+      "-EvidencePath",
+      ".\$windowsPath",
+      "-RequireNextJs",
+      "-RequireDeploymentIdentity",
+      "-RequireCollectorSha256",
+      "-RequireMinimumUptimeHours",
+      [string]$RequiredMinimumUptimeHours,
+      "-MaxEvidenceAgeDays",
+      "1",
+      "-ExpectedTargetId",
+      $TargetId,
+      "-ExpectedNextJsMode",
+      $Mode,
+      "-ExpectedServiceManager",
+      $ServiceManager,
+      "-ExpectedReverseProxy",
+      $ReverseProxy,
+      "-RequireReverseProxy"
+    )) {
+    $args.Add($arg) | Out-Null
+  }
+  if ($ReverseProxy -eq "none") {
+    $args.Add("-AllowReverseProxyNone") | Out-Null
+  }
+  if ($FailOnWarnings) {
+    $args.Add("-FailOnWarnings") | Out-Null
+  }
+  return ($args -join " ")
 }
 
 function Get-WorkflowPlatform {
@@ -199,7 +290,8 @@ function New-PlanEntry {
     [string]$ReverseProxy,
     [string]$Kind,
     [string]$Notes,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
   )
 
   $targetId = Normalize-Token ([string]$Target.id)
@@ -230,7 +322,7 @@ function New-PlanEntry {
       expected_reverse_proxy = $reverseProxyValue
       minimum_uptime_hours = [string]$RequiredMinimumUptimeHours
       require_reverse_proxy = "true"
-      fail_on_warnings = "false"
+      fail_on_warnings = if ($FailOnWarnings) { "true" } else { "false" }
       upload_retention_days = "30"
     }
     $workflowInputSummary = Format-WorkflowInputSummary -Inputs $workflowInputs
@@ -251,7 +343,8 @@ function New-PlanEntry {
     nodeRuntimeRequirements = $nodeRuntimeRequirements
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
-    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
     workflowDispatchSupported = $workflowDispatchSupported
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
@@ -285,6 +378,10 @@ function ConvertTo-PlanMarkdown {
   $lines.Add("| Service-only evidence entries | $($Plan.summary.serviceOnlyEvidenceCount) |") | Out-Null
   $lines.Add("| Fallback evidence entries | $($Plan.summary.fallbackEvidenceCount) |") | Out-Null
   $lines.Add("| Required minimum uptime hours | $($Plan.requiredMinimumUptimeHours) |") | Out-Null
+  $lines.Add("| Target filters | $(if (@($Plan.filters.targetId).Count -gt 0) { @($Plan.filters.targetId) -join ', ' } else { 'all' }) |") | Out-Null
+  $lines.Add("| Category filters | $(if (@($Plan.filters.category).Count -gt 0) { @($Plan.filters.category) -join ', ' } else { 'all' }) |") | Out-Null
+  $lines.Add("| Production recommended only | $($Plan.filters.productionRecommendedOnly) |") | Out-Null
+  $lines.Add("| Fail on warnings during collection | $($Plan.filters.failOnWarnings) |") | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add('Strict entries are the combinations enforced by `Test-SupportClaim.ps1 -RequireBothNextJsModes -RequireDeclaredServiceManagers -RequireDeclaredReverseProxies`.') | Out-Null
   $lines.Add('Service-only entries cover `ReverseProxy=none` and are tracked separately because there is no concrete reverse-proxy implementation to probe.') | Out-Null
@@ -300,8 +397,8 @@ function ConvertTo-PlanMarkdown {
       $lines.Add("") | Out-Null
       continue
     }
-    $lines.Add("| Target | Mode | Service | Proxy | Node runtime | Evidence file | Collection command | Workflow route |") | Out-Null
-    $lines.Add("|---|---|---|---|---|---|---|---|") | Out-Null
+    $lines.Add("| Target | Mode | Service | Proxy | Node runtime | Evidence file | Collection command | Validation command | Workflow route |") | Out-Null
+    $lines.Add("|---|---|---|---|---|---|---|---|---|") | Out-Null
     foreach ($item in $items) {
       $targetCell = ([string]$item.targetId).Replace("|", "\|")
       $modeCell = ([string]$item.nextJsMode).Replace("|", "\|")
@@ -311,8 +408,9 @@ function ConvertTo-PlanMarkdown {
       $runtimeSuffix = if ($item.nodeRuntimeProductionRecommended -eq $true) { "production" } else { "not production" }
       $runtimeCell = ("{0}; {1}" -f [string]$item.nodeRuntimeSupportTier, $runtimeSuffix).Replace("|", "\|")
       $commandCell = ([string]$item.collectionCommand).Replace("|", "\|")
+      $validationCell = ([string]$item.validationCommand).Replace("|", "\|")
       $workflowCell = ([string]$item.workflowInputSummary).Replace("|", "\|")
-      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` | `{7}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $runtimeCell, $fileCell, $commandCell, $workflowCell)) | Out-Null
+      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` | `{7}` | `{8}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $runtimeCell, $fileCell, $commandCell, $validationCell, $workflowCell)) | Out-Null
     }
     $lines.Add("") | Out-Null
   }
@@ -360,15 +458,16 @@ function ConvertTo-DispatchMarkdown {
     $lines.Add("") | Out-Null
     $lines.Add("These targets are not dispatched through GitHub Actions. Collect them on the target host with the local command, then validate the resulting evidence folder.") | Out-Null
     $lines.Add("") | Out-Null
-    $lines.Add("| Target | Mode | Service | Proxy | Collection command |") | Out-Null
-    $lines.Add("|---|---|---|---|---|") | Out-Null
+    $lines.Add("| Target | Mode | Service | Proxy | Collection command | Validation command |") | Out-Null
+    $lines.Add("|---|---|---|---|---|---|") | Out-Null
     foreach ($item in $localOnlyItems) {
       $targetCell = ([string]$item.targetId).Replace("|", "\|")
       $modeCell = ([string]$item.nextJsMode).Replace("|", "\|")
       $serviceCell = ([string]$item.serviceManager).Replace("|", "\|")
       $proxyCell = ([string]$item.reverseProxy).Replace("|", "\|")
       $commandCell = ([string]$item.collectionCommand).Replace("|", "\|")
-      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $commandCell)) | Out-Null
+      $validationCell = ([string]$item.validationCommand).Replace("|", "\|")
+      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $commandCell, $validationCell)) | Out-Null
     }
     $lines.Add("") | Out-Null
   }
@@ -458,6 +557,7 @@ function ConvertTo-DispatchPowerShell {
       $lines.Add("    ServiceManager = $(Quote-PowerShellArgument ([string]$item.serviceManager))") | Out-Null
       $lines.Add("    ReverseProxy = $(Quote-PowerShellArgument ([string]$item.reverseProxy))") | Out-Null
       $lines.Add("    CollectionCommand = $(Quote-PowerShellArgument ([string]$item.collectionCommand))") | Out-Null
+      $lines.Add("    ValidationCommand = $(Quote-PowerShellArgument ([string]$item.validationCommand))") | Out-Null
       $lines.Add("  }") | Out-Null
     }
   }
@@ -484,7 +584,7 @@ function ConvertTo-DispatchPowerShell {
   $lines.Add("  if (`$LocalOnly.Count -gt 0) {") | Out-Null
   $lines.Add("    Write-Host `"`"") | Out-Null
   $lines.Add("    Write-Host `"Local-command-only entries are not dispatched through GitHub Actions:`"") | Out-Null
-  $lines.Add("    `$LocalOnly | Format-Table Kind, TargetId, NextJsMode, ServiceManager, ReverseProxy, CollectionCommand -AutoSize") | Out-Null
+  $lines.Add("    `$LocalOnly | Format-Table Kind, TargetId, NextJsMode, ServiceManager, ReverseProxy, CollectionCommand, ValidationCommand -AutoSize") | Out-Null
   $lines.Add("  }") | Out-Null
   $lines.Add("}") | Out-Null
 
@@ -507,7 +607,8 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
 
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
-$targets = @(Get-ArrayValue $matrix.targets)
+$allTargets = @(Get-ArrayValue $matrix.targets)
+$targets = @(Select-MatrixTargets -Targets $allTargets -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
 $strictEvidence = New-Object System.Collections.Generic.List[object]
 $serviceOnlyEvidence = New-Object System.Collections.Generic.List[object]
 $fallbackEvidence = New-Object System.Collections.Generic.List[object]
@@ -522,15 +623,15 @@ foreach ($target in $targets) {
   foreach ($mode in $modes) {
     foreach ($serviceManager in $serviceManagers) {
       foreach ($proxy in $concreteProxies) {
-        $strictEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -Notes "Strict real-host evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
+        $strictEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -Notes "Strict real-host evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings ([bool]$FailOnWarnings))) | Out-Null
       }
       foreach ($proxy in $serviceOnlyMarkers) {
-        $serviceOnlyEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -Notes "Service-only or external load-balancer evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
+        $serviceOnlyEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -Notes "Service-only or external load-balancer evidence." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings ([bool]$FailOnWarnings))) | Out-Null
       }
     }
     foreach ($fallbackManager in $fallbackManagers) {
       foreach ($proxy in $concreteProxies) {
-        $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback evidence; not a strict service-manager claim." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)) | Out-Null
+        $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback evidence; not a strict service-manager claim." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings ([bool]$FailOnWarnings))) | Out-Null
       }
     }
   }
@@ -546,6 +647,13 @@ $plan = [pscustomobject]@{
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
   matrixFileName = $matrixFileName
   requiredMinimumUptimeHours = $requiredMinimumUptimeHours
+  filters = [pscustomobject]@{
+    targetId = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    category = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+    failOnWarnings = [bool]$FailOnWarnings
+    selectedTargets = @($targets | ForEach-Object { Normalize-Token ([string]$_.id) })
+  }
   summary = [pscustomobject]@{
     targetCount = [int]$targets.Count
     strictEvidenceCount = [int]$strictEvidenceArray.Count
@@ -628,6 +736,12 @@ if ($SelfTest) {
     throw "Support evidence plan self-test failed: first strict evidence entry should support workflow dispatch."
   }
   $allPlanEntries = @($parsed.strictEvidence) + @($parsed.serviceOnlyEvidence) + @($parsed.fallbackEvidence)
+  foreach ($entry in $allPlanEntries) {
+    $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
+    if (-not $entry.PSObject.Properties["validationCommand"] -or [string]::IsNullOrWhiteSpace([string]$entry.validationCommand)) {
+      throw "Support evidence plan self-test failed: validationCommand missing from $context."
+    }
+  }
   $workflowSupportedEntries = @($allPlanEntries | Where-Object { $_.workflowDispatchSupported -eq $true })
   if ($workflowSupportedEntries.Count -lt 1) {
     throw "Support evidence plan self-test failed: expected at least one workflow-dispatch-supported evidence entry."
@@ -659,7 +773,8 @@ if ($SelfTest) {
         "nodeRuntimeMinimumNodeVersion",
         "nodeRuntimeSupportTier",
         "nodeRuntimeProductionRecommended",
-        "nodeRuntimeRequirements"
+        "nodeRuntimeRequirements",
+        "validationCommand"
       )) {
       if (-not $entry.PSObject.Properties[$requiredRuntimeProperty]) {
         throw "Support evidence plan self-test failed: $requiredRuntimeProperty missing from $context."
@@ -682,6 +797,22 @@ if ($SelfTest) {
     }
     if ([int]$entry.workflowInputs.minimum_uptime_hours -ne [int]$entry.requiredMinimumUptimeHours) {
       throw "Support evidence plan self-test failed: minimum_uptime_hours does not match requiredMinimumUptimeHours for $context."
+    }
+    $validationCommand = [string]$entry.validationCommand
+    foreach ($expectedValidationFragment in @(
+        "-EvidencePath .\$(([string]$entry.evidenceFile).Replace('/', '\'))",
+        "-ExpectedTargetId $($entry.targetId)",
+        "-ExpectedNextJsMode $($entry.nextJsMode)",
+        "-ExpectedServiceManager $($entry.serviceManager)",
+        "-ExpectedReverseProxy $($entry.reverseProxy)",
+        "-RequireMinimumUptimeHours $($entry.requiredMinimumUptimeHours)"
+      )) {
+      if (-not $validationCommand.Contains($expectedValidationFragment)) {
+        throw "Support evidence plan self-test failed: validationCommand is missing $expectedValidationFragment for $context."
+      }
+    }
+    if ($entry.reverseProxy -eq "none" -and -not $validationCommand.Contains("-AllowReverseProxyNone")) {
+      throw "Support evidence plan self-test failed: service-only validationCommand is missing -AllowReverseProxyNone for $context."
     }
     try {
       & $workflowInputValidatorPath `
@@ -723,11 +854,30 @@ if ($SelfTest) {
   if (-not $planMarkdown.Contains("Collection command")) {
     throw "Support evidence plan self-test failed: Markdown output is missing collection command guidance."
   }
+  if (-not $planMarkdown.Contains("Validation command")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing validation command guidance."
+  }
+  $planCsvPath = Join-Path $RepoRoot ".tmp\support-evidence-plan-csv-$([Guid]::NewGuid().ToString('N')).csv"
+  & $PSCommandPath `
+    -Format Csv `
+    -OutputPath $planCsvPath `
+    -Quiet
+  $planCsvHeader = (Get-Content -LiteralPath $planCsvPath -First 1)
+  if (-not ([string]$planCsvHeader).Contains("validationCommand")) {
+    throw "Support evidence plan self-test failed: CSV output is missing validationCommand."
+  }
+  $planCsvText = Get-Content -LiteralPath $planCsvPath -Raw
+  if (-not $planCsvText.Contains("Test-HostEvidence.ps1")) {
+    throw "Support evidence plan self-test failed: CSV output is missing validation command content."
+  }
   if (-not $planMarkdown.Contains("Node runtime")) {
     throw "Support evidence plan self-test failed: Markdown output is missing Node runtime support guidance."
   }
   if (-not $planMarkdown.Contains("Required minimum uptime hours")) {
     throw "Support evidence plan self-test failed: Markdown output is missing required minimum uptime summary."
+  }
+  if (-not $planMarkdown.Contains("Fail on warnings during collection")) {
+    throw "Support evidence plan self-test failed: Markdown output is missing strict warning collection summary."
   }
   if (-not $planMarkdown.Contains("-MinimumUptimeHours $requiredMinimumUptimeHours")) {
     throw "Support evidence plan self-test failed: Markdown output is missing Windows minimum uptime guidance."
@@ -762,6 +912,9 @@ if ($SelfTest) {
   if (-not $dispatchPowerShell.Contains("`$LocalOnly = @(")) {
     throw "Support evidence plan self-test failed: DispatchPowerShell is missing local-command-only entries."
   }
+  if (-not $dispatchPowerShell.Contains("ValidationCommand")) {
+    throw "Support evidence plan self-test failed: DispatchPowerShell is missing local validation commands."
+  }
   if ($dispatchPowerShell.Contains("expected_target_id=freebsd")) {
     throw "Support evidence plan self-test failed: DispatchPowerShell should not dispatch FreeBSD workflow evidence."
   }
@@ -771,6 +924,57 @@ if ($SelfTest) {
   if ($parseErrors.Count -gt 0) {
     $messages = @($parseErrors | ForEach-Object { $_.Message }) -join "; "
     throw "Support evidence plan self-test failed: DispatchPowerShell parse errors: $messages"
+  }
+
+  $filteredOutput = Join-Path $RepoRoot ".tmp\support-evidence-plan-filtered-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath `
+    -TargetId windows-11,ubuntu,windows-server-2012 `
+    -ProductionRecommendedOnly `
+    -FailOnWarnings `
+    -Format Json `
+    -OutputPath $filteredOutput `
+    -Quiet
+  $filtered = Get-Content -LiteralPath $filteredOutput -Raw | ConvertFrom-Json
+  $filteredSelectedTargets = @($filtered.filters.selectedTargets)
+  if ($filteredSelectedTargets.Count -ne 2 -or $filteredSelectedTargets -notcontains "windows-11" -or $filteredSelectedTargets -notcontains "ubuntu") {
+    throw "Support evidence plan self-test failed: filtered production plan did not select exactly windows-11 and ubuntu."
+  }
+  if ($filteredSelectedTargets -contains "windows-server-2012") {
+    throw "Support evidence plan self-test failed: production-only plan included experimental windows-server-2012."
+  }
+  if ($filtered.filters.failOnWarnings -ne $true) {
+    throw "Support evidence plan self-test failed: filtered plan did not record failOnWarnings."
+  }
+  $filteredEntries = @($filtered.strictEvidence) + @($filtered.serviceOnlyEvidence) + @($filtered.fallbackEvidence)
+  if ($filteredEntries.Count -lt 1) {
+    throw "Support evidence plan self-test failed: filtered plan did not produce evidence entries."
+  }
+  foreach ($entry in $filteredEntries) {
+    if (@("windows-11", "ubuntu") -notcontains [string]$entry.targetId) {
+      throw "Support evidence plan self-test failed: filtered plan emitted unexpected target '$($entry.targetId)'."
+    }
+    $collectionCommand = [string]$entry.collectionCommand
+    $validationCommand = [string]$entry.validationCommand
+    if ([string]$entry.category -in @("windows-client", "windows-server")) {
+      if (-not $collectionCommand.Contains("-FailOnWarnings")) {
+        throw "Support evidence plan self-test failed: filtered Windows collection command is missing -FailOnWarnings."
+      }
+    } else {
+      if (-not $collectionCommand.Contains("--fail-on-warnings")) {
+        throw "Support evidence plan self-test failed: filtered Unix collection command is missing --fail-on-warnings."
+      }
+    }
+    if (-not $validationCommand.Contains("-FailOnWarnings")) {
+      throw "Support evidence plan self-test failed: filtered validation command is missing -FailOnWarnings."
+    }
+    if ($entry.workflowDispatchSupported -eq $true) {
+      if ([string]$entry.workflowInputs.fail_on_warnings -ne "true") {
+        throw "Support evidence plan self-test failed: filtered workflow input did not set fail_on_warnings=true."
+      }
+      if (-not ([string]$entry.workflowDispatchCommand).Contains("fail_on_warnings=true")) {
+        throw "Support evidence plan self-test failed: filtered dispatch command is missing fail_on_warnings=true."
+      }
+    }
   }
 }
 

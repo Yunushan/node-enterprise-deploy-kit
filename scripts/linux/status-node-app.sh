@@ -16,6 +16,7 @@ Options:
   --json-output PATH             Write safe machine-readable status evidence to PATH.
   --fail-on-critical             Exit 2 when critical findings exist.
   --fail-on-warning              Exit 3 when warnings exist and no critical findings exist.
+  --fail-on-warnings             Alias for --fail-on-warning.
   -h, --help                     Show this help.
 USAGE
 }
@@ -60,7 +61,7 @@ while [[ "$#" -gt 0 ]]; do
       FAIL_ON_CRITICAL="true"
       shift
       ;;
-    --fail-on-warning)
+    --fail-on-warning|--fail-on-warnings)
       FAIL_ON_WARNING="true"
       shift
       ;;
@@ -583,6 +584,40 @@ os_release_value() {
     }
     END { exit found ? 0 : 1 }
   ' /etc/os-release 2>/dev/null
+}
+
+sw_vers_value() {
+  local key="$1"
+  command -v sw_vers >/dev/null 2>&1 || return 1
+  sw_vers "$key" 2>/dev/null || return 1
+}
+
+detect_libc() {
+  local output version
+  if command -v getconf >/dev/null 2>&1; then
+    output="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+    version="$(printf '%s\n' "$output" | awk 'tolower($1) == "glibc" { print $2; exit }')"
+    if [[ -n "$version" ]]; then
+      printf 'glibc|%s\n' "$version"
+      return 0
+    fi
+  fi
+
+  if command -v ldd >/dev/null 2>&1; then
+    output="$(ldd --version 2>&1 || true)"
+    if printf '%s\n' "$output" | grep -qi 'musl'; then
+      version="$(printf '%s\n' "$output" | awk '/Version/ { print $2; exit }')"
+      printf 'musl|%s\n' "$version"
+      return 0
+    fi
+    version="$(printf '%s\n' "$output" | awk 'tolower($0) ~ /glibc|gnu libc/ { for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+([.][0-9]+)+$/) { print $i; exit } }')"
+    if [[ -n "$version" ]]; then
+      printf 'glibc|%s\n' "$version"
+      return 0
+    fi
+  fi
+
+  printf '|\n'
 }
 
 status_platform_family() {
@@ -1467,7 +1502,9 @@ write_json_output() {
     printf '    "osId": "%s",\n' "$(json_escape "$OS_RELEASE_ID")"
     printf '    "osIdLike": "%s",\n' "$(json_escape "$OS_RELEASE_ID_LIKE")"
     printf '    "osVersionId": "%s",\n' "$(json_escape "$OS_RELEASE_VERSION_ID")"
-    printf '    "osPrettyName": "%s"\n' "$(json_escape "$OS_RELEASE_PRETTY_NAME")"
+    printf '    "osPrettyName": "%s",\n' "$(json_escape "$OS_RELEASE_PRETTY_NAME")"
+    printf '    "libcName": "%s",\n' "$(json_escape "$LIBC_NAME")"
+    printf '    "libcVersion": "%s"\n' "$(json_escape "$LIBC_VERSION")"
     printf '  },\n'
     printf '  "minimumUptimeHours": "%s",\n' "$(json_escape "$MINIMUM_UPTIME_HOURS")"
     printf '  "healthTimeoutSeconds": "%s",\n' "$(json_escape "$HEALTH_TIMEOUT_SECONDS")"
@@ -1546,6 +1583,20 @@ OS_RELEASE_ID="$(os_release_value ID || echo "")"
 OS_RELEASE_ID_LIKE="$(os_release_value ID_LIKE || echo "")"
 OS_RELEASE_VERSION_ID="$(os_release_value VERSION_ID || echo "")"
 OS_RELEASE_PRETTY_NAME="$(os_release_value PRETTY_NAME || echo "")"
+if [[ "$(printf '%s' "$KERNEL_NAME" | tr '[:upper:]' '[:lower:]')" == "darwin" ]]; then
+  if [[ -z "$OS_RELEASE_VERSION_ID" ]]; then
+    OS_RELEASE_VERSION_ID="$(sw_vers_value -productVersion || echo "")"
+  fi
+  if [[ -z "$OS_RELEASE_PRETTY_NAME" ]]; then
+    OS_RELEASE_PRETTY_NAME="$(sw_vers_value -productName || echo "Apple macOS")"
+    if [[ -n "$OS_RELEASE_VERSION_ID" ]]; then
+      OS_RELEASE_PRETTY_NAME="$OS_RELEASE_PRETTY_NAME $OS_RELEASE_VERSION_ID"
+    fi
+  fi
+fi
+LIBC_INFO="$(detect_libc)"
+LIBC_NAME="${LIBC_INFO%%|*}"
+LIBC_VERSION="${LIBC_INFO#*|}"
 SUPPORT_TARGET_ID="$(support_target_id)"
 
 echo "Status for: ${APP_NAME:-unknown}"

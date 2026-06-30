@@ -50,7 +50,10 @@ The generated plan separates strict real-host evidence, service-only
 `ReverseProxy=none` evidence, and fallback-manager evidence so release claims
 can stay precise. It also carries each target's Node runtime support tier so
 collection plans make experimental and community-package targets visible before
-evidence collection starts.
+evidence collection starts. Add `-TargetId`, `-Category`, or
+`-ProductionRecommendedOnly` to scope the collection plan, and add
+`-FailOnWarnings` when collection commands and workflow dispatches should fail
+on warning-only status evidence.
 
 After downloading `host-evidence` workflow artifacts into a local folder,
 validate and import them into the canonical evidence tree. `ArtifactPath` can
@@ -66,8 +69,9 @@ containing downloaded `.zip` artifacts:
 The importer validates each downloaded `status.json`, requires controlled
 `host-evidence` / `workflow_dispatch` provenance by default, derives the
 target/mode/service/proxy key from the evidence and matrix, and writes the
-canonical evidence filename. Use `-AllowLocalCollection` only for explicitly
-local-command evidence.
+canonical evidence filename. It also requires the declared target to be
+corroborated by platform metadata before import. Use `-AllowLocalCollection`
+only for explicitly local-command evidence.
 
 To turn collected artifacts into a release-ready evidence package in one
 operator step:
@@ -84,8 +88,11 @@ operator step:
 
 The command validates the support matrix, imports optional artifacts, writes
 coverage JSON and Markdown reports, fails on missing required evidence, creates
-and verifies the bundle, and writes release readiness JSON. Add
-`-StrictCiRelease` only for final CI-controlled signoff.
+and verifies the bundle, and writes release readiness JSON. That readiness JSON
+preserves the covered and missing coverage rows with their local collection,
+workflow dispatch, and single-row validation commands so every claimed support
+tuple has reproducible proof commands. Add `-StrictCiRelease` only for final
+CI-controlled signoff.
 
 After evidence is collected and validated, create a private evidence bundle:
 
@@ -106,7 +113,11 @@ After evidence is collected and validated, create a private evidence bundle:
 The bundle manifest records each evidence file's SHA256, support dimensions,
 Node runtime support tier, live status collector provenance including collector
 SHA256 digest, and explicit non-synthetic/non-mock/non-sample markers so later
-release reviews can prove exactly which files supported the claim.
+release reviews can prove exactly which files supported the claim. Bundle
+verification also rejects evidence whose declared `supportTargetId` is not
+corroborated by collected OS/platform metadata, even when the manifest hashes
+match. It also rejects saved Next.js evidence that no longer proves the
+required runtime platform floor.
 
 Verify a saved bundle with:
 
@@ -147,9 +158,17 @@ Markdown report for release review:
 ```
 
 Missing rows in Markdown, JSON, and CSV output include the expected evidence
-file, Node runtime support tier, local collector command, and, where supported,
-the exact manual `gh workflow run host-evidence.yml` command to collect that
-evidence.
+file, Node runtime support tier, local collector command, exact single-row
+validation command, and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence. These
+commands fail on warning-only status evidence by default; add
+`-AllowWarnings` when the missing-coverage report should generate
+warning-tolerant collection commands instead. Coverage counts only evidence
+whose declared `supportTargetId` is corroborated by collected OS/platform
+metadata and, for Next.js rows, still proves the required runtime platform
+floor.
+The default table output prints the first missing collect/validate command
+pairs; use Markdown, JSON, or CSV for the complete command list.
 
 The full repository verifier runs the matrix check automatically:
 
@@ -249,6 +268,15 @@ still real-host evidence rows, but the bundle manifest must mark them
 `localCommandOnly: true`. `-StrictCiRelease` requires controlled workflow
 collection for workflow-capable rows and accepts local-command-only rows only
 with the same live/runtime/collector/uptime evidence checks.
+The host-evidence validator also requires the declared `supportTargetId` to be
+corroborated by platform metadata derived from the host OS; a JSON file cannot
+prove a matrix row by declaring that target ID alone.
+For strict Next.js claims, that same validator requires the collected platform
+metadata to prove the Node.js runtime platform floor where it applies: Windows
+build number, Linux kernel and glibc versions, or macOS product version and
+architecture.
+Saved bundle verification and coverage reports enforce the same floor so stale
+evidence cannot keep a matrix row covered.
 
 ## Node Runtime Support Tiers
 

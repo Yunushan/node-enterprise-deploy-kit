@@ -161,6 +161,97 @@ function Get-SupportTargetId {
   return (Normalize-Token $value)
 }
 
+function Add-PlatformTarget {
+  param(
+    [System.Collections.Generic.HashSet[string]]$Targets,
+    [string]$Value
+  )
+
+  $normalized = Normalize-Token $Value
+  if (-not $normalized) { return }
+
+  [void]$Targets.Add($normalized)
+  switch ($normalized) {
+    "darwin" { [void]$Targets.Add("macos") }
+    "mac-os" { [void]$Targets.Add("macos") }
+    "linuxmint" { [void]$Targets.Add("linux-mint") }
+    "ol" { [void]$Targets.Add("oracle-linux") }
+    "redhat" { [void]$Targets.Add("rhel") }
+    "red-hat" { [void]$Targets.Add("rhel") }
+    "freebsd" { [void]$Targets.Add("bsd") }
+    "openbsd" { [void]$Targets.Add("bsd") }
+    "netbsd" { [void]$Targets.Add("bsd") }
+  }
+}
+
+function Get-PlatformEvidenceTargets {
+  param([object]$Evidence)
+
+  $targets = New-Object System.Collections.Generic.HashSet[string]
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $family = Get-StringValue -Object $platform -Names @("Family", "family")
+  $osCaption = Get-StringValue -Object $platform -Names @("OsCaption", "osCaption")
+  $osId = Get-StringValue -Object $platform -Names @("OsId", "osId")
+  $osIdLike = Get-StringValue -Object $platform -Names @("OsIdLike", "osIdLike")
+  $kernelName = Get-StringValue -Object $platform -Names @("KernelName", "kernelName")
+  $prettyName = Get-StringValue -Object $platform -Names @("OsPrettyName", "osPrettyName")
+
+  Add-PlatformTarget -Targets $targets -Value $family
+  Add-PlatformTarget -Targets $targets -Value $osId
+  Add-PlatformTarget -Targets $targets -Value $kernelName
+  foreach ($part in @($osIdLike -split '\s+')) {
+    Add-PlatformTarget -Targets $targets -Value $part
+  }
+
+  if ($osCaption -match 'Windows') {
+    Add-PlatformTarget -Targets $targets -Value "windows"
+  }
+  if ($osCaption -match 'Windows Server') {
+    Add-PlatformTarget -Targets $targets -Value "windows-server"
+    if ($osCaption -match '2012\s+R2') {
+      Add-PlatformTarget -Targets $targets -Value "windows-server-2012-r2"
+    } else {
+      foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
+        if ($osCaption -match $year) {
+          Add-PlatformTarget -Targets $targets -Value "windows-server-$year"
+        }
+      }
+    }
+  } else {
+    if ($osCaption -match 'Windows\s+10') { Add-PlatformTarget -Targets $targets -Value "windows-10" }
+    if ($osCaption -match 'Windows\s+11') { Add-PlatformTarget -Targets $targets -Value "windows-11" }
+  }
+
+  if ($prettyName -match 'CentOS Stream') { Add-PlatformTarget -Targets $targets -Value "centos-stream" }
+  if ($prettyName -match 'Red Hat Enterprise Linux') { Add-PlatformTarget -Targets $targets -Value "rhel" }
+  if ($prettyName -match 'Oracle Linux') { Add-PlatformTarget -Targets $targets -Value "oracle-linux" }
+  if ($prettyName -match 'Rocky Linux') { Add-PlatformTarget -Targets $targets -Value "rocky" }
+  if ($prettyName -match 'AlmaLinux') { Add-PlatformTarget -Targets $targets -Value "almalinux" }
+  if ($prettyName -match 'Linux Mint') { Add-PlatformTarget -Targets $targets -Value "linux-mint" }
+
+  if ($targets.Contains("ubuntu") -or $targets.Contains("debian") -or $targets.Contains("rhel") -or $targets.Contains("fedora") -or $targets.Contains("alpine") -or $targets.Contains("oracle-linux") -or $targets.Contains("centos") -or $targets.Contains("centos-stream") -or $targets.Contains("rocky") -or $targets.Contains("almalinux") -or $targets.Contains("linux-mint")) {
+    [void]$targets.Add("linux")
+  }
+  if ($targets.Contains("windows-server")) {
+    [void]$targets.Add("windows")
+  }
+
+  return @($targets | Sort-Object)
+}
+
+function Assert-SupportTargetCorroborated {
+  param(
+    [object]$Evidence,
+    [string]$TargetId,
+    [string]$SourceFile
+  )
+
+  $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $Evidence)
+  if ($platformTargets -notcontains $TargetId) {
+    throw "Evidence support target '$TargetId' is not corroborated by platform metadata in $SourceFile. Platform-derived target(s): $($platformTargets -join ', ')."
+  }
+}
+
 function Get-NextJsMode {
   param([object]$Evidence)
 
@@ -384,6 +475,7 @@ function Import-OneEvidenceFile {
       throw "Evidence file is missing $($nameValue.Name): $SourceFile"
     }
   }
+  Assert-SupportTargetCorroborated -Evidence $evidence -TargetId $targetId -SourceFile $SourceFile
 
   $target = Get-TargetById -Matrix $Matrix -TargetId $targetId
   if ($null -eq $target) {
@@ -605,6 +697,24 @@ function Invoke-SelfTest {
   $secondResult = @(& $PSCommandPath -ArtifactPath $artifactRoot -EvidencePath $importRoot -MatrixPath $MatrixPath -PassThru)
   if ($secondResult.Count -ne 1 -or $secondResult[0].status -ne "unchanged") {
     throw "Host evidence import self-test failed: duplicate import should be unchanged."
+  }
+
+  $targetMismatchArtifactRoot = Join-Path $selfTestRoot "target-mismatch-artifacts"
+  $targetMismatchImportRoot = Join-Path $selfTestRoot "target-mismatch-evidence"
+  New-SelfTestEvidence -Path $targetMismatchArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $targetMismatchStatusPath = Join-Path $targetMismatchArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $targetMismatchStatus = Get-Content -LiteralPath $targetMismatchStatusPath -Raw | ConvertFrom-Json
+  $targetMismatchStatus.SupportTargetId = "windows-server-2019"
+  $targetMismatchStatus.Platform.SupportTargetId = "windows-server-2019"
+  $targetMismatchStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $targetMismatchStatusPath -Encoding UTF8
+  $failedTargetCorroboration = $false
+  try {
+    & $PSCommandPath -ArtifactPath $targetMismatchArtifactRoot -EvidencePath $targetMismatchImportRoot -MatrixPath $MatrixPath -SkipValidation -PassThru | Out-Null
+  } catch {
+    $failedTargetCorroboration = ($_.Exception.Message -match "not corroborated by platform metadata")
+  }
+  if (-not $failedTargetCorroboration) {
+    throw "Host evidence import self-test failed: target-mismatched evidence should be rejected even with -SkipValidation."
   }
 
   $zipPath = Join-Path $selfTestRoot "downloaded-artifacts.zip"

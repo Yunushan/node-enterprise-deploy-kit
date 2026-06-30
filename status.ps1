@@ -11,6 +11,8 @@
   .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical
 .EXAMPLE
   .\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-status.json -FailOnCritical
+.EXAMPLE
+  .\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours 72 -FailOnCritical -FailOnWarnings
 #>
 [CmdletBinding()]
 param(
@@ -18,7 +20,8 @@ param(
     [int] $MinimumUptimeHours = 0,
     [int] $HealthTimeoutSeconds = 0,
     [string] $JsonPath = "",
-    [switch] $FailOnCritical
+    [switch] $FailOnCritical,
+    [switch] $FailOnWarnings
 )
 
 $ErrorActionPreference = "Stop"
@@ -1659,4 +1662,7 @@ if (-not [string]::IsNullOrWhiteSpace($JsonPath)) {
 
 if ($FailOnCritical -and $criticalCount -gt 0) {
     exit 2
+}
+if ($FailOnWarnings -and $warningCount -gt 0) {
+    exit 3
 }

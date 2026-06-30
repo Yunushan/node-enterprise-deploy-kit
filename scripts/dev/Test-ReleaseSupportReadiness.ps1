@@ -408,6 +408,42 @@ function Invoke-ExpectReadinessFailure {
   }
 }
 
+function ConvertTo-ReadinessCoverageRows {
+  param([object[]]$Rows)
+
+  $converted = New-Object System.Collections.Generic.List[object]
+  foreach ($row in @($Rows)) {
+    $requiredMinimumUptimeHoursValue = Get-PropertyValue -Object $row -Names @("requiredMinimumUptimeHours")
+    $requiredMinimumUptimeHours = 0
+    if ($null -ne $requiredMinimumUptimeHoursValue -and -not [string]::IsNullOrWhiteSpace([string]$requiredMinimumUptimeHoursValue)) {
+      $requiredMinimumUptimeHours = [int]$requiredMinimumUptimeHoursValue
+    }
+
+    $nodeRuntimeRequirements = @(Get-ArrayValue (Get-PropertyValue -Object $row -Names @("nodeRuntimeRequirements")))
+    $converted.Add([pscustomobject]@{
+        status = Get-StringValue -Object $row -Names @("status")
+        kind = Get-StringValue -Object $row -Names @("kind")
+        targetId = Get-StringValue -Object $row -Names @("targetId")
+        nextJsMode = Get-StringValue -Object $row -Names @("nextJsMode")
+        serviceManager = Get-StringValue -Object $row -Names @("serviceManager")
+        reverseProxy = Get-StringValue -Object $row -Names @("reverseProxy")
+        nodeRuntimeMinimumNodeVersion = Get-StringValue -Object $row -Names @("nodeRuntimeMinimumNodeVersion")
+        nodeRuntimeSupportTier = Get-StringValue -Object $row -Names @("nodeRuntimeSupportTier")
+        nodeRuntimeProductionRecommended = Get-BooleanValue -Object $row -Names @("nodeRuntimeProductionRecommended") -Default $null
+        nodeRuntimeRequirements = $nodeRuntimeRequirements
+        requiredMinimumUptimeHours = $requiredMinimumUptimeHours
+        evidenceFile = Get-StringValue -Object $row -Names @("evidenceFile")
+        file = Get-StringValue -Object $row -Names @("file")
+        collectionCommand = Get-StringValue -Object $row -Names @("collectionCommand")
+        validationCommand = Get-StringValue -Object $row -Names @("validationCommand")
+        workflowDispatchSupported = Get-BooleanValue -Object $row -Names @("workflowDispatchSupported") -Default $null
+        workflowInputSummary = Get-StringValue -Object $row -Names @("workflowInputSummary")
+        workflowDispatchCommand = Get-StringValue -Object $row -Names @("workflowDispatchCommand")
+      }) | Out-Null
+  }
+  return @($converted | ForEach-Object { $_ })
+}
+
 if ($SelfTest) {
   Write-Step "Release support readiness self-test setup"
   $selfTestRoot = Join-Path $RepoRoot ".tmp\release-support-readiness-selftest-$([Guid]::NewGuid().ToString('N'))"
@@ -437,6 +473,35 @@ if ($SelfTest) {
   $BundlePath = Join-Path $bundleOutput "selftest-release-support-readiness.zip"
   $MaxEvidenceAgeDays = 30
   $selfTestRequiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
+
+  $readinessJsonPath = Join-Path $selfTestRoot "readiness.json"
+  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -Format Json -OutputPath $readinessJsonPath | Out-Null
+  $readinessJson = Get-Content -LiteralPath $readinessJsonPath -Raw | ConvertFrom-Json
+  if ([int]$readinessJson.coverage.coveredCount -ne @($readinessJson.coverage.covered).Count) {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve covered coverage rows."
+  }
+  if ([int]$readinessJson.coverage.missingCount -ne @($readinessJson.coverage.missing).Count) {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve missing coverage rows."
+  }
+  if ($readinessJson.coverage.failOnWarningsDuringCollection -ne $true) {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve strict warning collection policy."
+  }
+  $firstCoveredRow = @($readinessJson.coverage.covered | Select-Object -First 1)[0]
+  foreach ($requiredProperty in @("evidenceFile", "file", "collectionCommand", "validationCommand", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
+    if (-not $firstCoveredRow.PSObject.Properties[$requiredProperty]) {
+      throw "Release support readiness self-test failed: readiness coverage row is missing $requiredProperty."
+    }
+  }
+  if (-not ([string]$firstCoveredRow.validationCommand).Contains("Test-HostEvidence.ps1")) {
+    throw "Release support readiness self-test failed: readiness coverage row is missing the host evidence validation command."
+  }
+  if (-not ([string]$firstCoveredRow.validationCommand).Contains("-EvidencePath .\$(([string]$firstCoveredRow.evidenceFile).Replace('/', '\'))")) {
+    throw "Release support readiness self-test failed: readiness coverage row validation command is not tied to its evidence file."
+  }
+  $firstWorkflowCoveredRow = @($readinessJson.coverage.covered | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  if ($null -eq $firstWorkflowCoveredRow -or -not ([string]$firstWorkflowCoveredRow.workflowDispatchCommand).Contains("gh workflow run")) {
+    throw "Release support readiness self-test failed: readiness coverage rows did not preserve workflow dispatch commands."
+  }
 
   $matrixMismatchRoot = Join-Path $selfTestRoot "matrix-mismatch"
   New-Item -ItemType Directory -Force -Path $matrixMismatchRoot | Out-Null
@@ -901,9 +966,15 @@ try {
     coverage = [pscustomobject]@{
       includeServiceOnly = [bool]$IncludeServiceOnly
       includeFallback = [bool]$IncludeFallback
+      failOnWarningsDuringCollection = [bool]$coverage.failOnWarningsDuringCollection
+      requiredMinimumUptimeHours = [int]$coverage.requiredMinimumUptimeHours
+      workflowFile = [string]$coverage.workflowFile
+      workflowRef = [string]$coverage.workflowRef
       expectedCount = [int]$coverage.summary.expectedCount
       coveredCount = [int]$coverage.summary.coveredCount
       missingCount = [int]$coverage.summary.missingCount
+      covered = @(ConvertTo-ReadinessCoverageRows -Rows @($coverage.covered))
+      missing = @(ConvertTo-ReadinessCoverageRows -Rows @($coverage.missing))
     }
     bundle = [pscustomobject]@{
       evidenceFileCount = [int]$manifest.summary.evidenceFileCount

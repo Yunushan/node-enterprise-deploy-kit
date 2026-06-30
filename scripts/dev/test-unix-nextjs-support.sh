@@ -231,6 +231,9 @@ new_fake_host_path() {
     '#!/usr/bin/env bash' \
     'printf "%s\n" "launchctl $*" >> "$NODE_EDK_TRACE_FILE"' \
     'exit 0'
+  write_fake_host_command "$fake_bin" "sw_vers" \
+    '#!/usr/bin/env bash' \
+    'case "${1:-}" in -productVersion) printf "%s\n" "15.0" ;; -productName) printf "%s\n" "macOS" ;; *) printf "%s\n" "macOS 15.0" ;; esac'
   write_fake_host_command "$fake_bin" "service" \
     '#!/usr/bin/env bash' \
     'printf "%s\n" "service $*" >> "$NODE_EDK_TRACE_FILE"' \
@@ -713,6 +716,12 @@ assert_contains "$STATUS_JSON" '"runtimeRootName": "app"'
 assert_contains "$STATUS_JSON" '"deploymentIdentity": {'
 assert_contains "$STATUS_JSON" '"appDirectoryName": "app"'
 assert_contains "$STATUS_JSON" '"deploymentId": "example-deploy-001"'
+assert_contains "$STATUS_JSON" '"platform": {'
+assert_contains "$STATUS_JSON" '"kernelRelease": "'
+assert_contains "$STATUS_JSON" '"machine": "'
+assert_contains "$STATUS_JSON" '"osVersionId": "'
+assert_contains "$STATUS_JSON" '"libcName": "'
+assert_contains "$STATUS_JSON" '"libcVersion": "'
 assert_not_contains "$STATUS_JSON" '"configPath"'
 assert_not_contains "$STATUS_JSON" '"runtimeRoot"'
 assert_not_contains "$STATUS_JSON" '"appDirectory"'
@@ -721,6 +730,7 @@ assert_contains "$STATUS_JSON" '"reverseProxy": {'
 assert_contains "$STATUS_JSON" '"status": "not-applicable"'
 assert_contains "$STATUS_JSON" '"verdict": "Warning"'
 assert_contains "$STATUS_JSON" '"critical": 0'
+expect_failure "standalone safe status fail on warnings" "Warning:" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$OK_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --fail-on-critical --fail-on-warnings
 
 SUBDIR_ROOT="$TEST_ROOT/standalone-subdir-runtime"
 mkdir -p "$SUBDIR_ROOT/app"

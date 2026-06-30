@@ -125,9 +125,11 @@ function Invoke-HostEvidenceWorkflowInputValidation {
   if ($targetModes -notcontains $expectedNextJsMode) {
     throw "expected_nextjs_mode '$expectedNextJsMode' is not declared for support matrix target '$expectedTarget'."
   }
+  $targetPrimaryServiceManagers = @(Get-NormalizedArray $target.serviceManagers)
+  $targetFallbackServiceManagers = @(Get-NormalizedArray (Get-OptionalPropertyValue -Object $target -Name "fallbackManagers"))
   $targetServiceManagers = @(
-    (Get-NormalizedArray $target.serviceManagers) +
-    (Get-NormalizedArray (Get-OptionalPropertyValue -Object $target -Name "fallbackManagers")) |
+    $targetPrimaryServiceManagers +
+    $targetFallbackServiceManagers |
       Sort-Object -Unique
   )
   if ($targetServiceManagers -notcontains $expectedServiceManager) {
@@ -142,6 +144,13 @@ function Invoke-HostEvidenceWorkflowInputValidation {
 
   if ($EvidenceName -notmatch '^[A-Za-z0-9._-]+$') {
     throw "evidence_name must contain only letters, numbers, dot, underscore, or dash."
+  }
+  $expectedEvidenceName = "$expectedTarget-$expectedNextJsMode-$expectedServiceManager-$expectedReverseProxy"
+  if ($targetFallbackServiceManagers -contains $expectedServiceManager) {
+    $expectedEvidenceName = "$expectedEvidenceName-fallback"
+  }
+  if ($EvidenceName.Trim().ToLowerInvariant() -ne $expectedEvidenceName) {
+    throw "evidence_name must match expected support dimensions: $expectedEvidenceName."
   }
   if ($MinimumUptimeHours -notmatch '^\d+$') {
     throw "minimum_uptime_hours must be a non-negative integer."
@@ -287,7 +296,7 @@ function Invoke-SelfTest {
     $case.ExpectedTargetId = "macos"
     $case.ExpectedServiceManager = "launchd"
     $case.ExpectedReverseProxy = "nginx"
-    $case.EvidenceName = "macos-standalone-launchd-nginx"
+    $case.EvidenceName = "macos-next-start-launchd-nginx"
     Invoke-HostEvidenceWorkflowInputValidation @case
   }
   Invoke-ExpectValidationFailure -Name "missing target label" -ExpectedMessage "runner_labels must include the expected target label" -Action {
@@ -313,6 +322,16 @@ function Invoke-SelfTest {
   Invoke-ExpectValidationFailure -Name "undeclared manager" -ExpectedMessage "is not declared for support matrix target" -Action {
     $case = $unix.Clone()
     $case.ExpectedServiceManager = "winsw"
+    Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "mismatched evidence name" -ExpectedMessage "evidence_name must match expected support dimensions" -Action {
+    $case = $base.Clone()
+    $case.EvidenceName = "windows-server-2022-next-start-winsw-iis"
+    Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "fallback evidence name without suffix" -ExpectedMessage "evidence_name must match expected support dimensions" -Action {
+    $case = $fallback.Clone()
+    $case.EvidenceName = "windows-10-standalone-pm2-iis"
     Invoke-HostEvidenceWorkflowInputValidation @case
   }
 

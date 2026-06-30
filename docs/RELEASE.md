@@ -76,12 +76,15 @@ To generate the real-host evidence collection checklist:
   -Format Markdown
 ```
 
-The generated plan includes the local collection command for each
-target/mode/service/proxy combination. Windows, Linux, and macOS rows also
-include manual `host-evidence` workflow inputs so uploaded artifacts can be
-validated against the exact support matrix dimensions they are meant to prove.
+The generated plan includes the local collection command and exact single-row
+validation command for each target/mode/service/proxy combination. Windows,
+Linux, and macOS rows also include manual `host-evidence` workflow inputs so
+uploaded artifacts can be validated against the exact support matrix dimensions
+they are meant to prove.
 BSD rows are local-command-only unless you operate a compatible runner
-environment.
+environment. Use `-TargetId`, `-Category`, or `-ProductionRecommendedOnly` to
+scope the plan before dispatching real hosts, and add `-FailOnWarnings` when
+collection itself must reject warning-only status evidence.
 
 To generate reviewable GitHub CLI dispatch commands for the manual
 `host-evidence` workflow on workflow-capable targets:
@@ -116,8 +119,9 @@ containing downloaded `.zip` artifacts:
 The importer validates each downloaded `status.json` against the support matrix
 and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
 `workflow_dispatch` provenance by default, derives the target/mode/service/proxy
-key, writes the canonical evidence filename, and refuses changed overwrites
-unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+key, requires the declared target to be corroborated by platform metadata,
+writes the canonical evidence filename, and refuses changed overwrites unless
+`-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
 local-command evidence.
 
 To audit the evidence folder for missing matrix combinations:
@@ -142,12 +146,23 @@ To audit an archived evidence bundle and produce a human review report:
 ```
 
 Missing rows in Markdown, JSON, and CSV output include the expected evidence
-file plus the local collector command and, where supported, the exact manual
-`gh workflow run host-evidence.yml` command to collect that evidence.
+file plus the local collector command, the exact single-row validation command,
+and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence. These
+commands fail on warning-only status evidence by default; add `-AllowWarnings`
+when the missing-coverage report should generate warning-tolerant collection
+commands instead. Coverage counts only evidence whose declared
+`supportTargetId` is corroborated by collected OS/platform metadata and, for
+Next.js rows, still proves the required runtime platform floor.
+The default table output prints the first missing collect/validate command
+pairs; use Markdown, JSON, or CSV for the complete command list.
 
 To run the complete release evidence workflow in one operator command, import
 optional downloaded artifacts, write coverage reports, fail on missing coverage,
-create and verify the bundle, and emit release readiness JSON:
+create and verify the bundle, and emit release readiness JSON. The generated
+`release-readiness.json` preserves the covered and missing coverage rows with
+their local collection, workflow dispatch, and single-row validation commands
+so the final handoff can reproduce every claimed support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -185,8 +200,12 @@ source-control provenance for the repository revision that created the bundle.
 When built in CI, it also records safe workflow/run/ref provenance.
 When source evidence files contain safe collection CI provenance, the manifest
 records and verifies it per file. The bundle verifier rejects
-internally inconsistent CI/source commit SHAs. Release readiness rejects
-bundles whose recorded support matrix SHA256 does not match the current
+internally inconsistent CI/source commit SHAs and evidence whose declared
+`supportTargetId` is not corroborated by collected OS/platform metadata, even
+when the manifest hashes match. It also rejects saved Next.js evidence that no
+longer proves the required runtime platform floor. Release readiness rejects
+bundles whose recorded
+support matrix SHA256 does not match the current
 `config/support-matrix.example.json`. For final
 CI-controlled release signoff, pass `-StrictCiRelease`. It enables the
 clean-source, current-commit, bundle CI, collection CI, collection source
@@ -242,7 +261,9 @@ Hosted labels such as `ubuntu-latest`, `ubuntu-24.04`, `windows-2022`,
 Those expected target/mode/service/proxy inputs are required for dispatch.
 The workflow accepts only declared matrix values for expected Next.js mode,
 service manager, and reverse proxy, then validates the full combination against
-the exact support matrix target row. Use a relative workspace `config_path`,
+the exact support matrix target row. The `evidence_name` input must match the
+generated `target-mode-service-proxy` artifact name, with `-fallback` for
+fallback service managers. Use a relative workspace `config_path`,
 such as `config/windows/app.config.json` or `config/linux/app.env`; those local
 private config files are git-ignored and preserved by the collection checkout
 with `clean: false`. The workflow rejects absolute paths, traversal, unsafe
@@ -504,6 +525,11 @@ status JSON from those actual hosts and validate it:
 For stricter release gates, add `-MaxEvidenceAgeDays` and `-FailOnWarnings`.
 Run `Test-SupportEvidenceCoverage.ps1` when you need a missing-coverage report
 before making the final support claim.
+`Test-HostEvidence.ps1` rejects evidence whose declared `supportTargetId` is
+not independently corroborated by the collected OS/platform metadata. With
+`-RequireNextJs`, it also rejects evidence that does not prove the relevant
+Node.js runtime platform floor, such as Windows build, Linux kernel/glibc, or
+macOS version/architecture.
 See [Host Verification Evidence](HOST_VERIFICATION.md) for the full workflow.
 Use [Support Matrix](SUPPORT_MATRIX.md) to choose the exact target IDs required
 for a platform-specific release claim.

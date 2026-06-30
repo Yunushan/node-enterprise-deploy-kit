@@ -52,7 +52,9 @@ sudo bash scripts/linux/status-node-app.sh \
 The evidence JSON contains safe operational metadata only: app name, service
 name, verdict, finding counts, sanitized health URL, deployment/build identity,
 path basenames, platform metadata, normalized `supportTargetId`, safe Node.js
-runtime and Next.js package version strings when available, live collector
+runtime and Next.js package version strings when available, safe runtime
+platform facts such as Windows build, Unix kernel release, libc version, OS
+version, and architecture, live collector
 metadata in `evidenceCollection`, the collector SHA256 digest when available,
 managed service-definition proof for Windows and Unix-like service managers,
 Windows scheduled-task action proof, explicit `synthetic: false`, `mock: false`,
@@ -99,7 +101,9 @@ that as an explicit service-only claim instead of a missing proxy check. The
 workflow allow-lists expected Next.js modes, service managers, and reverse
 proxies to the support-matrix vocabulary, validates the exact target row in
 `config/support-matrix.example.json`, and rejects platform/category mismatches
-before evidence collection starts.
+before evidence collection starts. The `evidence_name` input must match the
+generated `target-mode-service-proxy` artifact name, with `-fallback` for
+fallback service managers.
 
 The workflow is `workflow_dispatch` only. It is for release evidence collection
 from real hosts, not for replacing the normal push/PR CI checks. BSD evidence
@@ -132,12 +136,18 @@ support matrix:
   -Format Markdown
 ```
 
-Each generated plan entry includes the local collection command for that
-target/mode/service/proxy row. Windows, Linux, and macOS entries also include
+Each generated plan entry includes the local collection command and exact
+single-row validation command for that target/mode/service/proxy row. Windows,
+Linux, and macOS entries also include
 `workflowInputs` for the manual `host-evidence` workflow, including
 `runner_labels`, `platform`, `config_path`, `evidence_name`, and the expected
-target/mode/service/proxy values. BSD entries are local-command-only unless you
-operate a compatible runner environment.
+target/mode/service/proxy values. `evidence_name` is derived from those
+dimensions and is validated before collection starts. BSD entries are
+local-command-only unless you operate a compatible runner environment. Use
+`-TargetId`, `-Category`, or `-ProductionRecommendedOnly` to scope the plan
+before dispatch, and add
+`-FailOnWarnings` when collection commands and workflow inputs should reject
+warning-only status evidence.
 
 To generate reviewable GitHub CLI dispatch commands from the same matrix for
 workflow-capable targets:
@@ -173,8 +183,9 @@ containing downloaded `.zip` artifacts:
 The importer validates each downloaded `status.json` against the support matrix
 and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
 `workflow_dispatch` provenance by default, derives the target/mode/service/proxy
-key, writes the canonical evidence filename, and refuses changed overwrites
-unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+key, requires the declared target to be corroborated by platform metadata,
+writes the canonical evidence filename, and refuses changed overwrites unless
+`-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
 local-command evidence.
 
 After collecting evidence, audit the folder against the full matrix to see
@@ -202,13 +213,24 @@ when gaps are expected during evidence collection:
 ```
 
 Missing rows in Markdown, JSON, and CSV output include the expected evidence
-file plus the local collector command and, where supported, the exact manual
-`gh workflow run host-evidence.yml` command to collect that evidence.
+file plus the local collector command, the exact single-row validation command,
+and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence. These
+commands fail on warning-only status evidence by default; add `-AllowWarnings`
+when the missing-coverage report should generate warning-tolerant collection
+commands instead. Coverage counts only evidence whose declared
+`supportTargetId` is corroborated by collected OS/platform metadata and, for
+Next.js rows, still proves the required runtime platform floor.
+The default table output prints the first missing collect/validate command
+pairs; use Markdown, JSON, or CSV for the complete command list.
 
 For a single operator command after artifacts are downloaded, use the combined
 release workflow. It imports optional artifacts, writes coverage reports, fails
 when declared evidence is still missing, creates and verifies the evidence
-bundle, and writes release readiness JSON:
+bundle, and writes release readiness JSON. The generated
+`release-readiness.json` preserves the covered and missing coverage rows with
+their local collection, workflow dispatch, and single-row validation commands
+so the final handoff can reproduce every claimed support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -280,10 +302,13 @@ The verifier recalculates every evidence file hash, checks manifest byte sizes,
 proves manifest fields still match the JSON content, verifies live collector
 provenance, requires explicit non-synthetic/non-mock/non-sample evidence
 markers, verifies source-control and support-matrix provenance, and rejects
-unlisted evidence files inside the bundle. It also validates CI provenance when
-present, including CI/source commit consistency. The release readiness gate also
-rejects bundles whose recorded support matrix SHA256 does not match the current
-support matrix. Use `-StrictCiRelease` for CI-controlled final release signoff.
+unlisted evidence files inside the bundle. It also rejects evidence whose
+declared `supportTargetId` is not corroborated by collected OS/platform
+metadata, even when the manifest hashes match. It also validates CI provenance
+when present, including CI/source commit consistency. The release readiness gate
+also rejects bundles whose recorded support matrix SHA256 does not match the
+current support matrix. Use `-StrictCiRelease` for CI-controlled final release
+signoff.
 It enables the clean-source, current-commit, bundle CI, collection CI,
 collection source commit, controlled `host-evidence` workflow for
 workflow-capable rows, and runtime version plus collector SHA256 evidence
@@ -349,7 +374,14 @@ Evidence is acceptable when:
 - `supportTargetId` / `SupportTargetId` is present and matches the support
   matrix target being claimed, such as `windows-server-2022`, `ubuntu`,
   `macos`, or `freebsd`.
-- The platform metadata matches the target being claimed.
+- The platform metadata independently corroborates the target being claimed;
+  a declared `supportTargetId` by itself is not enough to prove a matrix row.
+- For strict Next.js support claims, the platform metadata also proves the
+  Node.js runtime platform floor: Windows build number, Linux kernel and glibc
+  versions, or macOS product version and architecture where those floors apply.
+- Saved bundle verification and coverage reports enforce the same Next.js
+  runtime platform floor so stale archived evidence cannot keep a matrix row
+  covered.
 - The app had enough uptime for the verification window.
 - Service process uptime is present. When a minimum uptime window was requested
   by the status command, the evidence proves the window was satisfied.
@@ -393,6 +425,10 @@ Evidence is not enough when:
   or BSD support.
 - It does not include normalized `supportTargetId` metadata for the matrix
   target being claimed.
+- The declared `supportTargetId` conflicts with OS/platform metadata, such as
+  Ubuntu evidence claiming `windows-server-2022`.
+- A strict Next.js claim omits the relevant runtime platform floor, such as
+  Linux kernel/glibc facts or macOS product version and architecture.
 - The service or port checks were skipped for a production support claim.
 - The service is currently active but not enabled to start after reboot.
 - Service process uptime is missing, unknown, or below the requested minimum

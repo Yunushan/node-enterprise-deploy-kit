@@ -19,7 +19,7 @@ on:
         required: true
         default: config/windows/app.config.json
       evidence_name:
-        description: Artifact-safe evidence name such as windows-server-2022-winsw-iis
+        description: Artifact-safe name matching target-mode-service-proxy, with -fallback for fallback managers
         required: true
         default: host-evidence
       expected_target_id:

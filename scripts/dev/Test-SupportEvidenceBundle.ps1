@@ -114,6 +114,84 @@ function Get-SupportTargetId {
   return Normalize-Token $target
 }
 
+function Add-PlatformTarget {
+  param(
+    [System.Collections.Generic.HashSet[string]]$Targets,
+    [string]$Value
+  )
+
+  $normalized = Normalize-Token $Value
+  if (-not $normalized) { return }
+
+  [void]$Targets.Add($normalized)
+  switch ($normalized) {
+    "darwin" { [void]$Targets.Add("macos") }
+    "mac-os" { [void]$Targets.Add("macos") }
+    "linuxmint" { [void]$Targets.Add("linux-mint") }
+    "ol" { [void]$Targets.Add("oracle-linux") }
+    "redhat" { [void]$Targets.Add("rhel") }
+    "red-hat" { [void]$Targets.Add("rhel") }
+    "freebsd" { [void]$Targets.Add("bsd") }
+    "openbsd" { [void]$Targets.Add("bsd") }
+    "netbsd" { [void]$Targets.Add("bsd") }
+  }
+}
+
+function Get-PlatformEvidenceTargets {
+  param([object]$Evidence)
+
+  $targets = New-Object System.Collections.Generic.HashSet[string]
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $family = Get-StringValue -Object $platform -Names @("Family", "family")
+  $osCaption = Get-StringValue -Object $platform -Names @("OsCaption", "osCaption")
+  $osId = Get-StringValue -Object $platform -Names @("OsId", "osId")
+  $osIdLike = Get-StringValue -Object $platform -Names @("OsIdLike", "osIdLike")
+  $kernelName = Get-StringValue -Object $platform -Names @("KernelName", "kernelName")
+  $prettyName = Get-StringValue -Object $platform -Names @("OsPrettyName", "osPrettyName")
+
+  Add-PlatformTarget -Targets $targets -Value $family
+  Add-PlatformTarget -Targets $targets -Value $osId
+  Add-PlatformTarget -Targets $targets -Value $kernelName
+  foreach ($part in @($osIdLike -split '\s+')) {
+    Add-PlatformTarget -Targets $targets -Value $part
+  }
+
+  if ($osCaption -match 'Windows') {
+    Add-PlatformTarget -Targets $targets -Value "windows"
+  }
+  if ($osCaption -match 'Windows Server') {
+    Add-PlatformTarget -Targets $targets -Value "windows-server"
+    if ($osCaption -match '2012\s+R2') {
+      Add-PlatformTarget -Targets $targets -Value "windows-server-2012-r2"
+    } else {
+      foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
+        if ($osCaption -match $year) {
+          Add-PlatformTarget -Targets $targets -Value "windows-server-$year"
+        }
+      }
+    }
+  } else {
+    if ($osCaption -match 'Windows\s+10') { Add-PlatformTarget -Targets $targets -Value "windows-10" }
+    if ($osCaption -match 'Windows\s+11') { Add-PlatformTarget -Targets $targets -Value "windows-11" }
+  }
+
+  if ($prettyName -match 'CentOS Stream') { Add-PlatformTarget -Targets $targets -Value "centos-stream" }
+  if ($prettyName -match 'Red Hat Enterprise Linux') { Add-PlatformTarget -Targets $targets -Value "rhel" }
+  if ($prettyName -match 'Oracle Linux') { Add-PlatformTarget -Targets $targets -Value "oracle-linux" }
+  if ($prettyName -match 'Rocky Linux') { Add-PlatformTarget -Targets $targets -Value "rocky" }
+  if ($prettyName -match 'AlmaLinux') { Add-PlatformTarget -Targets $targets -Value "almalinux" }
+  if ($prettyName -match 'Linux Mint') { Add-PlatformTarget -Targets $targets -Value "linux-mint" }
+
+  if ($targets.Contains("ubuntu") -or $targets.Contains("debian") -or $targets.Contains("rhel") -or $targets.Contains("fedora") -or $targets.Contains("alpine") -or $targets.Contains("oracle-linux") -or $targets.Contains("centos") -or $targets.Contains("centos-stream") -or $targets.Contains("rocky") -or $targets.Contains("almalinux") -or $targets.Contains("linux-mint")) {
+    [void]$targets.Add("linux")
+  }
+  if ($targets.Contains("windows-server")) {
+    [void]$targets.Add("windows")
+  }
+
+  return @($targets | Sort-Object)
+}
+
 function Get-NextJsMode {
   param([object]$Evidence)
 
@@ -324,6 +402,114 @@ function Test-DateValueEqual {
 function Test-Sha256Text {
   param([string]$Value)
   return (-not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '^[A-Fa-f0-9]{64}$')
+}
+
+function Get-VersionParts {
+  param(
+    [string]$Value,
+    [int]$Count = 2
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $matches = [regex]::Matches($Value, '\d+')
+  if ($matches.Count -lt $Count) { return $null }
+
+  $parts = New-Object System.Collections.Generic.List[int]
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    $parts.Add([int]$matches[$index].Value) | Out-Null
+  }
+  return @($parts)
+}
+
+function Test-VersionAtLeast {
+  param(
+    [string]$Actual,
+    [string]$Minimum,
+    [int]$Count = 2
+  )
+
+  $actualParts = Get-VersionParts -Value $Actual -Count $Count
+  $minimumParts = Get-VersionParts -Value $Minimum -Count $Count
+  if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    if ($actualParts[$index] -gt $minimumParts[$index]) { return $true }
+    if ($actualParts[$index] -lt $minimumParts[$index]) { return $false }
+  }
+  return $true
+}
+
+function Get-NextJsPlatformRuntimeIssues {
+  param(
+    [object]$Evidence,
+    [string]$SupportTargetId,
+    [string]$Context
+  )
+
+  $issues = New-Object System.Collections.Generic.List[string]
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $target = Normalize-Token $SupportTargetId
+  $kernelRelease = Get-StringValue -Object $platform -Names @("KernelRelease", "kernelRelease")
+  $machine = Normalize-Token (Get-StringValue -Object $platform -Names @("Machine", "machine", "OsArchitecture", "osArchitecture"))
+  $osVersion = Get-StringValue -Object $platform -Names @("OsVersionId", "osVersionId", "OsVersion", "osVersion", "ProductVersion", "productVersion")
+  $osBuild = Get-IntegerValue -Object $platform -Names @("OsBuildNumber", "osBuildNumber", "BuildNumber", "buildNumber")
+  $libcName = Normalize-Token (Get-StringValue -Object $platform -Names @("LibcName", "libcName"))
+  $libcVersion = Get-StringValue -Object $platform -Names @("LibcVersion", "libcVersion")
+
+  $minimumWindowsBuilds = @{
+    "windows-10" = 10240
+    "windows-11" = 22000
+    "windows-server-2012" = 9200
+    "windows-server-2012-r2" = 9600
+    "windows-server-2016" = 14393
+    "windows-server-2019" = 17763
+    "windows-server-2022" = 20348
+    "windows-server-2025" = 26100
+  }
+  if ($minimumWindowsBuilds.ContainsKey($target)) {
+    $minimumBuild = [int]$minimumWindowsBuilds[$target]
+    if ($null -eq $osBuild) {
+      $issues.Add("$Context does not prove a Windows build number for the Next.js Node runtime platform floor.") | Out-Null
+    } elseif ($osBuild -lt $minimumBuild) {
+      $issues.Add("$Context has Windows build $osBuild, below the $target floor of $minimumBuild for Next.js Node runtime platform support.") | Out-Null
+    }
+  }
+
+  $glibcLinuxTargets = @("ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora")
+  if ($target -in $glibcLinuxTargets) {
+    $kernelOk = Test-VersionAtLeast -Actual $kernelRelease -Minimum "4.18" -Count 2
+    if ($null -eq $kernelOk) {
+      $issues.Add("$Context does not prove Linux kernel release for the Next.js Node runtime platform floor.") | Out-Null
+    } elseif ($kernelOk -ne $true) {
+      $issues.Add("$Context has Linux kernel release '$kernelRelease', below the Node.js 20.x floor of 4.18 for Next.js support.") | Out-Null
+    }
+
+    if ($libcName -notin @("glibc", "gnu-libc", "gnu-c-library")) {
+      $issues.Add("$Context does not prove glibc runtime metadata required for Node.js 20.x Tier 1 Linux support.") | Out-Null
+    } else {
+      $glibcOk = Test-VersionAtLeast -Actual $libcVersion -Minimum "2.28" -Count 2
+      if ($null -eq $glibcOk) {
+        $issues.Add("$Context does not prove glibc version for Node.js 20.x Tier 1 Linux support.") | Out-Null
+      } elseif ($glibcOk -ne $true) {
+        $issues.Add("$Context has glibc version '$libcVersion', below the Node.js 20.x floor of 2.28 for Next.js support.") | Out-Null
+      }
+    }
+  }
+
+  if ($target -eq "macos") {
+    if ([string]::IsNullOrWhiteSpace($machine)) {
+      $issues.Add("$Context does not prove macOS machine architecture for the Next.js Node runtime platform floor.") | Out-Null
+    }
+    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    $macosOk = Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2
+    if ($null -eq $macosOk) {
+      $issues.Add("$Context does not prove macOS product version for the Next.js Node runtime platform floor.") | Out-Null
+    } elseif ($macosOk -ne $true) {
+      $issues.Add("$Context has macOS version '$osVersion', below the Node.js 20.x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
+    }
+  }
+
+  return @($issues)
 }
 
 function Assert-CollectionCiProvenance {
@@ -569,6 +755,15 @@ function Test-Bundle {
       if (-not $matrixTargetsById.ContainsKey($rowTargetId)) {
         throw "supportTargetId '$rowTargetId' was not found in the support matrix for $relative."
       }
+      $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $evidence)
+      if ($platformTargets -notcontains $rowTargetId) {
+        $platformTargetText = if ($platformTargets.Count -gt 0) { $platformTargets -join ", " } else { "<none>" }
+        throw "supportTargetId '$rowTargetId' is not corroborated by platform metadata for ${relative}: $platformTargetText."
+      }
+      $platformRuntimeIssues = @(Get-NextJsPlatformRuntimeIssues -Evidence $evidence -SupportTargetId $rowTargetId -Context $relative)
+      if ($platformRuntimeIssues.Count -gt 0) {
+        throw "Next.js runtime platform floor evidence is invalid for ${relative}: $($platformRuntimeIssues -join ' ')"
+      }
       $matrixTarget = $matrixTargetsById[$rowTargetId]
       $targetCategory = ([string]$row.targetCategory).Trim().ToLowerInvariant()
       if ([string]::IsNullOrWhiteSpace($targetCategory)) {
@@ -796,6 +991,48 @@ if ($SelfTest) {
   Copy-Item -LiteralPath (Join-Path $unlistedRoot "evidence\ubuntu-systemd-nginx.json") -Destination (Join-Path $unlistedRoot "evidence\unlisted-copy.json") -Force
   Invoke-ExpectBundleFailure -ExpectedMessage "not listed in manifest" -Action {
     Test-Bundle -Path $unlistedRoot
+  }
+
+  $targetMismatchRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-target-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $targetMismatchRoot
+  $targetMismatchFile = Join-Path $targetMismatchRoot "evidence\ubuntu-systemd-nginx.json"
+  $targetMismatchEvidence = Get-Content -LiteralPath $targetMismatchFile -Raw | ConvertFrom-Json
+  $targetMismatchEvidence.supportTargetId = "windows-server-2022"
+  $targetMismatchEvidence.platform.supportTargetId = "windows-server-2022"
+  ($targetMismatchEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $targetMismatchFile -Encoding UTF8
+  $targetMismatchManifestPath = Join-Path $targetMismatchRoot "support-evidence-manifest.json"
+  $targetMismatchManifest = Get-Content -LiteralPath $targetMismatchManifestPath -Raw | ConvertFrom-Json
+  foreach ($row in @($targetMismatchManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.supportTargetId = "windows-server-2022"
+      $row.sha256 = (Get-FileHash -LiteralPath $targetMismatchFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $targetMismatchFile).Length
+    }
+  }
+  $targetMismatchManifest.summary.targets = @("windows-server-2022")
+  ($targetMismatchManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $targetMismatchManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "not corroborated by platform metadata" -Action {
+    Test-Bundle -Path $targetMismatchRoot
+  }
+
+  $runtimeFloorRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $runtimeFloorRoot
+  $runtimeFloorFile = Join-Path $runtimeFloorRoot "evidence\ubuntu-systemd-nginx.json"
+  $runtimeFloorEvidence = Get-Content -LiteralPath $runtimeFloorFile -Raw | ConvertFrom-Json
+  $runtimeFloorEvidence.platform.kernelRelease = "4.17.0"
+  $runtimeFloorEvidence.platform.libcVersion = "2.27"
+  ($runtimeFloorEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $runtimeFloorFile -Encoding UTF8
+  $runtimeFloorManifestPath = Join-Path $runtimeFloorRoot "support-evidence-manifest.json"
+  $runtimeFloorManifest = Get-Content -LiteralPath $runtimeFloorManifestPath -Raw | ConvertFrom-Json
+  foreach ($row in @($runtimeFloorManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $runtimeFloorFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $runtimeFloorFile).Length
+    }
+  }
+  ($runtimeFloorManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $runtimeFloorManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "runtime platform floor evidence is invalid" -Action {
+    Test-Bundle -Path $runtimeFloorRoot
   }
 
   $missingMatrixRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-matrix-$([Guid]::NewGuid().ToString('N'))"

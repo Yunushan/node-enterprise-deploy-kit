@@ -131,6 +131,14 @@ function Invoke-SelfTest {
   if (-not (Test-Path -LiteralPath ([string]$result.readinessJson) -PathType Leaf)) {
     throw "Support evidence release workflow self-test failed: readiness JSON was not created."
   }
+  $readiness = Get-Content -LiteralPath ([string]$result.readinessJson) -Raw | ConvertFrom-Json
+  $firstReadinessCoverageRow = @($readiness.coverage.covered | Select-Object -First 1)[0]
+  if ($null -eq $firstReadinessCoverageRow -or -not ([string]$firstReadinessCoverageRow.validationCommand).Contains("Test-HostEvidence.ps1")) {
+    throw "Support evidence release workflow self-test failed: readiness JSON did not preserve row validation commands."
+  }
+  if (-not ([string]$firstReadinessCoverageRow.collectionCommand)) {
+    throw "Support evidence release workflow self-test failed: readiness JSON did not preserve row collection commands."
+  }
 }
 
 if ($SelfTest) {

@@ -33,6 +33,10 @@ tracked as Experimental Node runtime targets; OpenBSD and NetBSD require an OS
 package or locally maintained Node runtime. The support matrix records this in
 `nodeRuntimeSupport` so release claims can distinguish production targets from
 legacy, experimental, or community-runtime targets.
+When `Test-HostEvidence.ps1` runs with `-RequireNextJs`, it enforces those
+runtime floors from collected platform evidence where they apply: Windows build
+number, Linux kernel plus glibc version, and macOS product version plus
+architecture.
 
 ## Supported Modes
 

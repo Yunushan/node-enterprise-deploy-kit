@@ -595,13 +595,55 @@ function New-ClaimSelfTestEvidence {
             "launchd" { $launchdMonitor }
             default { $cronMonitor }
           }
+          $kernelRelease = if ($targetId -eq "macos") {
+            "24.0.0"
+          } elseif ($targetId -in @("freebsd", "openbsd", "netbsd")) {
+            "14.0"
+          } else {
+            "6.8.0"
+          }
+          $machine = if ($targetId -eq "macos") { "arm64" } else { "x86_64" }
+          $osVersionId = switch ($targetId) {
+            "ubuntu" { "24.04" }
+            "debian" { "12" }
+            "linux-mint" { "22" }
+            "rhel" { "9" }
+            "oracle-linux" { "9" }
+            "centos" { "8" }
+            "centos-stream" { "9" }
+            "rocky" { "9" }
+            "almalinux" { "9" }
+            "fedora" { "40" }
+            "alpine" { "3.20" }
+            "macos" { "15.0" }
+            default { "14" }
+          }
+          $libcName = if ($targetId -eq "alpine") {
+            "musl"
+          } elseif ([string]$target["Family"] -eq "linux") {
+            "glibc"
+          } else {
+            ""
+          }
+          $libcVersion = if ($libcName -eq "glibc") {
+            "2.39"
+          } elseif ($libcName -eq "musl") {
+            "1.2.5"
+          } else {
+            ""
+          }
           $platform = [ordered]@{
             family = [string]$target["Family"]
             supportTargetId = $targetId
             osId = [string]$target["OsId"]
             osIdLike = [string]$target["OsIdLike"]
+            osVersionId = $osVersionId
             osPrettyName = [string]$target["PrettyName"]
             kernelName = [string]$target["KernelName"]
+            kernelRelease = $kernelRelease
+            machine = $machine
+            libcName = $libcName
+            libcVersion = $libcVersion
             serviceManager = $serviceManagerValue
             appFramework = "nextjs"
             nextjsDeploymentMode = $mode

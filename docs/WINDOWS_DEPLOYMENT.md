@@ -326,7 +326,8 @@ and recent log file metadata without printing environment variables or log
 contents. `-MinimumUptimeHours` is useful after a reboot or several days of
 runtime because it warns when the service has restarted more recently than the
 period you expected. `-JsonPath` writes the same safe verdict and findings to a
-machine-readable evidence file for release reviews.
+machine-readable evidence file for release reviews. Add `-FailOnWarnings` when
+strict release evidence must fail on warning-only status results.
 
 For IIS reverse-proxy deployments, the status JSON also includes safe IIS
 evidence: whether the WebAdministration module was available, whether the

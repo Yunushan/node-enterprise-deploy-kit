@@ -457,6 +457,9 @@ function New-SelfTestEvidence {
       Family = "windows"
       SupportTargetId = "windows-11"
       OsCaption = "Microsoft Windows 11 Pro"
+      OsVersion = "10.0.22631"
+      OsBuildNumber = "22631"
+      OsArchitecture = "64-bit"
       ServiceManager = "winsw"
       AppFramework = "nextjs"
       NextjsDeploymentMode = "standalone"
@@ -582,8 +585,13 @@ function New-SelfTestEvidence {
       supportTargetId = "ubuntu"
       osId = "ubuntu"
       osIdLike = "debian ubuntu"
+      osVersionId = "24.04"
       osPrettyName = "Ubuntu 24.04 LTS"
       kernelName = "Linux"
+      kernelRelease = "6.8.0"
+      machine = "x86_64"
+      libcName = "glibc"
+      libcVersion = "2.39"
       serviceManager = "systemd"
       appFramework = "nextjs"
       nextjsDeploymentMode = "standalone"
@@ -673,6 +681,8 @@ function New-SelfTestEvidence {
   $legacyWindows.SupportTargetId = "windows-server-2012"
   $legacyWindows.Platform.SupportTargetId = "windows-server-2012"
   $legacyWindows.Platform.OsCaption = "Microsoft Windows Server 2012 Datacenter"
+  $legacyWindows.Platform.OsVersion = "6.2.9200"
+  $legacyWindows.Platform.OsBuildNumber = "9200"
 
   $windows | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Path "windows-11-winsw-iis.json") -Encoding UTF8
   $legacyWindows | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Path "windows-server-2012-winsw-iis.json") -Encoding UTF8

@@ -141,30 +141,21 @@ function Get-BooleanValue {
   return $Default
 }
 
-function Get-EvidenceTargets {
+function Get-PlatformEvidenceTargets {
   param([object]$Evidence)
 
   $targets = New-Object System.Collections.Generic.HashSet[string]
   $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
-  $supportTargetId = Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
-  if (-not $supportTargetId) {
-    $supportTargetId = Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
-  }
   $family = Get-StringValue -Object $platform -Names @("Family", "family")
   $osCaption = Get-StringValue -Object $platform -Names @("OsCaption", "osCaption")
   $osId = Get-StringValue -Object $platform -Names @("OsId", "osId")
   $osIdLike = Get-StringValue -Object $platform -Names @("OsIdLike", "osIdLike")
   $kernelName = Get-StringValue -Object $platform -Names @("KernelName", "kernelName")
-  $serviceManager = Get-StringValue -Object $platform -Names @("ServiceManager", "serviceManager")
-  if (-not $serviceManager) {
-    $serviceManager = Get-StringValue -Object $Evidence -Names @("ServiceManager", "serviceManager")
-  }
+  $prettyName = Get-StringValue -Object $platform -Names @("OsPrettyName", "osPrettyName")
 
-  Add-Target -Targets $targets -Value $supportTargetId
   Add-Target -Targets $targets -Value $family
   Add-Target -Targets $targets -Value $osId
   Add-Target -Targets $targets -Value $kernelName
-  Add-Target -Targets $targets -Value $serviceManager
 
   foreach ($part in @($osIdLike -split '\s+')) {
     Add-Target -Targets $targets -Value $part
@@ -175,38 +166,66 @@ function Get-EvidenceTargets {
   }
   if ($osCaption -match 'Windows Server') {
     Add-Target -Targets $targets -Value "windows-server"
-  }
-  if ($osCaption -match 'Windows\s+10' -and $osCaption -notmatch 'Windows Server') {
-    Add-Target -Targets $targets -Value "windows-10"
-  }
-  if ($osCaption -match 'Windows\s+11' -and $osCaption -notmatch 'Windows Server') {
-    Add-Target -Targets $targets -Value "windows-11"
-  }
-  foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
-    if ($osCaption -match $year) {
-      Add-Target -Targets $targets -Value "windows-server-$year"
+    if ($osCaption -match '2012\s+R2') {
+      Add-Target -Targets $targets -Value "windows-server-2012-r2"
+    } else {
+      foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
+        if ($osCaption -match $year) {
+          Add-Target -Targets $targets -Value "windows-server-$year"
+        }
+      }
+    }
+  } else {
+    if ($osCaption -match 'Windows\s+10') {
+      Add-Target -Targets $targets -Value "windows-10"
+    }
+    if ($osCaption -match 'Windows\s+11') {
+      Add-Target -Targets $targets -Value "windows-11"
     }
   }
-  if ($osCaption -match '2012\s+R2') {
-    Add-Target -Targets $targets -Value "windows-server-2012-r2"
-  }
 
-  $prettyName = Get-StringValue -Object $platform -Names @("OsPrettyName", "osPrettyName")
   if ($prettyName -match 'CentOS Stream') {
     Add-Target -Targets $targets -Value "centos-stream"
   }
+  if ($prettyName -match 'Red Hat Enterprise Linux') {
+    Add-Target -Targets $targets -Value "rhel"
+  }
   if ($prettyName -match 'Oracle Linux') {
     Add-Target -Targets $targets -Value "oracle-linux"
+  }
+  if ($prettyName -match 'Rocky Linux') {
+    Add-Target -Targets $targets -Value "rocky"
+  }
+  if ($prettyName -match 'AlmaLinux') {
+    Add-Target -Targets $targets -Value "almalinux"
   }
   if ($prettyName -match 'Linux Mint') {
     Add-Target -Targets $targets -Value "linux-mint"
   }
 
-  if ($targets.Contains("ubuntu") -or $targets.Contains("debian") -or $targets.Contains("rhel") -or $targets.Contains("fedora") -or $targets.Contains("alpine") -or $targets.Contains("oracle-linux") -or $targets.Contains("centos") -or $targets.Contains("centos-stream") -or $targets.Contains("linux-mint")) {
+  if ($targets.Contains("ubuntu") -or $targets.Contains("debian") -or $targets.Contains("rhel") -or $targets.Contains("fedora") -or $targets.Contains("alpine") -or $targets.Contains("oracle-linux") -or $targets.Contains("centos") -or $targets.Contains("centos-stream") -or $targets.Contains("rocky") -or $targets.Contains("almalinux") -or $targets.Contains("linux-mint")) {
     [void]$targets.Add("linux")
   }
   if ($targets.Contains("windows-server")) {
     [void]$targets.Add("windows")
+  }
+
+  return @($targets | Sort-Object)
+}
+
+function Get-EvidenceTargets {
+  param([object]$Evidence)
+
+  $targets = New-Object System.Collections.Generic.HashSet[string]
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $supportTargetId = Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  if (-not $supportTargetId) {
+    $supportTargetId = Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
+  }
+
+  Add-Target -Targets $targets -Value $supportTargetId
+  foreach ($target in @(Get-PlatformEvidenceTargets -Evidence $Evidence)) {
+    Add-Target -Targets $targets -Value $target
   }
 
   return @($targets | Sort-Object)
@@ -415,6 +434,114 @@ function Test-SafeRuntimeVersionEvidence {
   param([string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
   return ($Value -match '^[A-Za-z0-9._+:-]{1,80}$')
+}
+
+function Get-VersionParts {
+  param(
+    [string]$Value,
+    [int]$Count = 2
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $matches = [regex]::Matches($Value, '\d+')
+  if ($matches.Count -lt $Count) { return $null }
+
+  $parts = New-Object System.Collections.Generic.List[int]
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    $parts.Add([int]$matches[$index].Value) | Out-Null
+  }
+  return @($parts)
+}
+
+function Test-VersionAtLeast {
+  param(
+    [string]$Actual,
+    [string]$Minimum,
+    [int]$Count = 2
+  )
+
+  $actualParts = Get-VersionParts -Value $Actual -Count $Count
+  $minimumParts = Get-VersionParts -Value $Minimum -Count $Count
+  if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    if ($actualParts[$index] -gt $minimumParts[$index]) { return $true }
+    if ($actualParts[$index] -lt $minimumParts[$index]) { return $false }
+  }
+  return $true
+}
+
+function Get-NextJsPlatformRuntimeIssues {
+  param(
+    [object]$Evidence,
+    [string]$SupportTargetId,
+    [string]$FileName
+  )
+
+  $issues = New-Object System.Collections.Generic.List[string]
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $target = Normalize-Target $SupportTargetId
+  $kernelRelease = Get-StringValue -Object $platform -Names @("KernelRelease", "kernelRelease")
+  $machine = Normalize-Target (Get-StringValue -Object $platform -Names @("Machine", "machine", "OsArchitecture", "osArchitecture"))
+  $osVersion = Get-StringValue -Object $platform -Names @("OsVersionId", "osVersionId", "OsVersion", "osVersion", "ProductVersion", "productVersion")
+  $osBuild = Get-IntegerValue -Object $platform -Names @("OsBuildNumber", "osBuildNumber", "BuildNumber", "buildNumber")
+  $libcName = Normalize-Target (Get-StringValue -Object $platform -Names @("LibcName", "libcName"))
+  $libcVersion = Get-StringValue -Object $platform -Names @("LibcVersion", "libcVersion")
+
+  $minimumWindowsBuilds = @{
+    "windows-10" = 10240
+    "windows-11" = 22000
+    "windows-server-2012" = 9200
+    "windows-server-2012-r2" = 9600
+    "windows-server-2016" = 14393
+    "windows-server-2019" = 17763
+    "windows-server-2022" = 20348
+    "windows-server-2025" = 26100
+  }
+  if ($minimumWindowsBuilds.ContainsKey($target)) {
+    $minimumBuild = [int]$minimumWindowsBuilds[$target]
+    if ($null -eq $osBuild) {
+      $issues.Add("$FileName does not prove a Windows build number for Next.js Node runtime platform support.") | Out-Null
+    } elseif ($osBuild -lt $minimumBuild) {
+      $issues.Add("$FileName has Windows build $osBuild, below the $target floor of $minimumBuild for Next.js Node runtime platform support.") | Out-Null
+    }
+  }
+
+  $glibcLinuxTargets = @("ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora")
+  if ($target -in $glibcLinuxTargets) {
+    $kernelOk = Test-VersionAtLeast -Actual $kernelRelease -Minimum "4.18" -Count 2
+    if ($null -eq $kernelOk) {
+      $issues.Add("$FileName does not prove Linux kernel release for Next.js Node runtime platform support.") | Out-Null
+    } elseif ($kernelOk -ne $true) {
+      $issues.Add("$FileName has Linux kernel release '$kernelRelease', below the Node.js 20.x floor of 4.18 for Next.js support.") | Out-Null
+    }
+
+    if ($libcName -notin @("glibc", "gnu-libc", "gnu-c-library")) {
+      $issues.Add("$FileName does not prove glibc runtime metadata required for Node.js 20.x Tier 1 Linux support.") | Out-Null
+    } else {
+      $glibcOk = Test-VersionAtLeast -Actual $libcVersion -Minimum "2.28" -Count 2
+      if ($null -eq $glibcOk) {
+        $issues.Add("$FileName does not prove glibc version for Node.js 20.x Tier 1 Linux support.") | Out-Null
+      } elseif ($glibcOk -ne $true) {
+        $issues.Add("$FileName has glibc version '$libcVersion', below the Node.js 20.x floor of 2.28 for Next.js support.") | Out-Null
+      }
+    }
+  }
+
+  if ($target -eq "macos") {
+    if ([string]::IsNullOrWhiteSpace($machine)) {
+      $issues.Add("$FileName does not prove macOS machine architecture for Next.js Node runtime platform support.") | Out-Null
+    }
+    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    $macosOk = Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2
+    if ($null -eq $macosOk) {
+      $issues.Add("$FileName does not prove macOS product version for Next.js Node runtime platform support.") | Out-Null
+    } elseif ($macosOk -ne $true) {
+      $issues.Add("$FileName has macOS version '$osVersion', below the Node.js 20.x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
+    }
+  }
+
+  return @($issues)
 }
 
 function Get-ReverseProxyEvidence {
@@ -754,6 +881,7 @@ function New-SelfTestEvidence {
           OsCaption = "Microsoft Windows Server 2022 Datacenter"
           OsVersion = "10.0.20348"
           OsBuildNumber = "20348"
+          OsArchitecture = "64-bit"
           ServiceManager = "winsw"
           AppFramework = "nextjs"
           NextjsDeploymentMode = "standalone"
@@ -881,6 +1009,7 @@ function New-SelfTestEvidence {
           OsCaption = "Microsoft Windows 11 Pro"
           OsVersion = "10.0.22631"
           OsBuildNumber = "22631"
+          OsArchitecture = "64-bit"
           ServiceManager = "winsw"
           AppFramework = "nextjs"
           NextjsDeploymentMode = "standalone"
@@ -1043,9 +1172,14 @@ function New-SelfTestEvidence {
           family = "linux"
           supportTargetId = "ubuntu"
           kernelName = "Linux"
+          kernelRelease = "6.8.0"
+          machine = "x86_64"
           osId = "ubuntu"
           osIdLike = "debian"
+          osVersionId = "24.04"
           osPrettyName = "Ubuntu 24.04 LTS"
+          libcName = "glibc"
+          libcVersion = "2.39"
         }
         verdict = "Healthy"
         critical = 0
@@ -1101,7 +1235,10 @@ function New-SelfTestEvidence {
           family = "macos"
           supportTargetId = "macos"
           kernelName = "Darwin"
-          osPrettyName = "Apple macOS"
+          kernelRelease = "24.0.0"
+          machine = "arm64"
+          osVersionId = "15.0"
+          osPrettyName = "Apple macOS 15"
         }
         verdict = "Healthy"
         critical = 0
@@ -1344,6 +1481,7 @@ function Test-EvidenceFile {
   $hasFindings = Test-PropertyExists -Object $evidence -Names @("Findings", "findings")
   $supportTargetId = Get-SupportTargetId -Evidence $evidence
   $targets = @(Get-EvidenceTargets -Evidence $evidence)
+  $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $evidence)
   $serviceManager = Get-ServiceManager -Evidence $evidence
   $serviceEvidence = Get-ServiceEvidence -Evidence $evidence
   $portEvidence = Get-PortEvidence -Evidence $evidence
@@ -1444,10 +1582,10 @@ function Test-EvidenceFile {
   }
   if (-not $supportTargetId) {
     $Issues.Add("$($File.FullName) is missing supportTargetId metadata required for matrix-level support claims.") | Out-Null
-  } elseif ($targets -notcontains $supportTargetId) {
-    $Issues.Add("$($File.FullName) has supportTargetId '$supportTargetId' that does not match recognized platform target metadata.") | Out-Null
+  } elseif ($platformTargets -notcontains $supportTargetId) {
+    $Issues.Add("$($File.FullName) has supportTargetId '$supportTargetId' that is not corroborated by platform metadata: $($platformTargets -join ', ').") | Out-Null
   }
-  if ($targets.Count -eq 0) {
+  if ($platformTargets.Count -eq 0) {
     $Issues.Add("$($File.FullName) has no recognizable platform target metadata.") | Out-Null
   }
   if (-not (Test-ServiceActiveEvidence -Status $serviceEvidence.ActiveStatus)) {
@@ -1644,6 +1782,9 @@ function Test-EvidenceFile {
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
       $Issues.Add("$($File.FullName) contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
     }
+    foreach ($platformRuntimeIssue in @(Get-NextJsPlatformRuntimeIssues -Evidence $evidence -SupportTargetId $supportTargetId -FileName $File.FullName)) {
+      $Issues.Add($platformRuntimeIssue) | Out-Null
+    }
   }
   if ($RequireReverseProxy) {
     $normalizedProxyMode = Normalize-Target $reverseProxyEvidence.Mode
@@ -1755,6 +1896,26 @@ if ($SelfTest) {
     ExpectedReverseProxy = "iis"
   }
 
+  Invoke-ExpectHostEvidenceSuccess -Name "single-file expected Windows Server standalone WinSW IIS evidence" -Parameters @{
+    EvidencePath = (Join-Path $EvidencePath "windows-server-2022.json")
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
+  }
+
+  $nonJsonEvidenceFile = Join-Path $EvidencePath "not-json.txt"
+  "not json" | Set-Content -Path $nonJsonEvidenceFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Host evidence file must be a JSON file" -Parameters @{
+    EvidencePath = $nonJsonEvidenceFile
+    RequireNextJs = $true
+  }
+
   $stoppedIisEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-stopped-iis-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $stoppedIisEvidencePath
   $stoppedIisFile = Join-Path $stoppedIisEvidencePath "windows-server-2022.json"
@@ -1835,6 +1996,56 @@ if ($SelfTest) {
     ExpectedNextJsMode = "standalone"
     ExpectedServiceManager = "systemd"
     ExpectedReverseProxy = "nginx"
+  }
+
+  $oldLinuxRuntimeEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-linux-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $oldLinuxRuntimeEvidencePath
+  $oldLinuxRuntimeFile = Join-Path $oldLinuxRuntimeEvidencePath "ubuntu.json"
+  $oldLinuxRuntimeEvidence = Get-Content -LiteralPath $oldLinuxRuntimeFile -Raw | ConvertFrom-Json
+  $oldLinuxRuntimeEvidence.platform.kernelRelease = "4.17.0"
+  $oldLinuxRuntimeEvidence.platform.libcVersion = "2.27"
+  $oldLinuxRuntimeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $oldLinuxRuntimeFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "below the Node.js 20.x floor" -Parameters @{
+    EvidencePath = $oldLinuxRuntimeEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  $oldMacosRuntimeEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-macos-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $oldMacosRuntimeEvidencePath
+  $oldMacosRuntimeFile = Join-Path $oldMacosRuntimeEvidencePath "macos.json"
+  $oldMacosRuntimeEvidence = Get-Content -LiteralPath $oldMacosRuntimeFile -Raw | ConvertFrom-Json
+  $oldMacosRuntimeEvidence.platform.machine = "arm64"
+  $oldMacosRuntimeEvidence.platform.osVersionId = "10.15"
+  $oldMacosRuntimeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $oldMacosRuntimeFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "below the Node.js 20.x floor" -Parameters @{
+    EvidencePath = $oldMacosRuntimeEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "macos"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "launchd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  $wrongSupportTargetEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-support-target-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $wrongSupportTargetEvidencePath
+  $wrongSupportTargetFile = Join-Path $wrongSupportTargetEvidencePath "ubuntu.json"
+  $wrongSupportTargetEvidence = Get-Content -LiteralPath $wrongSupportTargetFile -Raw | ConvertFrom-Json
+  $wrongSupportTargetEvidence.supportTargetId = "windows-server-2022"
+  $wrongSupportTargetEvidence.platform.supportTargetId = "windows-server-2022"
+  $wrongSupportTargetEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongSupportTargetFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "not corroborated by platform metadata" -Parameters @{
+    EvidencePath = $wrongSupportTargetEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
   }
 
   $syntheticEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-synthetic-$([Guid]::NewGuid().ToString('N'))"
@@ -1991,12 +2202,21 @@ if ($SelfTest) {
 if (-not [System.IO.Path]::IsPathRooted($EvidencePath)) {
   $EvidencePath = Join-Path (Get-Location) $EvidencePath
 }
-if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
+$evidenceItem = Get-Item -LiteralPath $EvidencePath -ErrorAction SilentlyContinue
+if ($null -eq $evidenceItem) {
   throw "Evidence path not found: $EvidencePath"
 }
 
 $issues = New-Object System.Collections.Generic.List[string]
-$files = @(Get-ChildItem -Path $EvidencePath -Recurse -File -Filter "*.json")
+$files = @()
+if ($evidenceItem -is [System.IO.FileInfo]) {
+  if ($evidenceItem.Extension -ine ".json") {
+    throw "Host evidence file must be a JSON file: $EvidencePath"
+  }
+  $files = @($evidenceItem)
+} else {
+  $files = @(Get-ChildItem -Path $EvidencePath -Recurse -File -Filter "*.json")
+}
 if ($files.Count -eq 0) {
   throw "No host evidence JSON files found under: $EvidencePath"
 }

@@ -154,6 +154,9 @@ or BSD machines:
 Status JSON includes a normalized `supportTargetId` / `SupportTargetId` such
 as `windows-server-2022`, `ubuntu`, `macos`, or `freebsd` so support claims can
 match the exact matrix target instead of relying only on OS-family inference.
+For strict Next.js evidence, the validator also checks platform runtime floors:
+Windows build, Linux kernel plus glibc version, and macOS product version plus
+architecture where those floors apply.
 
 A manual GitHub Actions workflow, `.github/workflows/host-evidence.yml`, can
 collect and validate safe status evidence from a self-hosted Windows, Linux, or
@@ -169,7 +172,10 @@ reverse proxy inputs from the generated support evidence plan so collected
 artifacts are rejected when they do not match the matrix combination being
 claimed. The workflow choices are limited to declared matrix vocabulary for
 Next.js modes, service managers, and reverse-proxy modes, then validated
-against the exact target row in `config/support-matrix.example.json`. Use a
+against the exact target row in `config/support-matrix.example.json`. The
+`evidence_name` input must match the generated
+`target-mode-service-proxy` artifact name, with `-fallback` for fallback
+service managers. Use a
 safe relative `config_path` inside the runner workspace, such as
 `config/windows/app.config.json` or `config/linux/app.env`. Those local config
 files are ignored by git; the collection checkout preserves them with
@@ -202,10 +208,13 @@ To generate the real-host evidence checklist for a release:
   -Format Markdown
 ```
 
-The plan includes the local collection command for each required
-target/mode/service/proxy row. Windows, Linux, and macOS rows also include
+The plan includes the local collection command and exact single-row validation
+command for each required target/mode/service/proxy row. Windows, Linux, and macOS rows also include
 manual `host-evidence` workflow inputs; BSD rows are local-command-only unless
-you operate a compatible runner environment.
+you operate a compatible runner environment. Use `-TargetId`, `-Category`, or
+`-ProductionRecommendedOnly` to generate a scoped collection plan, and add
+`-FailOnWarnings` when the collection commands and workflow dispatch inputs
+should reject warning-only status evidence.
 
 To generate reviewable GitHub CLI dispatch commands from the same matrix for
 workflow-capable targets:
@@ -240,8 +249,9 @@ containing downloaded `.zip` artifacts:
 The importer validates each downloaded `status.json` against the support matrix
 and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
 `workflow_dispatch` provenance by default, derives the target/mode/service/proxy
-key, writes the canonical evidence filename, and refuses changed overwrites
-unless `-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
+key, requires the declared target to be corroborated by platform metadata,
+writes the canonical evidence filename, and refuses changed overwrites unless
+`-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
 local-command evidence.
 
 To report which declared matrix combinations are still missing collected
@@ -268,13 +278,24 @@ command, or to audit a saved bundle directly:
 ```
 
 Missing rows in Markdown, JSON, and CSV output include the expected evidence
-file plus the local collector command and, where supported, the exact manual
-`gh workflow run host-evidence.yml` command to collect that evidence.
+file plus the local collector command, the exact single-row validation command,
+and, where supported, the exact manual
+`gh workflow run host-evidence.yml` command to collect that evidence. These
+commands fail on warning-only status evidence by default; add `-AllowWarnings`
+when the missing-coverage report should generate warning-tolerant collection
+commands instead. Coverage counts only evidence whose declared
+`supportTargetId` is corroborated by collected OS/platform metadata and, for
+Next.js rows, still proves the required runtime platform floor.
+The default table output prints the first missing collect/validate command
+pairs; use Markdown, JSON, or CSV for the complete command list.
 
 For the final operator handoff, run the combined release workflow. It can
 optionally import downloaded workflow artifacts, writes JSON and Markdown
 coverage reports, fails if matrix evidence is incomplete, creates the evidence
-bundle, verifies the bundle, and writes release readiness JSON:
+bundle, verifies the bundle, and writes release readiness JSON. The generated
+`release-readiness.json` preserves the covered and missing coverage rows with
+their local collection, workflow dispatch, and single-row validation commands
+so the final handoff can reproduce every claimed support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -309,7 +330,11 @@ The bundle manifest records safe Node.js runtime and Next.js package version
 strings when available, the matrix Node runtime support tier for each target,
 the collector SHA256 digest, the support matrix SHA256, and safe source-control
 provenance, plus safe CI run provenance when built in CI.
-The bundle verifier rejects internally inconsistent CI/source commit SHAs.
+The bundle verifier rejects internally inconsistent CI/source commit SHAs and
+evidence whose declared `supportTargetId` is not corroborated by collected
+OS/platform metadata, even when the manifest hashes match. It also rejects
+saved Next.js evidence that no longer proves the required runtime platform
+floor.
 When individual evidence files contain safe collection CI provenance, the
 manifest records and verifies it per file so workflow-collected status evidence
 keeps its collection run identity after bundling.
@@ -539,7 +564,8 @@ ownership, HTTP health latency, scheduled health-check freshness, recent health
 history, and an operational verdict. Use `-MinimumUptimeHours` when you want to
 prove the service has stayed up for a required period. Use `-JsonPath` when you
 want a safe machine-readable release evidence file without environment values
-or raw log contents. If the app was installed from a package import, the
+or raw log contents. Add `-FailOnWarnings` when strict release evidence must
+fail on warning-only status results. If the app was installed from a package import, the
 evidence also includes the safe deployment manifest summary: package file name,
 package SHA256, import timestamp, Next.js build ID, and live status collector
 metadata for release evidence validation. For Next.js apps, status evidence also

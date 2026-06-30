@@ -196,13 +196,61 @@ function Get-CollectionCommand {
   param(
     [string]$Category,
     [string]$EvidenceFile,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
   )
   if ($Category -in @("windows-client", "windows-server")) {
     $windowsPath = $EvidenceFile.Replace("/", "\")
-    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours $RequiredMinimumUptimeHours -JsonPath .\$windowsPath -FailOnCritical"
+    $strictFlag = if ($FailOnWarnings) { " -FailOnWarnings" } else { "" }
+    return ".\status.ps1 -ConfigPath .\config\windows\app.config.json -MinimumUptimeHours $RequiredMinimumUptimeHours -JsonPath .\$windowsPath -FailOnCritical$strictFlag"
   }
-  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours $RequiredMinimumUptimeHours --json-output ./$EvidenceFile --fail-on-critical"
+  $strictOption = if ($FailOnWarnings) { " --fail-on-warnings" } else { "" }
+  return "sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours $RequiredMinimumUptimeHours --json-output ./$EvidenceFile --fail-on-critical$strictOption"
+}
+
+function Get-ValidationCommand {
+  param(
+    [string]$EvidenceFile,
+    [string]$TargetId,
+    [string]$Mode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
+  )
+
+  $windowsPath = $EvidenceFile.Replace("/", "\")
+  $args = New-Object System.Collections.Generic.List[string]
+  foreach ($arg in @(
+      ".\scripts\dev\Test-HostEvidence.ps1",
+      "-EvidencePath",
+      ".\$windowsPath",
+      "-RequireNextJs",
+      "-RequireDeploymentIdentity",
+      "-RequireCollectorSha256",
+      "-RequireMinimumUptimeHours",
+      [string]$RequiredMinimumUptimeHours,
+      "-MaxEvidenceAgeDays",
+      "1",
+      "-ExpectedTargetId",
+      $TargetId,
+      "-ExpectedNextJsMode",
+      $Mode,
+      "-ExpectedServiceManager",
+      $ServiceManager,
+      "-ExpectedReverseProxy",
+      $ReverseProxy,
+      "-RequireReverseProxy"
+    )) {
+    $args.Add($arg) | Out-Null
+  }
+  if ($ReverseProxy -eq "none") {
+    $args.Add("-AllowReverseProxyNone") | Out-Null
+  }
+  if ($FailOnWarnings) {
+    $args.Add("-FailOnWarnings") | Out-Null
+  }
+  return ($args -join " ")
 }
 
 function Get-WorkflowPlatform {
@@ -282,46 +330,184 @@ function Format-GhWorkflowRunCommand {
   return ($args -join " ")
 }
 
-function Get-PrimaryEvidenceTarget {
+function Add-PlatformTarget {
+  param(
+    [System.Collections.Generic.HashSet[string]]$Targets,
+    [string]$Value
+  )
+
+  $normalized = Normalize-Token $Value
+  if (-not $normalized) { return }
+
+  [void]$Targets.Add($normalized)
+  switch ($normalized) {
+    "darwin" { [void]$Targets.Add("macos") }
+    "mac-os" { [void]$Targets.Add("macos") }
+    "linuxmint" { [void]$Targets.Add("linux-mint") }
+    "ol" { [void]$Targets.Add("oracle-linux") }
+    "redhat" { [void]$Targets.Add("rhel") }
+    "red-hat" { [void]$Targets.Add("rhel") }
+    "freebsd" { [void]$Targets.Add("bsd") }
+    "openbsd" { [void]$Targets.Add("bsd") }
+    "netbsd" { [void]$Targets.Add("bsd") }
+  }
+}
+
+function Get-DeclaredEvidenceTarget {
   param([object]$Evidence)
 
   $explicit = Get-StringValue -Object $Evidence -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")
   if ($explicit) { return (Normalize-Token $explicit) }
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  return (Normalize-Token (Get-StringValue -Object $platform -Names @("SupportTargetId", "supportTargetId", "TargetId", "targetId")))
+}
 
+function Get-PlatformEvidenceTargets {
+  param([object]$Evidence)
+
+  $targets = New-Object System.Collections.Generic.HashSet[string]
   $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
   $family = Normalize-Token (Get-StringValue -Object $platform -Names @("Family", "family"))
   $osCaption = Get-StringValue -Object $platform -Names @("OsCaption", "osCaption")
   $osId = Normalize-Token (Get-StringValue -Object $platform -Names @("OsId", "osId"))
+  $osIdLike = Get-StringValue -Object $platform -Names @("OsIdLike", "osIdLike")
   $kernelName = Normalize-Token (Get-StringValue -Object $platform -Names @("KernelName", "kernelName"))
   $prettyName = Get-StringValue -Object $platform -Names @("OsPrettyName", "osPrettyName")
 
+  Add-PlatformTarget -Targets $targets -Value $family
+  Add-PlatformTarget -Targets $targets -Value $osId
+  Add-PlatformTarget -Targets $targets -Value $kernelName
+  foreach ($part in @($osIdLike -split '\s+')) {
+    Add-PlatformTarget -Targets $targets -Value $part
+  }
+
+  if ($osCaption -match 'Windows') {
+    Add-PlatformTarget -Targets $targets -Value "windows"
+  }
   if ($osCaption -match 'Windows Server') {
-    if ($osCaption -match '2012\s+R2') { return "windows-server-2012-r2" }
-    foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
-      if ($osCaption -match $year) { return "windows-server-$year" }
+    Add-PlatformTarget -Targets $targets -Value "windows-server"
+    if ($osCaption -match '2012\s+R2') {
+      Add-PlatformTarget -Targets $targets -Value "windows-server-2012-r2"
+    } else {
+      foreach ($year in @("2012", "2016", "2019", "2022", "2025")) {
+        if ($osCaption -match $year) {
+          Add-PlatformTarget -Targets $targets -Value "windows-server-$year"
+        }
+      }
     }
-    return "windows-server"
-  }
-  if ($osCaption -match 'Windows\s+10' -and $osCaption -notmatch 'Windows Server') { return "windows-10" }
-  if ($osCaption -match 'Windows\s+11' -and $osCaption -notmatch 'Windows Server') { return "windows-11" }
-  if ($prettyName -match 'CentOS Stream') { return "centos-stream" }
-  if ($prettyName -match 'Oracle Linux') { return "oracle-linux" }
-  if ($prettyName -match 'Linux Mint') { return "linux-mint" }
-
-  switch ($osId) {
-    "linuxmint" { return "linux-mint" }
-    "ol" { return "oracle-linux" }
-    "redhat" { return "rhel" }
-    "red-hat" { return "rhel" }
-    "mac-os" { return "macos" }
+  } else {
+    if ($osCaption -match 'Windows\s+10') { Add-PlatformTarget -Targets $targets -Value "windows-10" }
+    if ($osCaption -match 'Windows\s+11') { Add-PlatformTarget -Targets $targets -Value "windows-11" }
   }
 
-  if ($osId -in @("ubuntu", "debian", "rhel", "centos", "rocky", "almalinux", "fedora", "alpine", "macos", "freebsd", "openbsd", "netbsd")) {
-    return $osId
+  if ($prettyName -match 'CentOS Stream') { Add-PlatformTarget -Targets $targets -Value "centos-stream" }
+  if ($prettyName -match 'Red Hat Enterprise Linux') { Add-PlatformTarget -Targets $targets -Value "rhel" }
+  if ($prettyName -match 'Oracle Linux') { Add-PlatformTarget -Targets $targets -Value "oracle-linux" }
+  if ($prettyName -match 'Rocky Linux') { Add-PlatformTarget -Targets $targets -Value "rocky" }
+  if ($prettyName -match 'AlmaLinux') { Add-PlatformTarget -Targets $targets -Value "almalinux" }
+  if ($prettyName -match 'Linux Mint') { Add-PlatformTarget -Targets $targets -Value "linux-mint" }
+
+  if ($targets.Contains("ubuntu") -or $targets.Contains("debian") -or $targets.Contains("rhel") -or $targets.Contains("fedora") -or $targets.Contains("alpine") -or $targets.Contains("oracle-linux") -or $targets.Contains("centos") -or $targets.Contains("centos-stream") -or $targets.Contains("rocky") -or $targets.Contains("almalinux") -or $targets.Contains("linux-mint")) {
+    [void]$targets.Add("linux")
   }
-  if ($family -in @("macos", "freebsd", "openbsd", "netbsd")) { return $family }
-  if ($kernelName -eq "darwin") { return "macos" }
+  if ($targets.Contains("windows-server")) {
+    [void]$targets.Add("windows")
+  }
+
+  return @($targets | Sort-Object)
+}
+
+function Get-PrimaryEvidenceTarget {
+  param([object]$Evidence)
+
+  $declared = Get-DeclaredEvidenceTarget -Evidence $Evidence
+  if ($declared) { return $declared }
+
+  $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $Evidence)
+  foreach ($target in @("windows-server-2012-r2", "windows-server-2012", "windows-server-2016", "windows-server-2019", "windows-server-2022", "windows-server-2025", "windows-10", "windows-11", "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos-stream", "centos", "rocky", "almalinux", "fedora", "alpine", "macos", "freebsd", "openbsd", "netbsd")) {
+    if ($platformTargets -contains $target) { return $target }
+  }
   return ""
+}
+
+function Get-VersionParts {
+  param(
+    [string]$Value,
+    [int]$Count = 2
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $matches = [regex]::Matches($Value, '\d+')
+  if ($matches.Count -lt $Count) { return $null }
+
+  $parts = New-Object System.Collections.Generic.List[int]
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    $parts.Add([int]$matches[$index].Value) | Out-Null
+  }
+  return @($parts)
+}
+
+function Test-VersionAtLeast {
+  param(
+    [string]$Actual,
+    [string]$Minimum,
+    [int]$Count = 2
+  )
+
+  $actualParts = Get-VersionParts -Value $Actual -Count $Count
+  $minimumParts = Get-VersionParts -Value $Minimum -Count $Count
+  if ($null -eq $actualParts -or $null -eq $minimumParts) { return $null }
+
+  for ($index = 0; $index -lt $Count; $index += 1) {
+    if ($actualParts[$index] -gt $minimumParts[$index]) { return $true }
+    if ($actualParts[$index] -lt $minimumParts[$index]) { return $false }
+  }
+  return $true
+}
+
+function Test-NextJsPlatformRuntimeFloor {
+  param(
+    [object]$Evidence,
+    [string]$SupportTargetId
+  )
+
+  $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $target = Normalize-Token $SupportTargetId
+  $kernelRelease = Get-StringValue -Object $platform -Names @("KernelRelease", "kernelRelease")
+  $machine = Normalize-Token (Get-StringValue -Object $platform -Names @("Machine", "machine", "OsArchitecture", "osArchitecture"))
+  $osVersion = Get-StringValue -Object $platform -Names @("OsVersionId", "osVersionId", "OsVersion", "osVersion", "ProductVersion", "productVersion")
+  $osBuild = Get-IntegerValue -Object $platform -Names @("OsBuildNumber", "osBuildNumber", "BuildNumber", "buildNumber")
+  $libcName = Normalize-Token (Get-StringValue -Object $platform -Names @("LibcName", "libcName"))
+  $libcVersion = Get-StringValue -Object $platform -Names @("LibcVersion", "libcVersion")
+
+  $minimumWindowsBuilds = @{
+    "windows-10" = 10240
+    "windows-11" = 22000
+    "windows-server-2012" = 9200
+    "windows-server-2012-r2" = 9600
+    "windows-server-2016" = 14393
+    "windows-server-2019" = 17763
+    "windows-server-2022" = 20348
+    "windows-server-2025" = 26100
+  }
+  if ($minimumWindowsBuilds.ContainsKey($target)) {
+    return ($null -ne $osBuild -and $osBuild -ge [int]$minimumWindowsBuilds[$target])
+  }
+
+  $glibcLinuxTargets = @("ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora")
+  if ($target -in $glibcLinuxTargets) {
+    $kernelOk = Test-VersionAtLeast -Actual $kernelRelease -Minimum "4.18" -Count 2
+    $glibcOk = Test-VersionAtLeast -Actual $libcVersion -Minimum "2.28" -Count 2
+    return ($kernelOk -eq $true -and $libcName -in @("glibc", "gnu-libc", "gnu-c-library") -and $glibcOk -eq $true)
+  }
+
+  if ($target -eq "macos") {
+    if ([string]::IsNullOrWhiteSpace($machine)) { return $false }
+    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    return ((Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2) -eq $true)
+  }
+
+  return $true
 }
 
 function Get-NextJsMode {
@@ -472,10 +658,20 @@ function Get-EvidenceRecords {
     try {
       $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
       $collection = Get-EvidenceCollectionEvidence -Evidence $evidence
+      $declaredTargetId = Get-DeclaredEvidenceTarget -Evidence $evidence
+      $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $evidence)
+      $runtimePlatformSupported = $false
+      if ($declaredTargetId) {
+        $runtimePlatformSupported = Test-NextJsPlatformRuntimeFloor -Evidence $evidence -SupportTargetId $declaredTargetId
+      }
       [pscustomobject]@{
         file = $file.FullName
         relativeFile = Get-DisplayPath -Path $file.FullName
         targetId = Get-PrimaryEvidenceTarget -Evidence $evidence
+        declaredTargetId = $declaredTargetId
+        platformTargets = @($platformTargets)
+        targetCorroborated = ($declaredTargetId -and $platformTargets -contains $declaredTargetId)
+        runtimePlatformSupported = $runtimePlatformSupported
         nextJsMode = Get-NextJsMode -Evidence $evidence
         serviceManager = Get-ServiceManager -Evidence $evidence
         reverseProxy = Get-ReverseProxyMode -Evidence $evidence
@@ -491,6 +687,10 @@ function Get-EvidenceRecords {
         file = $file.FullName
         relativeFile = Get-DisplayPath -Path $file.FullName
         targetId = ""
+        declaredTargetId = ""
+        platformTargets = @()
+        targetCorroborated = $false
+        runtimePlatformSupported = $false
         nextJsMode = ""
         serviceManager = ""
         reverseProxy = ""
@@ -509,6 +709,9 @@ function Test-RecordHealthy {
   param([object]$Record)
 
   if ($Record.parseError) { return $false }
+  if (-not $Record.targetId) { return $false }
+  if ($Record.targetCorroborated -ne $true) { return $false }
+  if ($Record.runtimePlatformSupported -ne $true) { return $false }
   if ($Record.verdict -eq "Critical") { return $false }
   if ($null -eq $Record.critical -or $Record.critical -gt 0) { return $false }
   if (-not $AllowWarnings -and ($null -eq $Record.warnings -or $Record.warnings -gt 0)) { return $false }
@@ -534,7 +737,8 @@ function New-ExpectedEntry {
     [string]$ServiceManager,
     [string]$ReverseProxy,
     [string]$Kind,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
   )
 
   $targetId = Normalize-Token ([string]$Target.id)
@@ -565,7 +769,7 @@ function New-ExpectedEntry {
       expected_reverse_proxy = $reverseProxyValue
       minimum_uptime_hours = [string]$RequiredMinimumUptimeHours
       require_reverse_proxy = "true"
-      fail_on_warnings = "false"
+      fail_on_warnings = if ($FailOnWarnings) { "true" } else { "false" }
       upload_retention_days = "30"
     }
     $workflowInputSummary = (@(
@@ -591,7 +795,8 @@ function New-ExpectedEntry {
     nodeRuntimeRequirements = $nodeRuntimeRequirements
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
-    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+    collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
     workflowDispatchSupported = $workflowDispatchSupported
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
@@ -638,7 +843,8 @@ function Assert-WorkflowInputsAccepted {
 function Get-ExpectedEntries {
   param(
     [object[]]$Targets,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [bool]$FailOnWarnings
   )
 
   $entries = New-Object System.Collections.Generic.List[object]
@@ -653,18 +859,18 @@ function Get-ExpectedEntries {
     foreach ($mode in $modes) {
       foreach ($serviceManager in $serviceManagers) {
         foreach ($proxy in $concreteProxies) {
-          $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours)) | Out-Null
+          $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "strict" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings)) | Out-Null
         }
         if ($IncludeServiceOnly) {
           foreach ($proxy in $serviceOnlyProxies) {
-            $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours)) | Out-Null
+            $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $proxy -Kind "service-only" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings)) | Out-Null
           }
         }
       }
       if ($IncludeFallback) {
         foreach ($fallbackManager in $fallbackManagers) {
           foreach ($proxy in $concreteProxies) {
-            $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours)) | Out-Null
+            $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings)) | Out-Null
           }
         }
       }
@@ -687,6 +893,8 @@ function ConvertTo-CoverageMarkdown {
   $lines.Add("| Parsed evidence files | $($Result.summary.parsedEvidenceFiles) |") | Out-Null
   $lines.Add("| Healthy evidence files | $($Result.summary.healthyEvidenceFiles) |") | Out-Null
   $lines.Add("| Required minimum uptime hours | $($Result.requiredMinimumUptimeHours) |") | Out-Null
+  $lines.Add("| Allow warnings | $($Result.allowWarnings) |") | Out-Null
+  $lines.Add("| Fail on warnings during collection | $($Result.failOnWarningsDuringCollection) |") | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add(("Workflow file: ``{0}``" -f $Result.workflowFile)) | Out-Null
   $lines.Add(("Workflow ref: ``{0}``" -f $Result.workflowRef)) | Out-Null
@@ -736,6 +944,12 @@ function ConvertTo-CoverageMarkdown {
     $lines.Add("") | Out-Null
     $lines.Add('```text') | Out-Null
     $lines.Add([string]$row.collectionCommand) | Out-Null
+    $lines.Add('```') | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("Validation command:") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add('```powershell') | Out-Null
+    $lines.Add([string]$row.validationCommand) | Out-Null
     $lines.Add('```') | Out-Null
     $lines.Add("") | Out-Null
   }
@@ -875,6 +1089,65 @@ function New-SelfTestEvidence {
       "netbsd" { "NetBSD" }
       default { "Linux" }
     }
+    $windowsCaption = switch ($targetId) {
+      "windows-10" { "Microsoft Windows 10 Pro" }
+      "windows-11" { "Microsoft Windows 11 Pro" }
+      "windows-server-2012" { "Microsoft Windows Server 2012 Standard" }
+      "windows-server-2012-r2" { "Microsoft Windows Server 2012 R2 Standard" }
+      "windows-server-2016" { "Microsoft Windows Server 2016 Datacenter" }
+      "windows-server-2019" { "Microsoft Windows Server 2019 Datacenter" }
+      "windows-server-2022" { "Microsoft Windows Server 2022 Datacenter" }
+      "windows-server-2025" { "Microsoft Windows Server 2025 Datacenter" }
+      default { "" }
+    }
+    $windowsBuild = switch ($targetId) {
+      "windows-10" { "19045" }
+      "windows-11" { "22631" }
+      "windows-server-2012" { "9200" }
+      "windows-server-2012-r2" { "9600" }
+      "windows-server-2016" { "14393" }
+      "windows-server-2019" { "17763" }
+      "windows-server-2022" { "20348" }
+      "windows-server-2025" { "26100" }
+      default { "" }
+    }
+    $kernelRelease = if ($targetId -eq "macos") {
+      "24.0.0"
+    } elseif ($targetId -in @("freebsd", "openbsd", "netbsd")) {
+      "14.0"
+    } else {
+      "6.8.0"
+    }
+    $machine = if ($targetId -eq "macos") { "arm64" } else { "x86_64" }
+    $osVersionId = switch ($targetId) {
+      "ubuntu" { "24.04" }
+      "debian" { "12" }
+      "linux-mint" { "22" }
+      "rhel" { "9" }
+      "oracle-linux" { "9" }
+      "centos" { "8" }
+      "centos-stream" { "9" }
+      "rocky" { "9" }
+      "almalinux" { "9" }
+      "fedora" { "40" }
+      "alpine" { "3.20" }
+      "macos" { "15.0" }
+      default { "" }
+    }
+    $libcName = if ($targetId -eq "alpine") {
+      "musl"
+    } elseif ($platformFamily -eq "linux") {
+      "glibc"
+    } else {
+      ""
+    }
+    $libcVersion = if ($libcName -eq "glibc") {
+      "2.39"
+    } elseif ($libcName -eq "musl") {
+      "1.2.5"
+    } else {
+      ""
+    }
     $data = [ordered]@{
       evidenceSchemaVersion = 1
       evidenceCollection = $collection
@@ -924,8 +1197,16 @@ function New-SelfTestEvidence {
         serviceManager = $serviceManager
         reverseProxy = $reverseProxy
         kernelName = $kernelName
+        kernelRelease = $kernelRelease
+        machine = $machine
+        osCaption = $windowsCaption
+        osVersion = if ($windowsBuild) { "10.0.$windowsBuild" } else { "" }
+        osBuildNumber = $windowsBuild
         osId = $targetId
+        osVersionId = $osVersionId
         osPrettyName = $targetId
+        libcName = $libcName
+        libcVersion = $libcVersion
         appFramework = "nextjs"
         nextjsDeploymentMode = $nextJsMode
       }
@@ -991,12 +1272,13 @@ $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
 $allTargets = @(Get-ArrayValue $matrix.targets)
 $targets = @(Select-MatrixTargets -Targets $allTargets -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
+$failOnWarningsDuringCollection = -not [bool]$AllowWarnings
 
 if ($SelfTest) {
   $IncludeServiceOnly = $true
   $IncludeFallback = $true
   $EvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-selftest-$([Guid]::NewGuid().ToString('N'))"
-  $expectedForSelfTest = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)
+  $expectedForSelfTest = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings $failOnWarningsDuringCollection)
   New-SelfTestEvidence -Path $EvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
 }
 
@@ -1016,7 +1298,7 @@ if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
   throw "Evidence path not found: $EvidencePath"
 }
 
-$expectedEntries = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours)
+$expectedEntries = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings $failOnWarningsDuringCollection)
 Assert-WorkflowInputsAccepted -Entries $expectedEntries -MatrixPath $MatrixPath
 $records = @(Get-EvidenceRecords -Path $EvidencePath)
 $healthyRecords = @($records | Where-Object { Test-RecordHealthy -Record $_ })
@@ -1045,6 +1327,7 @@ foreach ($entry in $expectedEntries) {
       requiredMinimumUptimeHours = $entry.requiredMinimumUptimeHours
       evidenceFile = $entry.evidenceFile
       collectionCommand = $entry.collectionCommand
+      validationCommand = $entry.validationCommand
       workflowDispatchSupported = $entry.workflowDispatchSupported
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
@@ -1065,6 +1348,7 @@ foreach ($entry in $expectedEntries) {
       requiredMinimumUptimeHours = $entry.requiredMinimumUptimeHours
       evidenceFile = $entry.evidenceFile
       collectionCommand = $entry.collectionCommand
+      validationCommand = $entry.validationCommand
       workflowDispatchSupported = $entry.workflowDispatchSupported
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
@@ -1088,6 +1372,8 @@ $result = [pscustomobject]@{
   targetId = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
   category = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
   productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+  allowWarnings = [bool]$AllowWarnings
+  failOnWarningsDuringCollection = $failOnWarningsDuringCollection
   selectedTargets = @($targets | ForEach-Object { Normalize-Token ([string]$_.id) })
   requiredMinimumUptimeHours = $requiredMinimumUptimeHours
   summary = [pscustomobject]@{
@@ -1112,6 +1398,54 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: Markdown report should show no missing entries."
   }
 
+  $mismatchedTargetEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $mismatchedTargetEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $mismatchedTargetFile = Join-Path $mismatchedTargetEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $mismatchedTargetEvidence = Get-Content -LiteralPath $mismatchedTargetFile -Raw | ConvertFrom-Json
+  $mismatchedTargetEvidence.supportTargetId = "windows-server-2022"
+  $mismatchedTargetEvidence.platform.supportTargetId = "windows-server-2022"
+  $mismatchedTargetEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $mismatchedTargetFile -Encoding UTF8
+  $mismatchedTargetJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath -EvidencePath $mismatchedTargetEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
+  $mismatchedTargetJson = Get-Content -LiteralPath $mismatchedTargetJsonPath -Raw | ConvertFrom-Json
+  $missingMismatchedRow = @($mismatchedTargetJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingMismatchedRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: target-mismatched evidence was counted as covering ubuntu."
+  }
+  if ([int]$mismatchedTargetJson.summary.healthyEvidenceFiles -ge [int]$mismatchedTargetJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: target-mismatched evidence should not be treated as healthy coverage."
+  }
+
+  $runtimeFloorEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $runtimeFloorEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $runtimeFloorFile = Join-Path $runtimeFloorEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $runtimeFloorEvidence = Get-Content -LiteralPath $runtimeFloorFile -Raw | ConvertFrom-Json
+  $runtimeFloorEvidence.platform.kernelRelease = "4.17.0"
+  $runtimeFloorEvidence.platform.libcVersion = "2.27"
+  $runtimeFloorEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $runtimeFloorFile -Encoding UTF8
+  $runtimeFloorJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath -EvidencePath $runtimeFloorEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Json -OutputPath $runtimeFloorJsonPath | Out-Null
+  $runtimeFloorJson = Get-Content -LiteralPath $runtimeFloorJsonPath -Raw | ConvertFrom-Json
+  $missingRuntimeFloorRow = @($runtimeFloorJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingRuntimeFloorRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: runtime-floor-invalid evidence was counted as covering ubuntu."
+  }
+  if ([int]$runtimeFloorJson.summary.healthyEvidenceFiles -ge [int]$runtimeFloorJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: runtime-floor-invalid evidence should not be treated as healthy coverage."
+  }
+
   $missingEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-selftest-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $missingEvidencePath -Force | Out-Null
   $missingReportPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).md"
@@ -1122,9 +1456,15 @@ if ($SelfTest) {
       "GitHub Actions workflow dispatch:",
       "gh workflow run",
       "minimum_uptime_hours=$requiredMinimumUptimeHours",
+      "fail_on_warnings=true",
       "-MinimumUptimeHours $requiredMinimumUptimeHours",
+      "-FailOnWarnings",
       "--minimum-uptime-hours $requiredMinimumUptimeHours",
+      "--fail-on-warnings",
       "Node runtime",
+      "Validation command:",
+      "Test-HostEvidence.ps1",
+      "Fail on warnings during collection",
       "Local collector command:",
       "config/windows/app.config.json",
       "config/linux/app.env",
@@ -1141,8 +1481,11 @@ if ($SelfTest) {
   if ([int]$missingJson.summary.missingCount -le 0) {
     throw "Support evidence coverage self-test failed: missing JSON report did not report missing entries."
   }
+  if ($missingJson.failOnWarningsDuringCollection -ne $true) {
+    throw "Support evidence coverage self-test failed: default missing report did not record strict warning collection."
+  }
   $firstMissing = @($missingJson.missing | Select-Object -First 1)[0]
-  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
+  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "validationCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
     if (-not $firstMissing.PSObject.Properties[$requiredProperty]) {
       throw "Support evidence coverage self-test failed: missing JSON row did not include $requiredProperty."
     }
@@ -1157,9 +1500,78 @@ if ($SelfTest) {
   if ($null -eq $firstWindowsMissing -or -not ([string]$firstWindowsMissing.collectionCommand).Contains("-MinimumUptimeHours $requiredMinimumUptimeHours")) {
     throw "Support evidence coverage self-test failed: Windows collection command is missing minimum uptime guidance."
   }
+  if (-not ([string]$firstWindowsMissing.validationCommand).Contains("-EvidencePath .\$(([string]$firstWindowsMissing.evidenceFile).Replace('/', '\'))")) {
+    throw "Support evidence coverage self-test failed: Windows validation command is missing the exact evidence file path."
+  }
+  foreach ($expectedValidationFragment in @(
+      "-ExpectedTargetId $($firstWindowsMissing.targetId)",
+      "-ExpectedNextJsMode $($firstWindowsMissing.nextJsMode)",
+      "-ExpectedServiceManager $($firstWindowsMissing.serviceManager)",
+      "-ExpectedReverseProxy $($firstWindowsMissing.reverseProxy)",
+      "-RequireMinimumUptimeHours $requiredMinimumUptimeHours"
+    )) {
+    if (-not ([string]$firstWindowsMissing.validationCommand).Contains($expectedValidationFragment)) {
+      throw "Support evidence coverage self-test failed: Windows validation command is missing $expectedValidationFragment."
+    }
+  }
+  if (-not ([string]$firstWindowsMissing.collectionCommand).Contains("-FailOnWarnings")) {
+    throw "Support evidence coverage self-test failed: strict Windows collection command is missing -FailOnWarnings."
+  }
+  if (-not ([string]$firstWindowsMissing.validationCommand).Contains("-FailOnWarnings")) {
+    throw "Support evidence coverage self-test failed: strict Windows validation command is missing -FailOnWarnings."
+  }
+  if (-not ([string]$firstWindowsMissing.workflowDispatchCommand).Contains("fail_on_warnings=true")) {
+    throw "Support evidence coverage self-test failed: strict workflow dispatch command is missing fail_on_warnings=true."
+  }
   $firstUnixMissing = @($missingJson.missing | Where-Object { ([string]$_.targetId) -eq "ubuntu" } | Select-Object -First 1)[0]
   if ($null -eq $firstUnixMissing -or -not ([string]$firstUnixMissing.collectionCommand).Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
     throw "Support evidence coverage self-test failed: Unix collection command is missing minimum uptime guidance."
+  }
+  if (-not ([string]$firstUnixMissing.collectionCommand).Contains("--fail-on-warnings")) {
+    throw "Support evidence coverage self-test failed: strict Unix collection command is missing --fail-on-warnings."
+  }
+  if (-not ([string]$firstUnixMissing.validationCommand).Contains("-ExpectedTargetId ubuntu")) {
+    throw "Support evidence coverage self-test failed: Unix validation command is missing target guidance."
+  }
+
+  $missingCsvPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).csv"
+  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Csv -OutputPath $missingCsvPath | Out-Null
+  $missingCsvHeader = Get-Content -LiteralPath $missingCsvPath -First 1
+  if (-not ([string]$missingCsvHeader).Contains("validationCommand")) {
+    throw "Support evidence coverage self-test failed: CSV report is missing validationCommand."
+  }
+  $missingCsvText = Get-Content -LiteralPath $missingCsvPath -Raw
+  if (-not $missingCsvText.Contains("Test-HostEvidence.ps1")) {
+    throw "Support evidence coverage self-test failed: CSV report is missing validation command content."
+  }
+
+  $missingTableOutput = (& $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Table 6>&1 | Out-String)
+  foreach ($expectedTableText in @(
+      "Next collection and validation commands:",
+      "Collect:",
+      "Validate:",
+      "Test-HostEvidence.ps1"
+    )) {
+    if (-not $missingTableOutput.Contains($expectedTableText)) {
+      throw "Support evidence coverage self-test failed: table report is missing '$expectedTableText'."
+    }
+  }
+
+  $allowWarningsJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-allow-warnings-report-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -AllowWarnings -ReportOnly -Format Json -OutputPath $allowWarningsJsonPath | Out-Null
+  $allowWarningsJson = Get-Content -LiteralPath $allowWarningsJsonPath -Raw | ConvertFrom-Json
+  if ($allowWarningsJson.failOnWarningsDuringCollection -ne $false) {
+    throw "Support evidence coverage self-test failed: AllowWarnings report should not request strict warning collection."
+  }
+  $allowWarningsFirstWorkflow = @($allowWarningsJson.missing | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  if ($null -eq $allowWarningsFirstWorkflow -or -not ([string]$allowWarningsFirstWorkflow.workflowDispatchCommand).Contains("fail_on_warnings=false")) {
+    throw "Support evidence coverage self-test failed: AllowWarnings dispatch command should set fail_on_warnings=false."
+  }
+  if (([string]$allowWarningsFirstWorkflow.collectionCommand).Contains("-FailOnWarnings") -or ([string]$allowWarningsFirstWorkflow.collectionCommand).Contains("--fail-on-warnings")) {
+    throw "Support evidence coverage self-test failed: AllowWarnings collection command should not include strict warning flags."
+  }
+  if (([string]$allowWarningsFirstWorkflow.validationCommand).Contains("-FailOnWarnings")) {
+    throw "Support evidence coverage self-test failed: AllowWarnings validation command should not include -FailOnWarnings."
   }
 
   $productionOnlyJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-production-only-$([Guid]::NewGuid().ToString('N')).json"
@@ -1221,8 +1633,21 @@ switch ($Format) {
     Write-Host "Missing:  $($result.summary.missingCount)"
     if ($result.summary.missingCount -gt 0) {
       @($missing | Select-Object -First 50) | Format-Table kind, targetId, nextJsMode, serviceManager, reverseProxy, nodeRuntimeSupportTier, nodeRuntimeProductionRecommended -AutoSize
+      Write-Host ""
+      Write-Host "Next collection and validation commands:"
+      @($missing | Select-Object -First 10) | ForEach-Object {
+        Write-Host ""
+        Write-Host ("{0} / {1} / {2} / {3} / {4}" -f $_.kind, $_.targetId, $_.nextJsMode, $_.serviceManager, $_.reverseProxy)
+        Write-Host "Collect:"
+        Write-Host ([string]$_.collectionCommand)
+        Write-Host "Validate:"
+        Write-Host ([string]$_.validationCommand)
+      }
       if ($missing.Count -gt 50) {
         Write-Host "... $($missing.Count - 50) more missing entries."
+      }
+      if ($missing.Count -gt 10) {
+        Write-Host "... $($missing.Count - 10) more command pair(s). Use -Format Markdown or -Format Json for the full list."
       }
     }
   }
