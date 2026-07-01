@@ -140,6 +140,13 @@ safe_relative_path() {
   return 0
 }
 
+normalize_relative_path_for_compare() {
+  local path="${1//\\//}"
+  while [[ "$path" == ./* ]]; do path="${path#./}"; done
+  path="${path%/}"
+  printf '%s\n' "$path"
+}
+
 path_exists_text() {
   local path="$1" type="${2:-any}"
   case "$type" in
@@ -241,6 +248,18 @@ public_path="${runtime_root%/}/public"
 node_modules_path="${runtime_root%/}/node_modules"
 package_json_path="${APP_DIR%/}/package.json"
 next_package_path="${APP_DIR%/}/node_modules/next"
+next_start_expected_script="node_modules/next/dist/bin/next"
+next_start_script_is_expected_cli=""
+if [[ "$MODE" == "next-start" ]]; then
+  next_start_script_is_expected_cli="false"
+  if [[ -n "$START_SCRIPT" && "$START_SCRIPT" != *" "* ]]; then
+    if [[ "$START_SCRIPT" = /* ]]; then
+      [[ "$START_SCRIPT" == "${APP_DIR%/}/$next_start_expected_script" ]] && next_start_script_is_expected_cli="true"
+    elif [[ "$(normalize_relative_path_for_compare "$START_SCRIPT")" == "$next_start_expected_script" ]]; then
+      next_start_script_is_expected_cli="true"
+    fi
+  fi
+fi
 
 cat <<SUMMARY
 Mode=$MODE
@@ -264,6 +283,7 @@ PublicDirectoryExists=$(path_exists_text "$public_path" dir)
 NodeModulesExists=$(path_exists_text "$node_modules_path" dir)
 PackageJsonExists=$(path_exists_text "$package_json_path" file)
 NextPackageExists=$(path_exists_text "$next_package_path" dir)
+NextStartScriptIsExpectedCli=$next_start_script_is_expected_cli
 SUMMARY
 
 if [[ -n "$APP_DIR" && ! -d "$APP_DIR" ]]; then
@@ -296,11 +316,8 @@ elif [[ "$MODE" == "next-start" ]]; then
       next_start_script_path="${APP_DIR%/}/$START_SCRIPT"
     fi
     [[ -f "$next_start_script_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $next_start_script_path"
-    normalized_next_start_script_path="${next_start_script_path//\\//}"
-    case "$normalized_next_start_script_path" in
-      */node_modules/next/*) ;;
-      *) add_error "Next.js next-start START_SCRIPT should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next." ;;
-    esac
+    [[ "$next_start_script_is_expected_cli" == "true" ]] ||
+      add_error "Next.js next-start START_SCRIPT must point to node_modules/next/dist/bin/next under APP_DIR."
   fi
   if ! argument_tokens_contain_next_start; then
     add_error "Next.js next-start mode requires NODE_ARGUMENTS to start with 'start'. Example: start -H $BIND_ADDRESS"

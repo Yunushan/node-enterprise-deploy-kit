@@ -481,8 +481,14 @@ You can create that zip with the built-in packaging helper:
 ```
 
 For full-app `next-start` packages, pass `-Mode next-start` on Windows or
-`--mode next-start` with the Unix validator. Package import runs the matching
-Next.js validator automatically before replacing the live app directory.
+`--mode next-start` on Unix to the same package helpers. The helpers stage
+`package.json`, `.next`, production `node_modules`, optional `public`, and
+common Next.js config/lock files, then run the matching validator before
+reporting success. Package import repeats that validation before replacing the
+live app directory. On Unix-like hosts, the `next-start` package helper omits
+`node_modules/.bin` command shims because package-manager shims are commonly
+symlinks; the service starts Next directly from `node_modules/next/dist/bin/next`,
+and deploy archives intentionally reject symlink and hardlink entries.
 
 For React deployments, ship the configured Node entrypoint plus the static
 build root containing `index.html`. Create React App usually uses
@@ -594,14 +600,26 @@ private config files are left in place.
 
 ### Linux quick start
 
-1. Copy the example env file:
+1. Copy the closest safe example env file:
 
 ```bash
 cp config/linux/app.env.example config/linux/app.env
 nano config/linux/app.env
 ```
 
-2. Select Linux service and proxy mode in `config/linux/app.env`:
+For macOS launchd hosts, start from the macOS paths and service defaults:
+
+```bash
+cp config/linux/app.env.macos.example config/linux/app.env
+```
+
+For FreeBSD, OpenBSD, or NetBSD hosts, start from the BSD rc example:
+
+```bash
+cp config/linux/app.env.bsd.example config/linux/app.env
+```
+
+2. Select Unix-like service and proxy mode in `config/linux/app.env`:
 
 ```bash
 APP_RUNTIME="node"          # node or tomcat
@@ -615,6 +633,8 @@ REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 If `SERVICE_MANAGER` is omitted, Unix deploy, status, diagnostics, health
 checks, and uninstall resolve the host-aware default: launchd on macOS, BSD rc
 on FreeBSD/OpenBSD/NetBSD, OpenRC when available, otherwise systemd or System V.
+The committed examples use only placeholder hostnames and service-owned paths;
+keep private target values in your ignored local `config/linux/app.env`.
 
 Linux proxy templates listen on `PROXY_LISTEN_PORT` and set forwarded headers
 from `FORWARDED_PROTO` and `FORWARDED_PORT`. For the common pattern where TLS
@@ -650,6 +670,11 @@ bash scripts/linux/package-nextjs-standalone.sh \
 bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 ```
+
+For full-app `next-start`, use `config/windows/next-start.app.config.example.json`
+on Windows or `config/linux/app.env.next-start.example` on Unix-like hosts,
+then create and validate the package with `-Mode next-start` /
+`--mode next-start`.
 
 For React deployments, validate the static build archive before import:
 

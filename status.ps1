@@ -423,6 +423,8 @@ function Get-NextPackageVersion([string]$AppDirectory, [string]$RuntimeRoot) {
 function Get-SafeNextJsRuntimeEvidence($Evidence) {
     $runtimeRoot = [string](Get-ObjectPropertyValue $Evidence "RuntimeRoot" "")
     $nodeVersionSatisfied = Get-ObjectPropertyValue $Evidence "NodeVersionSatisfied" $null
+    $nextStartCommandPath = [string](Get-ObjectPropertyValue $Evidence "NextStartCommandPath" "")
+    $nextStartCommandIsExpectedCli = Get-ObjectPropertyValue $Evidence "NextStartCommandIsExpectedCli" $null
     return [pscustomobject]@{
         Applicable = [bool](Get-ObjectPropertyValue $Evidence "Applicable" $false)
         Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
@@ -435,6 +437,8 @@ function Get-SafeNextJsRuntimeEvidence($Evidence) {
         RuntimeRootName = Get-SafePathLeaf $runtimeRoot
         AppDirectoryExists = Get-ObjectPropertyValue $Evidence "AppDirectoryExists" $null
         StartCommand = Get-SafeEvidenceText ([string](Get-ObjectPropertyValue $Evidence "StartCommand" ""))
+        NextStartCommandPathName = Get-SafePathLeaf $nextStartCommandPath
+        NextStartCommandIsExpectedCli = if ($nextStartCommandIsExpectedCli -is [bool]) { [bool]$nextStartCommandIsExpectedCli } else { $null }
         NodeArguments = [string](Get-ObjectPropertyValue $Evidence "NodeArguments" "")
         BindAddress = [string](Get-ObjectPropertyValue $Evidence "BindAddress" "")
         ServerJsExists = Get-ObjectPropertyValue $Evidence "ServerJsExists" $null
@@ -1077,13 +1081,16 @@ function Show-NextJsRuntimeLayout {
                     Add-Finding -Severity Critical -Message "Next.js next-start StartCommand is not a safe relative path: $startCommand"
                     $layoutFailed = $true
                 } else {
-                    $normalizedStartCommand = ($nextStartCommandPath -replace "\\", "/").ToLowerInvariant()
+                    $expectedNextStartCommandPath = Join-Path $appDirectory "node_modules\next\dist\bin\next"
+                    $nextStartCommandIsExpectedCli = (Get-NormalizedPathForCompare $nextStartCommandPath) -ieq (Get-NormalizedPathForCompare $expectedNextStartCommandPath)
+                    $script:nextJsRuntimeEvidence | Add-Member -NotePropertyName NextStartCommandPath -NotePropertyValue $nextStartCommandPath -Force
+                    $script:nextJsRuntimeEvidence | Add-Member -NotePropertyName NextStartCommandIsExpectedCli -NotePropertyValue $nextStartCommandIsExpectedCli -Force
                     if (-not (Test-Path -LiteralPath $nextStartCommandPath -PathType Leaf)) {
                         Add-Finding -Severity Critical -Message "Next.js next-start StartCommand file was not found: $nextStartCommandPath"
                         $layoutFailed = $true
                     }
-                    if ($normalizedStartCommand -notmatch '/node_modules/next/') {
-                        Add-Finding -Severity Critical -Message "Next.js next-start StartCommand should point to the Next CLI under node_modules/next."
+                    if (-not $nextStartCommandIsExpectedCli) {
+                        Add-Finding -Severity Critical -Message "Next.js next-start StartCommand must point to node_modules/next/dist/bin/next under AppDirectory."
                         $layoutFailed = $true
                     }
                 }

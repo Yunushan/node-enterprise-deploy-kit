@@ -58,7 +58,7 @@ function Test-LineEndings {
     "deploy.sh",
     "scripts/dev/*.sh",
     "scripts/linux/*.sh",
-    "config/linux/*.env.example",
+    "config/linux/*.env*.example",
     "templates/linux/*",
     "ansible/roles/linux_node_service/templates/*"
   )
@@ -100,6 +100,34 @@ function Test-ShellSyntax {
     & $bash.Source "scripts/dev/lint-shell-basic.sh"
     if ($LASTEXITCODE -ne 0) {
       throw "Shell syntax check failed."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Test-ShellCheck {
+  if ($SkipShellSyntax) {
+    Write-Host "Skipping ShellCheck."
+    return
+  }
+
+  Write-Step "ShellCheck"
+  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  if (-not $bash) {
+    throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
+  }
+
+  Push-Location $RepoRoot
+  try {
+    & $bash.Source "scripts/dev/lint-shellcheck.sh"
+    if ($LASTEXITCODE -eq 127) {
+      Write-Host "ShellCheck was not found; skipping optional ShellCheck."
+      return
+    }
+    if ($LASTEXITCODE -ne 0) {
+      throw "ShellCheck failed."
     }
   }
   finally {
@@ -329,6 +357,7 @@ function Test-DocsConsistency {
 Test-PowerShellSyntax
 Test-LineEndings
 Test-ShellSyntax
+Test-ShellCheck
 Test-UnixShellPortabilityPatterns
 Test-PlatformMatrix
 Test-LinuxContainerSmokeSelfTest

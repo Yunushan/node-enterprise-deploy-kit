@@ -273,6 +273,30 @@ function Invoke-SelfTest {
   $unix.ExpectedReverseProxy = "nginx"
   Invoke-HostEvidenceWorkflowInputValidation @unix
 
+  $macos = $base.Clone()
+  $macos.RunnerLabels = '["self-hosted","macos"]'
+  $macos.Platform = "unix"
+  $macos.ConfigPath = "config/linux/app.env"
+  $macos.EvidenceName = "macos-standalone-launchd-nginx"
+  $macos.ExpectedTargetId = "macos"
+  $macos.ExpectedNextJsMode = "standalone"
+  $macos.ExpectedServiceManager = "launchd"
+  $macos.ExpectedReverseProxy = "nginx"
+  Invoke-HostEvidenceWorkflowInputValidation @macos
+
+  foreach ($bsdTarget in @("freebsd", "openbsd", "netbsd")) {
+    $bsd = $base.Clone()
+    $bsd.RunnerLabels = "[`"self-hosted`",`"$bsdTarget`"]"
+    $bsd.Platform = "unix"
+    $bsd.ConfigPath = "config/linux/app.env"
+    $bsd.EvidenceName = "$bsdTarget-standalone-bsdrc-nginx"
+    $bsd.ExpectedTargetId = $bsdTarget
+    $bsd.ExpectedNextJsMode = "standalone"
+    $bsd.ExpectedServiceManager = "bsdrc"
+    $bsd.ExpectedReverseProxy = "nginx"
+    Invoke-HostEvidenceWorkflowInputValidation @bsd
+  }
+
   $fallback = $base.Clone()
   $fallback.RunnerLabels = '["self-hosted","windows-10"]'
   $fallback.ExpectedTargetId = "windows-10"

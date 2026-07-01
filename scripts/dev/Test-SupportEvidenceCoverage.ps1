@@ -1244,6 +1244,7 @@ function New-SelfTestEvidence {
         minimumNodeVersion = "20.9.0"
         nodeVersionSatisfied = $true
         nextVersion = "14.2.3"
+        nextStartScriptIsExpectedCli = if ($nextJsMode -eq "next-start") { $true } else { $null }
         runtimeRootName = "example-next-app"
       }
       reverseProxy = $proxyEvidence
@@ -1388,8 +1389,34 @@ $result = [pscustomobject]@{
 }
 
 if ($SelfTest) {
+  function Copy-SelfTestCoverageArgs {
+    param([hashtable]$Source)
+
+    $copy = @{}
+    foreach ($key in $Source.Keys) {
+      $copy[$key] = $Source[$key]
+    }
+    return $copy
+  }
+
+  $selfTestCoverageArgs = @{
+    MatrixPath = $MatrixPath
+    IncludeServiceOnly = $true
+    IncludeFallback = $true
+    ReportOnly = $true
+  }
+  if ($TargetId.Count -gt 0) {
+    $selfTestCoverageArgs.TargetId = [string[]]$TargetId
+  }
+  if ($Category.Count -gt 0) {
+    $selfTestCoverageArgs.Category = [string[]]$Category
+  }
+  if ($ProductionRecommendedOnly) {
+    $selfTestCoverageArgs.ProductionRecommendedOnly = $true
+  }
+
   $selfTestReportPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-selftest-report-$([Guid]::NewGuid().ToString('N')).md"
-  & $PSCommandPath -EvidencePath $EvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Markdown -OutputPath $selfTestReportPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $EvidencePath -Format Markdown -OutputPath $selfTestReportPath | Out-Null
   $selfTestReport = Get-Content -LiteralPath $selfTestReportPath -Raw
   if (-not $selfTestReport.Contains("Support Evidence Coverage Report")) {
     throw "Support evidence coverage self-test failed: Markdown report missing title."
@@ -1406,7 +1433,7 @@ if ($SelfTest) {
   $mismatchedTargetEvidence.platform.supportTargetId = "windows-server-2022"
   $mismatchedTargetEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $mismatchedTargetFile -Encoding UTF8
   $mismatchedTargetJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath -EvidencePath $mismatchedTargetEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $mismatchedTargetEvidencePath -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
   $mismatchedTargetJson = Get-Content -LiteralPath $mismatchedTargetJsonPath -Raw | ConvertFrom-Json
   $missingMismatchedRow = @($mismatchedTargetJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -1430,7 +1457,7 @@ if ($SelfTest) {
   $runtimeFloorEvidence.platform.libcVersion = "2.27"
   $runtimeFloorEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $runtimeFloorFile -Encoding UTF8
   $runtimeFloorJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath -EvidencePath $runtimeFloorEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Json -OutputPath $runtimeFloorJsonPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $runtimeFloorEvidencePath -Format Json -OutputPath $runtimeFloorJsonPath | Out-Null
   $runtimeFloorJson = Get-Content -LiteralPath $runtimeFloorJsonPath -Raw | ConvertFrom-Json
   $missingRuntimeFloorRow = @($runtimeFloorJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -1449,7 +1476,7 @@ if ($SelfTest) {
   $missingEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-selftest-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $missingEvidencePath -Force | Out-Null
   $missingReportPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).md"
-  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Markdown -OutputPath $missingReportPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Markdown -OutputPath $missingReportPath | Out-Null
   $missingReport = Get-Content -LiteralPath $missingReportPath -Raw
   foreach ($expectedReportText in @(
       "Next Collection Commands",
@@ -1476,7 +1503,7 @@ if ($SelfTest) {
   }
 
   $missingJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Json -OutputPath $missingJsonPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $missingJsonPath | Out-Null
   $missingJson = Get-Content -LiteralPath $missingJsonPath -Raw | ConvertFrom-Json
   if ([int]$missingJson.summary.missingCount -le 0) {
     throw "Support evidence coverage self-test failed: missing JSON report did not report missing entries."
@@ -1535,7 +1562,7 @@ if ($SelfTest) {
   }
 
   $missingCsvPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).csv"
-  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Csv -OutputPath $missingCsvPath | Out-Null
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Csv -OutputPath $missingCsvPath | Out-Null
   $missingCsvHeader = Get-Content -LiteralPath $missingCsvPath -First 1
   if (-not ([string]$missingCsvHeader).Contains("validationCommand")) {
     throw "Support evidence coverage self-test failed: CSV report is missing validationCommand."
@@ -1545,7 +1572,7 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: CSV report is missing validation command content."
   }
 
-  $missingTableOutput = (& $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ReportOnly -Format Table 6>&1 | Out-String)
+  $missingTableOutput = (& $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Table 6>&1 | Out-String)
   foreach ($expectedTableText in @(
       "Next collection and validation commands:",
       "Collect:",
@@ -1558,7 +1585,9 @@ if ($SelfTest) {
   }
 
   $allowWarningsJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-allow-warnings-report-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -AllowWarnings -ReportOnly -Format Json -OutputPath $allowWarningsJsonPath | Out-Null
+  $allowWarningsCoverageArgs = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+  $allowWarningsCoverageArgs.AllowWarnings = $true
+  & $PSCommandPath @allowWarningsCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $allowWarningsJsonPath | Out-Null
   $allowWarningsJson = Get-Content -LiteralPath $allowWarningsJsonPath -Raw | ConvertFrom-Json
   if ($allowWarningsJson.failOnWarningsDuringCollection -ne $false) {
     throw "Support evidence coverage self-test failed: AllowWarnings report should not request strict warning collection."
@@ -1575,7 +1604,9 @@ if ($SelfTest) {
   }
 
   $productionOnlyJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-production-only-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath -EvidencePath $missingEvidencePath -MatrixPath $MatrixPath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly -ReportOnly -Format Json -OutputPath $productionOnlyJsonPath | Out-Null
+  $productionOnlyCoverageArgs = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+  $productionOnlyCoverageArgs.ProductionRecommendedOnly = $true
+  & $PSCommandPath @productionOnlyCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $productionOnlyJsonPath | Out-Null
   $productionOnlyJson = Get-Content -LiteralPath $productionOnlyJsonPath -Raw | ConvertFrom-Json
   if ($productionOnlyJson.productionRecommendedOnly -ne $true) {
     throw "Support evidence coverage self-test failed: production-only report did not record productionRecommendedOnly."
@@ -1589,10 +1620,31 @@ if ($SelfTest) {
   }
 
   $bundleOutput = Join-Path $RepoRoot ".tmp\support-evidence-coverage-bundle-selftest-$([Guid]::NewGuid().ToString('N'))"
-  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -EvidencePath $EvidencePath -MatrixPath $MatrixPath -OutputDirectory $bundleOutput -BundleName "selftest-coverage-bundle" -IncludeServiceOnly -IncludeFallback | Out-Null
+  $bundleArgs = @{
+    EvidencePath = $EvidencePath
+    MatrixPath = $MatrixPath
+    OutputDirectory = $bundleOutput
+    BundleName = "selftest-coverage-bundle"
+    IncludeServiceOnly = $true
+    IncludeFallback = $true
+  }
+  if ($TargetId.Count -gt 0) {
+    $bundleArgs.TargetId = [string[]]$TargetId
+  }
+  if ($Category.Count -gt 0) {
+    $bundleArgs.Category = [string[]]$Category
+  }
+  if ($ProductionRecommendedOnly) {
+    $bundleArgs.ProductionRecommendedOnly = $true
+  }
+  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") @bundleArgs | Out-Null
   $bundleZip = Join-Path $bundleOutput "selftest-coverage-bundle.zip"
   $bundleCoverageJson = Join-Path $bundleOutput "coverage-from-bundle.json"
-  & $PSCommandPath -BundlePath $bundleZip -MatrixPath $MatrixPath -MaxEvidenceAgeDays $MaxEvidenceAgeDays -IncludeServiceOnly -IncludeFallback -Format Json -OutputPath $bundleCoverageJson | Out-Null
+  $bundleCoverageArgs = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+  $bundleCoverageArgs.Remove("ReportOnly")
+  $bundleCoverageArgs.BundlePath = $bundleZip
+  $bundleCoverageArgs.MaxEvidenceAgeDays = $MaxEvidenceAgeDays
+  & $PSCommandPath @bundleCoverageArgs -Format Json -OutputPath $bundleCoverageJson | Out-Null
   $bundleCoverage = Get-Content -LiteralPath $bundleCoverageJson -Raw | ConvertFrom-Json
   if ([int]$bundleCoverage.summary.missingCount -ne 0) {
     throw "Support evidence coverage self-test failed: BundlePath coverage reported missing entries."

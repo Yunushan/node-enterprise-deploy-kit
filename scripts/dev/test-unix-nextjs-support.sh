@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/.tmp/unix-nextjs-support-$$}"
+UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS="${UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS:-45}"
+UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS="${UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS:-5000}"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -35,7 +37,10 @@ new_next_start_layout() {
   mkdir -p "$app_dir/.next" "$app_dir/node_modules/next/dist/bin"
   write_file "$app_dir/package.json" '{"scripts":{"start":"next start"},"dependencies":{"next":"0.0.0-test"}}'
   write_file "$app_dir/.next/BUILD_ID" "example-build"
+  write_file "$app_dir/node_modules/next/package.json" '{"name":"next","version":"0.0.0-test"}'
   write_file "$app_dir/node_modules/next/dist/bin/next" "#!/usr/bin/env node"
+  mkdir -p "$app_dir/node_modules/.bin"
+  ln -sf "../next/dist/bin/next" "$app_dir/node_modules/.bin/next" 2>/dev/null || true
 }
 
 new_next_project_layout() {
@@ -561,7 +566,8 @@ const request = http.get(url, (response) => {
 });
 
 request.on('error', () => process.exit(1));
-request.setTimeout(1500, () => {
+const timeoutMs = Number(process.env.UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS || 5000);
+request.setTimeout(timeoutMs, () => {
   request.destroy();
   process.exit(3);
 });
@@ -619,7 +625,20 @@ run_node_runtime_smoke_case() {
   ) &
   pid="$!"
 
-  local deadline=$((SECONDS + 15))
+  local timeout_seconds="$UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS"
+  local probe_timeout_ms="$UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS"
+  if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
+    timeout_seconds="45"
+  elif (( timeout_seconds < 1 )); then
+    timeout_seconds="45"
+  fi
+  if [[ ! "$probe_timeout_ms" =~ ^[0-9]+$ ]]; then
+    probe_timeout_ms="5000"
+  elif (( probe_timeout_ms < 1 )); then
+    probe_timeout_ms="5000"
+  fi
+
+  local deadline=$((SECONDS + timeout_seconds))
   local body=""
   while (( SECONDS < deadline )); do
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -628,7 +647,7 @@ run_node_runtime_smoke_case() {
       print_file_to_stderr "$runtime_root/stderr.log"
       exit 1
     fi
-    if body="$("$node_cmd" "$runtime_root/health-client.js" "http://127.0.0.1:$port/health" 2>/dev/null)"; then
+    if body="$(UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS="$probe_timeout_ms" "$node_cmd" "$runtime_root/health-client.js" "http://127.0.0.1:$port/health" 2>/dev/null)"; then
       break
     fi
     sleep 0.25
@@ -638,7 +657,7 @@ run_node_runtime_smoke_case() {
   wait "$pid" 2>/dev/null || true
 
   if [[ -z "$body" ]]; then
-    echo "Unix $mode runtime smoke health check did not return a response." >&2
+    echo "Unix $mode runtime smoke health check did not return a response within ${timeout_seconds}s." >&2
     print_file_to_stderr "$runtime_root/stdout.log"
     print_file_to_stderr "$runtime_root/stderr.log"
     exit 1
@@ -880,6 +899,21 @@ new_next_start_layout "$NEXT_START_ROOT/app"
 write_env "$NEXT_START_ROOT/app.env" "$NEXT_START_ROOT" 39202 "next-start" "node_modules/next/dist/bin/next" "launchd"
 expect_success "next-start preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$NEXT_START_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
 expect_success "next-start runtime layout" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$NEXT_START_ROOT/app.env"
+NEXT_START_STATUS_JSON="$NEXT_START_ROOT/status.json"
+expect_success "next-start status exact cli evidence" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$NEXT_START_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$NEXT_START_STATUS_JSON"
+assert_contains "$NEXT_START_STATUS_JSON" '"nextStartScriptIsExpectedCli": true'
+
+BAD_NEXT_START_CLI_ROOT="$TEST_ROOT/next-start-wrong-cli"
+mkdir -p "$BAD_NEXT_START_CLI_ROOT"
+new_next_start_layout "$BAD_NEXT_START_CLI_ROOT/app"
+write_file "$BAD_NEXT_START_CLI_ROOT/app/node_modules/next/dist/bin/not-next" "#!/usr/bin/env node"
+write_env "$BAD_NEXT_START_CLI_ROOT/app.env" "$BAD_NEXT_START_CLI_ROOT" 39220 "next-start" "node_modules/next/dist/bin/not-next" "launchd"
+expect_failure "next-start wrong cli preflight" "node_modules/next/dist/bin/next" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$BAD_NEXT_START_CLI_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+expect_failure "next-start wrong cli runtime layout" "node_modules/next/dist/bin/next" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$BAD_NEXT_START_CLI_ROOT/app.env"
+BAD_NEXT_START_CLI_STATUS_JSON="$BAD_NEXT_START_CLI_ROOT/status.json"
+expect_success "next-start wrong cli status evidence" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$BAD_NEXT_START_CLI_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$BAD_NEXT_START_CLI_STATUS_JSON"
+assert_contains "$BAD_NEXT_START_CLI_STATUS_JSON" '"status": "failed"'
+assert_contains "$BAD_NEXT_START_CLI_STATUS_JSON" '"nextStartScriptIsExpectedCli": false'
 
 BAD_NEXT_START_ARGS_ROOT="$TEST_ROOT/next-start-missing-host-arg"
 mkdir -p "$BAD_NEXT_START_ARGS_ROOT"
@@ -926,12 +960,37 @@ else
 fi
 
 NEXT_START_PACKAGE="$TEST_ROOT/package/next-start.tar.gz"
-tar -C "$NEXT_START_ROOT/app" -czf "$NEXT_START_PACKAGE" .
+expect_success "next-start package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$NEXT_START_ROOT/app" --output-path "$NEXT_START_PACKAGE" --mode next-start
+if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)package[.]json$'; then
+  echo "Next-start package helper output is missing package.json." >&2
+  exit 1
+fi
+if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)[.]next/BUILD_ID$'; then
+  echo "Next-start package helper output is missing .next/BUILD_ID." >&2
+  exit 1
+fi
+if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)node_modules/next/dist/bin/next$'; then
+  echo "Next-start package helper output is missing node_modules/next/dist/bin/next." >&2
+  exit 1
+fi
+if tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then
+  echo "Next-start package helper output should not include node_modules/.bin symlink entries." >&2
+  exit 1
+fi
 expect_success "next-start package validator" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$NEXT_START_PACKAGE" --mode next-start
 
 BAD_NEXT_START_PACKAGE="$TEST_ROOT/package/next-start-missing-next.tar.gz"
 tar -C "$BAD_ROOT/app" -czf "$BAD_NEXT_START_PACKAGE" .
 expect_failure "next-start missing next package validator" "package.json" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$BAD_NEXT_START_PACKAGE" --mode next-start
+
+MISSING_NEXT_CLI_ROOT="$TEST_ROOT/next-start-missing-cli"
+MISSING_NEXT_CLI_PACKAGE="$TEST_ROOT/package/next-start-missing-cli.tar.gz"
+new_next_start_layout "$MISSING_NEXT_CLI_ROOT/app"
+rm -f "$MISSING_NEXT_CLI_ROOT/app/node_modules/next/dist/bin/next"
+rm -rf "$MISSING_NEXT_CLI_ROOT/app/node_modules/.bin"
+tar -C "$MISSING_NEXT_CLI_ROOT/app" -czf "$MISSING_NEXT_CLI_PACKAGE" .
+expect_failure "next-start missing next cli validator" "node_modules/next/dist/bin/next" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$MISSING_NEXT_CLI_PACKAGE" --mode next-start
+expect_failure "next-start missing next cli package helper" "next-start CLI file" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$MISSING_NEXT_CLI_ROOT/app" --output-path "$TEST_ROOT/package/next-start-helper-missing-cli.tar.gz" --mode next-start
 
 UNSAFE_LINK_ROOT="$TEST_ROOT/package-unsafe-link"
 UNSAFE_LINK_PACKAGE="$TEST_ROOT/package/unsafe-link.tar.gz"

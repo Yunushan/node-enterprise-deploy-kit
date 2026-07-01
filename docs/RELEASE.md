@@ -17,17 +17,17 @@ The verifier checks:
 - Unix shell portability patterns for macOS/BSD-compatible Bash and date usage
 - Platform-family mapping checks for Ubuntu, Debian, Linux Mint, RHEL, Oracle Linux, CentOS, CentOS Stream, Rocky Linux, AlmaLinux, Fedora, Alpine, macOS, FreeBSD, OpenBSD, and NetBSD
 - LF-only line endings for Linux scripts, Linux env examples, and Linux templates
-- Windows JSON example config shape
-- Linux env example shape
+- Windows JSON example config shapes, including standalone, `next-start`, and static IIS examples
+- Unix-like env example shapes, including Linux standalone, Linux `next-start`, macOS `launchd`, and BSD `bsdrc` examples
 - Ansible example variable coverage
 - plain token template rendering with unresolved-token detection
 - rendered XML validity for Windows templates
 - rendered shell syntax for Linux init templates with `bash`, plus POSIX `sh` checks for System V, OpenRC, and BSD rc templates when available
-- Next.js standalone packaging and standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
+- Next.js standalone and `next-start` package-helper output plus standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
 - React static package validation plus Windows/Unix preflight success/failure behavior
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
 - Local Node.js runtime smoke coverage for standalone and next-start Next.js services using the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract
-- release package hygiene and required release files
+- release package hygiene and required release files, including the validated Windows/Unix `next-start`, macOS, and BSD examples
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
 - hosted Windows static verification on pinned Windows Server runner images (`windows-2022` and `windows-2025`)
@@ -326,6 +326,12 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 ```
 
+For full-app `next-start` artifacts, add `-Mode next-start` on Windows or
+`--mode next-start` on Unix to the same package helpers. Unix `next-start`
+helper output intentionally excludes `node_modules/.bin` symlink shims; the
+service starts Next from `node_modules/next/dist/bin/next`, and release
+archives must stay free of symlink and hardlink entries.
+
 For React build artifacts, validate the archive against the configured document
 root before handing it to a server:
 
@@ -361,8 +367,9 @@ validation machine, that optional check is skipped. CI installs `ansible-core`
 and `ansible/requirements.yml` before repository verification so the playbook
 syntax check runs deterministically in GitHub Actions.
 
-ShellCheck is a required GitHub Actions gate for Bash deployment scripts. CI
-installs ShellCheck before running:
+ShellCheck is a required GitHub Actions gate for Bash deployment scripts. The
+main repository verifier runs ShellCheck when it is installed and reports a
+local skip when it is not installed. CI installs ShellCheck before running:
 
 ```bash
 bash scripts/dev/lint-shellcheck.sh

@@ -422,6 +422,7 @@ function Get-NextJsEvidence {
     MinimumNodeVersion = Get-StringValue -Object $nextJs -Names @("MinimumNodeVersion", "minimumNodeVersion")
     NodeVersionSatisfied = Get-BooleanValue -Object $nextJs -Names @("NodeVersionSatisfied", "nodeVersionSatisfied") -Default $null
     NextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
+    NextStartScriptIsExpectedCli = Get-BooleanValue -Object $nextJs -Names @("NextStartScriptIsExpectedCli", "nextStartScriptIsExpectedCli", "NextStartCommandIsExpectedCli", "nextStartCommandIsExpectedCli") -Default $null
   }
 }
 
@@ -1779,6 +1780,9 @@ function Test-EvidenceFile {
     if ($nextJsEvidence.NodeVersionSatisfied -ne $true) {
       $Issues.Add("$($File.FullName) does not prove the configured Node.js runtime satisfies the Next.js minimum version requirement.") | Out-Null
     }
+    if ((Normalize-Target $nextJsEvidence.Mode) -eq "next-start" -and $nextJsEvidence.NextStartScriptIsExpectedCli -ne $true) {
+      $Issues.Add("$($File.FullName) does not prove Next.js next-start uses node_modules/next/dist/bin/next.") | Out-Null
+    }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
       $Issues.Add("$($File.FullName) contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
     }
@@ -2163,6 +2167,19 @@ if ($SelfTest) {
     ExpectedNextJsMode = "next-start"
     ExpectedServiceManager = "systemd"
     ExpectedReverseProxy = "nginx"
+  }
+
+  $badNextStartCliEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-next-start-cli-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $badNextStartCliEvidencePath
+  $badNextStartCliFile = Join-Path $badNextStartCliEvidencePath "ubuntu.json"
+  $badNextStartCliEvidence = Get-Content -LiteralPath $badNextStartCliFile -Raw | ConvertFrom-Json
+  $badNextStartCliEvidence.nextJsRuntime.mode = "next-start"
+  $badNextStartCliEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $badNextStartCliFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "does not prove Next.js next-start uses node_modules/next/dist/bin/next" -Parameters @{
+    EvidencePath = $badNextStartCliEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
   }
 
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "target 'debian'" -Parameters @{

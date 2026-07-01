@@ -104,6 +104,12 @@ safe_relative_path() {
   done
   return 0
 }
+normalize_relative_path_for_compare() {
+  local path="${1//\\//}"
+  while [[ "$path" == ./* ]]; do path="${path#./}"; done
+  path="${path%/}"
+  printf '%s\n' "$path"
+}
 is_react_framework() {
   case "$(normalize_name "${1:-}")" in
     react|reactjs|react-js) return 0 ;;
@@ -262,11 +268,15 @@ validate_nextjs_layout() {
       else
         start_path="$(nextjs_start_command_path)"
         [[ -f "$start_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $start_path"
-        normalized_start_path="${start_path//\\//}"
-        case "$normalized_start_path" in
-          */node_modules/next/*) ;;
-          *) add_error "Next.js next-start START_SCRIPT should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next." ;;
-        esac
+        expected_next_start_script="node_modules/next/dist/bin/next"
+        expected_start_path="${APP_DIR%/}/$expected_next_start_script"
+        if [[ "${START_SCRIPT:-}" = /* ]]; then
+          [[ "$start_path" == "$expected_start_path" ]] ||
+            add_error "Next.js next-start START_SCRIPT must point to node_modules/next/dist/bin/next under APP_DIR."
+        else
+          [[ "$(normalize_relative_path_for_compare "${START_SCRIPT:-}")" == "$expected_next_start_script" ]] ||
+            add_error "Next.js next-start START_SCRIPT must point to node_modules/next/dist/bin/next under APP_DIR."
+        fi
       fi
       if ! argument_tokens_contain_next_start; then
         add_error "Next.js next-start mode requires NODE_ARGUMENTS to start with 'start'. Example: start -H ${BIND_ADDRESS:-127.0.0.1}"

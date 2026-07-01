@@ -155,6 +155,9 @@ try {
         if (-not ($runtimeEntries | Where-Object { $_ -like "node_modules/next/*" })) {
             throw "Package is missing node_modules/next content."
         }
+        if ($runtimeEntries -notcontains "node_modules/next/dist/bin/next") {
+            throw "Package is missing node_modules/next/dist/bin/next at the runtime root."
+        }
     }
 
     if ($RequirePublicDirectory -and -not ($runtimeEntries | Where-Object { $_ -like "public/*" })) {

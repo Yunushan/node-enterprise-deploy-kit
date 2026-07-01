@@ -149,6 +149,7 @@ function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"healthMonitor": {'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"minimumNodeVersion"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"nodeVersionSatisfied"'
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"nextStartScriptIsExpectedCli"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"schedulerChecked"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText "launchd-timer"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText "HealthCronEntryExists"
@@ -171,8 +172,10 @@ function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "templates/linux/traefik-dynamic.yml.tpl") -ExpectedText "Managed by node-enterprise-deploy-kit"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/windows/Diagnose-NodeApp.ps1") -ExpectedText "Next.js Runtime Layout"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/windows/Diagnose-NodeApp.ps1") -ExpectedText "NextStartCommandUnderNextPackage"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/windows/Diagnose-NodeApp.ps1") -ExpectedText "NextStartCommandIsExpectedCli"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/diagnose-node-app.sh") -ExpectedText "nextjs_runtime_summary"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/diagnose-node-app.sh") -ExpectedText "NextStartScriptUnderNextPackage"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/diagnose-node-app.sh") -ExpectedText "NextStartScriptIsExpectedCli"
 }
 
 function New-WindowsConfig {
@@ -259,7 +262,7 @@ function New-WindowsConfig {
     DiagnosticRetentionDays = 14
   }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start") {
-    $config["PackageExpectedFiles"] = @("package.json", ".next/BUILD_ID", ".next", "node_modules/next")
+    $config["PackageExpectedFiles"] = @("package.json", ".next/BUILD_ID", ".next", "node_modules/next/dist/bin/next")
   } else {
     $config["PackageExpectedFiles"] = @("server.js", ".next/BUILD_ID", ".next/static")
   }
@@ -311,7 +314,7 @@ function New-UnixEnv {
     $NodeArguments = "start -H 127.0.0.1"
   }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start") {
-    $packageExpectedFiles = "package.json .next/BUILD_ID .next node_modules/next"
+    $packageExpectedFiles = "package.json .next/BUILD_ID .next node_modules/next/dist/bin/next"
   } else {
     $packageExpectedFiles = "server.js .next/BUILD_ID .next/static"
   }
@@ -397,7 +400,8 @@ function New-NextProjectLayout {
 function New-NextStartLayout {
   param(
     [string]$AppDirectory,
-    [switch]$WithoutNextPackage
+    [switch]$WithoutNextPackage,
+    [switch]$WithoutNextCli
   )
 
   New-Directory $AppDirectory
@@ -405,9 +409,14 @@ function New-NextStartLayout {
   Write-Utf8NoBom -Path (Join-Path $AppDirectory ".next\BUILD_ID") -Text "example-build`n"
   Write-Utf8NoBom -Path (Join-Path $AppDirectory "package.json") -Text "{`"scripts`":{`"start`":`"next start`"},`"dependencies`":{`"next`":`"0.0.0-test`"}}`n"
   if (-not $WithoutNextPackage) {
-    $nextCli = Join-Path $AppDirectory "node_modules\next\dist\bin"
+    $nextPackage = Join-Path $AppDirectory "node_modules\next"
+    New-Directory $nextPackage
+    Write-Utf8NoBom -Path (Join-Path $nextPackage "package.json") -Text "{`"name`":`"next`",`"version`":`"0.0.0-test`"}`n"
+    $nextCli = Join-Path $nextPackage "dist\bin"
     New-Directory $nextCli
-    Write-Utf8NoBom -Path (Join-Path $nextCli "next") -Text "#!/usr/bin/env node`n"
+    if (-not $WithoutNextCli) {
+      Write-Utf8NoBom -Path (Join-Path $nextCli "next") -Text "#!/usr/bin/env node`n"
+    }
   }
 }
 
@@ -645,13 +654,14 @@ function Invoke-ExpectPackagePowerShellFailure {
   param(
     [string]$ProjectPath,
     [string]$OutputPath,
-    [string]$ExpectedText
+    [string]$ExpectedText,
+    [string]$Mode = "standalone"
   )
 
   $failed = $false
   $captured = New-Object System.Collections.Generic.List[string]
   try {
-    & (Join-Path $RepoRoot "scripts\windows\New-NextJsStandalonePackage.ps1") -ProjectPath $ProjectPath -OutputPath $OutputPath *>&1 |
+    & (Join-Path $RepoRoot "scripts\windows\New-NextJsStandalonePackage.ps1") -ProjectPath $ProjectPath -OutputPath $OutputPath -Mode $Mode *>&1 |
       ForEach-Object { $captured.Add([string]$_) | Out-Null }
   } catch {
     $failed = $true
@@ -672,10 +682,11 @@ function Invoke-ExpectPackageBashFailure {
     [string]$BashPath,
     [string]$ProjectPath,
     [string]$OutputPath,
-    [string]$ExpectedText
+    [string]$ExpectedText,
+    [string]$Mode = "standalone"
   )
 
-  $output = & $BashPath "scripts/linux/package-nextjs-standalone.sh" "--project-path" $ProjectPath "--output-path" $OutputPath 2>&1
+  $output = & $BashPath "scripts/linux/package-nextjs-standalone.sh" "--project-path" $ProjectPath "--output-path" $OutputPath "--mode" $Mode 2>&1
   $outputText = ($output | Out-String)
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package helper failure, but command succeeded."
@@ -940,6 +951,26 @@ try {
   Invoke-ExpectPowerShellSuccess -ScriptPath $windowsPreflight -ConfigPath $windowsNextStartConfig
   Invoke-ExpectRuntimeLayoutPowerShellSuccess -ConfigPath $windowsNextStartConfig
 
+  $windowsWrongNextCliRoot = Join-Path $testRoot "windows-next-start-wrong-cli"
+  $windowsWrongNextCliApp = Join-Path $windowsWrongNextCliRoot "app"
+  New-NextStartLayout -AppDirectory $windowsWrongNextCliApp
+  Write-Utf8NoBom -Path (Join-Path $windowsWrongNextCliApp "node_modules\next\dist\bin\not-next") -Text "#!/usr/bin/env node`n"
+  $windowsWrongNextCliConfig = Join-Path $windowsWrongNextCliRoot "app.config.json"
+  New-WindowsConfig -Path $windowsWrongNextCliConfig -AppDirectory $windowsWrongNextCliApp -ServiceDirectory (Join-Path $windowsWrongNextCliRoot "svc") -LogDirectory (Join-Path $windowsWrongNextCliRoot "logs") -Port 39127 -NextjsDeploymentMode "next-start" -StartCommand "node_modules/next/dist/bin/not-next"
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsWrongNextCliConfig -ExpectedText "node_modules/next/dist/bin/next"
+  Invoke-ExpectRuntimeLayoutPowerShellFailure -ConfigPath $windowsWrongNextCliConfig -ExpectedText "node_modules/next/dist/bin/next"
+  if (Test-WindowsStatusSmokeSupported) {
+    $windowsWrongNextCliStatusJson = Join-Path $windowsWrongNextCliRoot "status.json"
+    & (Join-Path $RepoRoot "status.ps1") -ConfigPath $windowsWrongNextCliConfig -HealthTimeoutSeconds 1 -JsonPath $windowsWrongNextCliStatusJson *>&1 | Out-Null
+    $windowsWrongNextCliEvidence = Get-Content -Path $windowsWrongNextCliStatusJson -Raw | ConvertFrom-Json
+    if ($windowsWrongNextCliEvidence.NextJsRuntime.Status -ne "failed") {
+      throw "Windows status JSON should mark wrong next-start CLI path as failed."
+    }
+    if ($windowsWrongNextCliEvidence.NextJsRuntime.NextStartCommandIsExpectedCli -ne $false) {
+      throw "Windows status JSON should prove wrong next-start CLI path is not the expected CLI."
+    }
+  }
+
   $windowsBadNextStartArgsRoot = Join-Path $testRoot "windows-next-start-missing-host-arg"
   $windowsBadNextStartArgsApp = Join-Path $windowsBadNextStartArgsRoot "app"
   New-NextStartLayout -AppDirectory $windowsBadNextStartArgsApp
@@ -1027,12 +1058,24 @@ try {
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsMissingBuildIdPackage -ExpectedText "BUILD_ID"
 
   $windowsNextStartPackage = Join-Path $testRoot "packages\next-start.zip"
-  New-ZipFromDirectory -SourceDirectory $windowsNextStartApp -OutputPath $windowsNextStartPackage
+  & (Join-Path $RepoRoot "scripts\windows\New-NextJsStandalonePackage.ps1") -ProjectPath $windowsNextStartApp -OutputPath $windowsNextStartPackage -Mode next-start | Out-Null
+  Assert-ZipContains -Path $windowsNextStartPackage -ExpectedEntries @(
+    "package.json",
+    ".next/BUILD_ID",
+    "node_modules/next/dist/bin/next"
+  )
   Invoke-ExpectPackageValidatorPowerShellSuccess -PackagePath $windowsNextStartPackage -Mode "next-start"
 
   $windowsBadNextStartPackage = Join-Path $testRoot "packages\next-start-missing-next.zip"
   New-ZipFromDirectory -SourceDirectory $windowsBadNextStartApp -OutputPath $windowsBadNextStartPackage
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsBadNextStartPackage -ExpectedText "node_modules/next" -Mode "next-start"
+
+  $windowsMissingNextCliApp = Join-Path $testRoot "windows-next-start-missing-cli\app"
+  New-NextStartLayout -AppDirectory $windowsMissingNextCliApp -WithoutNextCli
+  $windowsMissingNextCliPackage = Join-Path $testRoot "packages\next-start-missing-cli.zip"
+  New-ZipFromDirectory -SourceDirectory $windowsMissingNextCliApp -OutputPath $windowsMissingNextCliPackage
+  Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsMissingNextCliPackage -ExpectedText "node_modules/next/dist/bin/next" -Mode "next-start"
+  Invoke-ExpectPackagePowerShellFailure -ProjectPath $windowsMissingNextCliApp -OutputPath (Join-Path $testRoot "packages\next-start-helper-missing-cli.zip") -ExpectedText "next-start CLI file" -Mode "next-start"
 
   $windowsBlockedValidatorRoot = Join-Path $testRoot "windows-validator-blocked-private-file"
   New-StandaloneLayout -AppDirectory $windowsBlockedValidatorRoot
@@ -1160,10 +1203,42 @@ try {
       $unixNextStartRel = Get-RepoRelativePath $unixNextStartRoot
       $unixNextStartApp = Join-Path $unixNextStartRoot "app"
       New-NextStartLayout -AppDirectory $unixNextStartApp
+      & $bash.Source "-lc" "mkdir -p '$unixNextStartRel/app/node_modules/.bin' && ln -sf '../next/dist/bin/next' '$unixNextStartRel/app/node_modules/.bin/next' 2>/dev/null || true" | Out-Null
       $unixNextStartEnv = Join-Path $unixNextStartRoot "app.env"
       New-UnixEnv -Path $unixNextStartEnv -RelativeRoot $unixNextStartRel -Port 39107 -NextjsDeploymentMode "next-start" -StartScript "node_modules/next/dist/bin/next"
       Invoke-ExpectBashSuccess -BashPath $bash.Source -EnvPath "$unixNextStartRel/app.env"
       Invoke-ExpectRuntimeLayoutBashSuccess -BashPath $bash.Source -EnvPath "$unixNextStartRel/app.env"
+      $unixNextStartStatusJson = Join-Path $unixNextStartRoot "status.json"
+      & $bash.Source "scripts/linux/status-node-app.sh" "$unixNextStartRel/app.env" "--skip-service-manager-check" "--skip-port-check" "--skip-health-check" "--json-output" "$unixNextStartRel/status.json" | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        throw "Unix next-start status JSON command failed."
+      }
+      $unixNextStartStatusEvidence = Get-Content -Path $unixNextStartStatusJson -Raw | ConvertFrom-Json
+      if ($unixNextStartStatusEvidence.nextJsRuntime.nextStartScriptIsExpectedCli -ne $true) {
+        throw "Unix status JSON should prove next-start uses node_modules/next/dist/bin/next."
+      }
+
+      $unixWrongNextCliRoot = Join-Path $testRoot "unix-next-start-wrong-cli"
+      $unixWrongNextCliRel = Get-RepoRelativePath $unixWrongNextCliRoot
+      $unixWrongNextCliApp = Join-Path $unixWrongNextCliRoot "app"
+      New-NextStartLayout -AppDirectory $unixWrongNextCliApp
+      Write-Utf8NoBom -Path (Join-Path $unixWrongNextCliApp "node_modules\next\dist\bin\not-next") -Text "#!/usr/bin/env node`n"
+      $unixWrongNextCliEnv = Join-Path $unixWrongNextCliRoot "app.env"
+      New-UnixEnv -Path $unixWrongNextCliEnv -RelativeRoot $unixWrongNextCliRel -Port 39127 -NextjsDeploymentMode "next-start" -StartScript "node_modules/next/dist/bin/not-next"
+      Invoke-ExpectBashFailure -BashPath $bash.Source -EnvPath "$unixWrongNextCliRel/app.env" -ExpectedText "node_modules/next/dist/bin/next"
+      Invoke-ExpectRuntimeLayoutBashFailure -BashPath $bash.Source -EnvPath "$unixWrongNextCliRel/app.env" -ExpectedText "node_modules/next/dist/bin/next"
+      $unixWrongNextCliStatusJson = Join-Path $unixWrongNextCliRoot "status.json"
+      & $bash.Source "scripts/linux/status-node-app.sh" "$unixWrongNextCliRel/app.env" "--skip-service-manager-check" "--skip-port-check" "--skip-health-check" "--json-output" "$unixWrongNextCliRel/status.json" | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        throw "Unix wrong next-start CLI status JSON command failed."
+      }
+      $unixWrongNextCliStatusEvidence = Get-Content -Path $unixWrongNextCliStatusJson -Raw | ConvertFrom-Json
+      if ($unixWrongNextCliStatusEvidence.nextJsRuntime.status -ne "failed") {
+        throw "Unix status JSON should mark wrong next-start CLI path as failed."
+      }
+      if ($unixWrongNextCliStatusEvidence.nextJsRuntime.nextStartScriptIsExpectedCli -ne $false) {
+        throw "Unix status JSON should prove wrong next-start CLI path is not the expected CLI."
+      }
 
       $unixBadNextStartArgsRoot = Join-Path $testRoot "unix-next-start-missing-host-arg"
       $unixBadNextStartArgsRel = Get-RepoRelativePath $unixBadNextStartArgsRoot
@@ -1231,12 +1306,29 @@ try {
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixPackageOutputRel
 
       $unixNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixNextStartRel/app' -czf '$unixNextStartPackage' ." | Out-Null
+      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" "$unixNextStartRel/app" "--output-path" $unixNextStartPackage "--mode" "next-start" | Out-Null
+      Assert-TarContains -BashPath $bash.Source -ArchivePath $unixNextStartPackage -ExpectedEntries @(
+        "package.json",
+        ".next/BUILD_ID",
+        "node_modules/next/dist/bin/next"
+      )
+      & $bash.Source "-lc" "if tar -tzf '$unixNextStartPackage' | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then exit 1; fi" | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        throw "Unix next-start package helper should not include node_modules/.bin symlink entries."
+      }
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixNextStartPackage -Mode "next-start"
 
       $unixBadNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next.tar.gz")
       & $bash.Source "-lc" "tar -C '$unixBadNextStartRel/app' -czf '$unixBadNextStartPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixBadNextStartPackage -ExpectedText "node_modules/next" -Mode "next-start"
+
+      $unixMissingNextCliRoot = Join-Path $testRoot "unix-next-start-missing-cli"
+      $unixMissingNextCliRel = Get-RepoRelativePath $unixMissingNextCliRoot
+      New-NextStartLayout -AppDirectory (Join-Path $unixMissingNextCliRoot "app") -WithoutNextCli
+      $unixMissingNextCliPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-cli.tar.gz")
+      & $bash.Source "-lc" "tar -C '$unixMissingNextCliRel/app' -czf '$unixMissingNextCliPackage' ." | Out-Null
+      Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextCliPackage -ExpectedText "node_modules/next/dist/bin/next" -Mode "next-start"
+      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextCliRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-cli.tar.gz")) -ExpectedText "next-start CLI file" -Mode "next-start"
 
       $unixUnsafeLinkRoot = Join-Path $testRoot "unix-validator-unsafe-link"
       $unixUnsafeLinkRel = Get-RepoRelativePath $unixUnsafeLinkRoot

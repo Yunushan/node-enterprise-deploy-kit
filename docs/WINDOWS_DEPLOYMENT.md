@@ -244,10 +244,21 @@ the deployment with:
   -PackagePath C:\deploy\example-node-app.zip
 ```
 
-For full-app `next-start` packages, add `-Mode next-start`. Run that validator
-on any zip that did not come directly from the helper. The Windows package
-import flow also runs this validator automatically when `AppFramework` is
-`nextjs` and `NextjsDeploymentMode` is `standalone` or `next-start`.
+For full-app `next-start` packages, add `-Mode next-start` to the same helper:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip `
+  -Mode next-start
+```
+
+In that mode the helper stages `package.json`, `.next`, production
+`node_modules`, optional `public`, and common Next.js config/lock files. Run
+the validator on any zip that did not come directly from the helper. The
+Windows package import flow also runs this validator automatically when
+`AppFramework` is `nextjs` and `NextjsDeploymentMode` is `standalone` or
+`next-start`.
 
 ```json
 {
@@ -264,6 +275,18 @@ import flow also runs this validator automatically when `AppFramework` is
     ".next/BUILD_ID",
     ".next/static"
   ]
+}
+```
+
+For full-app `next-start` services, start from
+`config/windows/next-start.app.config.example.json` or set:
+
+```json
+{
+  "NextjsDeploymentMode": "next-start",
+  "StartCommand": "node_modules\\next\\dist\\bin\\next",
+  "NodeArguments": "start -H 127.0.0.1",
+  "PackageExpectedFiles": ["package.json", ".next", ".next/BUILD_ID", "node_modules/next/dist/bin/next"]
 }
 ```
 

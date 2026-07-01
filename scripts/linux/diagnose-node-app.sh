@@ -257,6 +257,7 @@ nextjs_runtime_summary() {
   next_start_starts_with_start="true"
   next_start_script_path=""
   next_start_under_next_package="true"
+  next_start_is_expected_cli="true"
   if [[ "$mode" == "next-start" ]]; then
     local tokens=()
     read -r -a tokens <<< "${NODE_ARGUMENTS:-}"
@@ -275,6 +276,12 @@ nextjs_runtime_summary() {
       */node_modules/next/*) next_start_under_next_package="true" ;;
       *) next_start_under_next_package="false" ;;
     esac
+    expected_next_start_script_path="${app_dir%/}/node_modules/next/dist/bin/next"
+    if [[ -n "$next_start_script_path" && "$next_start_script_path" == "$expected_next_start_script_path" ]]; then
+      next_start_is_expected_cli="true"
+    else
+      next_start_is_expected_cli="false"
+    fi
   fi
 
   echo "AppFramework=nextjs"
@@ -284,6 +291,7 @@ nextjs_runtime_summary() {
   echo "StartScriptHasArguments=$start_has_arguments"
   echo "NextStartScriptPath=$next_start_script_path"
   echo "NextStartScriptUnderNextPackage=$next_start_under_next_package"
+  echo "NextStartScriptIsExpectedCli=$next_start_is_expected_cli"
   echo "NodeArguments=${NODE_ARGUMENTS:-}"
   echo "BindAddress=${BIND_ADDRESS:-127.0.0.1}"
   echo "NextStartCommandStartsWithStart=$next_start_starts_with_start"

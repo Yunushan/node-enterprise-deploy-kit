@@ -422,12 +422,12 @@ function Test-NextJsDeploymentLayout($Config) {
             Add-Error "StartCommand must be a safe relative file path for Next.js next-start validation."
         } else {
             $startCommandPath = Get-StartCommandPath -AppDirectory $Config.AppDirectory -StartCommand $startCommand
-            $normalizedStartCommand = ($startCommandPath -replace "\\", "/").ToLowerInvariant()
+            $expectedStartCommandPath = Get-StartCommandPath -AppDirectory $Config.AppDirectory -StartCommand "node_modules\next\dist\bin\next"
             if (-not (Test-Path -LiteralPath $startCommandPath -PathType Leaf)) {
                 Add-Error "Next.js next-start StartCommand file was not found: $startCommandPath"
             }
-            if ($normalizedStartCommand -notmatch '/node_modules/next/') {
-                Add-Error "Next.js next-start StartCommand should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next."
+            if ((Get-NormalizedPathForCompare $startCommandPath) -ine (Get-NormalizedPathForCompare $expectedStartCommandPath)) {
+                Add-Error "Next.js next-start StartCommand must point to node_modules/next/dist/bin/next under AppDirectory."
             }
         }
         $nodeArguments = Get-ConfigString $Config "NodeArguments" ""

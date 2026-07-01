@@ -100,8 +100,8 @@ service manager and package tooling are available on the remote system.
 
 When `node_deploy_package_expected_files` is empty or omitted, the roles render
 `server.js`, `.next/BUILD_ID`, and `.next/static` for Next.js `standalone`,
-`package.json`, `.next/BUILD_ID`, `.next`, plus `node_modules/next` for
-Next.js `next-start`, and `server.js` plus
+`package.json`, `.next/BUILD_ID`, `.next`, plus
+`node_modules/next/dist/bin/next` for Next.js `next-start`, and `server.js` plus
 `<node_deploy_react_document_root>/index.html` for React. Set the variable only
 when your artifact has additional project-specific paths that must be present.
 

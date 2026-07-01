@@ -549,6 +549,7 @@ function New-ClaimSelfTestEvidence {
               MinimumNodeVersion = "20.9.0"
               NodeVersionSatisfied = $true
               NextVersion = "14.2.3"
+              NextStartCommandIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               RuntimeRootName = "example-next-app"
             }
             ReverseProxy = [ordered]@{
@@ -688,6 +689,7 @@ function New-ClaimSelfTestEvidence {
               minimumNodeVersion = "20.9.0"
               nodeVersionSatisfied = $true
               nextVersion = "14.2.3"
+              nextStartScriptIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               runtimeRootName = "example-next-app"
             }
             reverseProxy = [ordered]@{

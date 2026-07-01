@@ -4,7 +4,7 @@
 # and can make bash read options such as "pipefail\r".
 *.sh text eol=lf
 deploy.sh text eol=lf
-config/linux/*.env.example text eol=lf
+config/linux/*.env*.example text eol=lf
 templates/linux/* text eol=lf
 ansible/roles/linux_node_service/templates/* text eol=lf
 

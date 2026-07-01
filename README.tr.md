@@ -148,7 +148,11 @@ Next.js standalone artifact oluşturmak için:
 Tam uygulama `next-start` paketleri için Windows'ta `-Mode next-start`, Unix
 validator tarafında `--mode next-start` kullanın. Package import, canlı
 uygulama klasörünü değiştirmeden önce uygun Next.js validator'ını otomatik
-çalıştırır.
+çalıştırır. Unix benzeri sistemlerde `next-start` paket yardımcısı
+`node_modules/.bin` komut shim'lerini pakete dahil etmez; paket yöneticileri bu
+shim'leri çoğunlukla sembolik link olarak oluşturur. Servis Next'i doğrudan
+`node_modules/next/dist/bin/next` üzerinden başlatır ve deploy arşivleri
+sembolik link veya hardlink girdilerini bilinçli olarak reddeder.
 
 Import veya manuel kopyalama sonrası canlı runtime klasörünü servis durumuna
 dokunmadan kontrol etmek için:

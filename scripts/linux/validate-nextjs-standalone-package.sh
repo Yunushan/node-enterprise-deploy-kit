@@ -225,6 +225,7 @@ has_package_json="false"
 has_build_id="false"
 has_next_build="false"
 has_next_package="false"
+has_next_cli="false"
 blocked=()
 for entry in "${runtime_entries[@]}"; do
   [[ "$entry" == "server.js" ]] && has_server="true"
@@ -234,6 +235,7 @@ for entry in "${runtime_entries[@]}"; do
   [[ "$entry" == "package.json" ]] && has_package_json="true"
   [[ "$entry" == .next/* ]] && has_next_build="true"
   [[ "$entry" == node_modules/next/* ]] && has_next_package="true"
+  [[ "$entry" == node_modules/next/dist/bin/next ]] && has_next_cli="true"
   if blocked_artifact_path "$entry"; then
     blocked+=("$entry")
   fi
@@ -272,6 +274,10 @@ elif [[ "$DEPLOYMENT_MODE" == "next-start" ]]; then
   }
   is_true "$has_next_package" || {
     echo "Package is missing node_modules/next content." >&2
+    exit 1
+  }
+  is_true "$has_next_cli" || {
+    echo "Package is missing node_modules/next/dist/bin/next at the runtime root." >&2
     exit 1
   }
 fi

@@ -59,10 +59,22 @@ Supported app runtimes:
 .\scripts\dev\Test-Repository.ps1
 ```
 
-2. Copy config:
+2. Copy the closest safe example config:
 
 ```bash
 cp config/linux/app.env.example config/linux/app.env
+```
+
+For macOS launchd hosts:
+
+```bash
+cp config/linux/app.env.macos.example config/linux/app.env
+```
+
+For FreeBSD, OpenBSD, or NetBSD hosts:
+
+```bash
+cp config/linux/app.env.bsd.example config/linux/app.env
 ```
 
 3. Edit variables:
@@ -79,8 +91,10 @@ REVERSE_PROXY="nginx"       # nginx, apache, haproxy, traefik, or none
 APP_RUNTIME="node"          # node or tomcat
 ```
 
-For macOS use `SERVICE_MANAGER="launchd"`; for FreeBSD, OpenBSD, or NetBSD use
-`SERVICE_MANAGER="bsdrc"`.
+For macOS use `SERVICE_MANAGER="launchd"`; the macOS example also uses
+Homebrew-style paths and the built-in `_www` service account. For FreeBSD,
+OpenBSD, or NetBSD use `SERVICE_MANAGER="bsdrc"`; the BSD example uses
+`/usr/local` and `/var/db` paths that match common BSD package layouts.
 If `SERVICE_MANAGER` is omitted, deploy, status, diagnostics, health checks,
 and uninstall resolve the default from the host: launchd on macOS, BSD rc on
 FreeBSD/OpenBSD/NetBSD, OpenRC when `rc-service` is present, otherwise systemd
@@ -188,10 +202,28 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 ```
 
-For full-app `next-start` packages, add `--mode next-start`. Run that validator
-on any archive that did not come directly from the helper. The Unix package
-import flow also runs this validator automatically when `APP_FRAMEWORK="nextjs"`
-and `NEXTJS_DEPLOYMENT_MODE` is `standalone` or `next-start`.
+For full-app `next-start` packages, add `--mode next-start` to the same helper:
+
+```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz \
+  --mode next-start
+```
+
+In that mode the helper stages `package.json`, `.next`, production
+`node_modules`, optional `public`, and common Next.js config/lock files. It
+omits `node_modules/.bin` command shims because package managers commonly put
+symlinks there, while the managed `next-start` service uses
+`node_modules/next/dist/bin/next` directly. The validator requires that exact
+file so a package with only a partial `node_modules/next` tree fails before
+service installation. Run the validator on any archive that did not come
+directly from the helper. The Unix package import flow also runs this validator
+automatically when
+`APP_FRAMEWORK="nextjs"` and `NEXTJS_DEPLOYMENT_MODE` is `standalone` or
+`next-start`.
+For a complete `next-start` starting point, copy
+`config/linux/app.env.next-start.example` to `config/linux/app.env`.
 
 ```bash
 APP_RUNTIME="node"

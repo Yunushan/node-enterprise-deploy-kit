@@ -892,6 +892,57 @@ if ($SelfTest) {
   if (@($localOnlyStrict | Where-Object { $_.targetId -eq "freebsd" }).Count -lt 1) {
     throw "Support evidence plan self-test failed: FreeBSD should be a local-command-only evidence target."
   }
+  foreach ($workflowTargetExpectation in @(
+      [pscustomobject]@{ TargetId = "windows-server-2022"; Platform = "windows"; ConfigPath = "config/windows/app.config.json" },
+      [pscustomobject]@{ TargetId = "macos"; Platform = "unix"; ConfigPath = "config/linux/app.env" }
+    )) {
+    $targetEntries = @($parsed.strictEvidence | Where-Object { [string]$_.targetId -eq [string]$workflowTargetExpectation.TargetId })
+    if ($targetEntries.Count -lt 1) {
+      throw "Support evidence plan self-test failed: expected strict workflow-dispatch entries for $($workflowTargetExpectation.TargetId)."
+    }
+    foreach ($entry in $targetEntries) {
+      $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
+      if ($entry.workflowDispatchSupported -ne $true) {
+        throw "Support evidence plan self-test failed: $context should support host-evidence workflow dispatch."
+      }
+      if ($null -eq $entry.workflowInputs) {
+        throw "Support evidence plan self-test failed: $context is missing workflow inputs."
+      }
+      if ([string]$entry.workflowInputs.platform -ne [string]$workflowTargetExpectation.Platform) {
+        throw "Support evidence plan self-test failed: $context has unexpected workflow platform '$($entry.workflowInputs.platform)'."
+      }
+      if ([string]$entry.workflowInputs.config_path -ne [string]$workflowTargetExpectation.ConfigPath) {
+        throw "Support evidence plan self-test failed: $context has unexpected workflow config path '$($entry.workflowInputs.config_path)'."
+      }
+      if (-not ([string]$entry.workflowInputs.runner_labels).Contains([string]$workflowTargetExpectation.TargetId)) {
+        throw "Support evidence plan self-test failed: $context runner labels do not include $($workflowTargetExpectation.TargetId)."
+      }
+      if (-not ([string]$entry.workflowDispatchCommand).Contains("expected_target_id=$($workflowTargetExpectation.TargetId)")) {
+        throw "Support evidence plan self-test failed: $context dispatch command is missing expected target id."
+      }
+    }
+  }
+  foreach ($bsdTargetId in @("freebsd", "openbsd", "netbsd")) {
+    $bsdEntries = @($allPlanEntries | Where-Object { [string]$_.targetId -eq $bsdTargetId })
+    if ($bsdEntries.Count -lt 1) {
+      throw "Support evidence plan self-test failed: expected local-command-only entries for $bsdTargetId."
+    }
+    foreach ($entry in $bsdEntries) {
+      $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
+      if ($entry.workflowDispatchSupported -eq $true) {
+        throw "Support evidence plan self-test failed: $context should not support host-evidence workflow dispatch."
+      }
+      if ($null -ne $entry.workflowInputs) {
+        throw "Support evidence plan self-test failed: $context should not include workflow inputs."
+      }
+      if (-not [string]::IsNullOrWhiteSpace([string]$entry.workflowDispatchCommand)) {
+        throw "Support evidence plan self-test failed: $context should not include a workflow dispatch command."
+      }
+      if (-not ([string]$entry.workflowInputSummary).Contains("target category 'bsd'")) {
+        throw "Support evidence plan self-test failed: $context is missing BSD local-command-only workflow guidance."
+      }
+    }
+  }
   $dispatchMarkdown = ConvertTo-DispatchMarkdown -Plan $plan
   if (-not $dispatchMarkdown.Contains("gh workflow run")) {
     throw "Support evidence plan self-test failed: DispatchMarkdown is missing gh workflow run commands."
@@ -899,8 +950,10 @@ if ($SelfTest) {
   if (-not $dispatchMarkdown.Contains("Local-Command-Only Evidence")) {
     throw "Support evidence plan self-test failed: DispatchMarkdown is missing local-command-only guidance."
   }
-  if ($dispatchMarkdown.Contains("expected_target_id=freebsd")) {
-    throw "Support evidence plan self-test failed: DispatchMarkdown should not emit GitHub workflow commands for FreeBSD."
+  foreach ($bsdTargetId in @("freebsd", "openbsd", "netbsd")) {
+    if ($dispatchMarkdown.Contains("expected_target_id=$bsdTargetId")) {
+      throw "Support evidence plan self-test failed: DispatchMarkdown should not emit GitHub workflow commands for $bsdTargetId."
+    }
   }
   if (-not $dispatchMarkdown.Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
     throw "Support evidence plan self-test failed: DispatchMarkdown is missing local minimum uptime guidance."
@@ -915,8 +968,10 @@ if ($SelfTest) {
   if (-not $dispatchPowerShell.Contains("ValidationCommand")) {
     throw "Support evidence plan self-test failed: DispatchPowerShell is missing local validation commands."
   }
-  if ($dispatchPowerShell.Contains("expected_target_id=freebsd")) {
-    throw "Support evidence plan self-test failed: DispatchPowerShell should not dispatch FreeBSD workflow evidence."
+  foreach ($bsdTargetId in @("freebsd", "openbsd", "netbsd")) {
+    if ($dispatchPowerShell.Contains("expected_target_id=$bsdTargetId")) {
+      throw "Support evidence plan self-test failed: DispatchPowerShell should not dispatch $bsdTargetId workflow evidence."
+    }
   }
   $tokens = $null
   $parseErrors = $null

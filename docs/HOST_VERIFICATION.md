@@ -69,10 +69,12 @@ response bodies, secrets, or runner hostnames.
 
 The manual `host-evidence` GitHub Actions workflow can collect evidence from an
 already deployed Windows, Linux, or macOS self-hosted runner and upload the safe
-`status.json` as a workflow artifact. Use runner labels that point at the real
-target host, set `platform` to `windows` or `unix`, and set `config_path` to the
-deployed app config on that runner. The workflow accepts only a safe relative
-workspace path such as `config/windows/app.config.json` or
+`status.json` as a workflow artifact. The dispatch validator also accepts BSD
+target dimensions for compatible self-hosted runner environments, but generated
+BSD evidence-plan rows are local-command-only by default. Use runner labels that
+point at the real target host, set `platform` to `windows` or `unix`, and set
+`config_path` to the deployed app config on that runner. The workflow accepts
+only a safe relative workspace path such as `config/windows/app.config.json` or
 `config/linux/app.env`; do not put absolute server paths, hostnames, customer
 names, or secrets in workflow inputs.
 

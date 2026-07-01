@@ -43,7 +43,7 @@ architecture.
 | Mode | Config value | What gets deployed | Recommended use |
 |---|---|---|---|
 | Standalone | `standalone` | Contents of `.next/standalone`, plus copied static assets | Recommended production service mode |
-| Next start | `next-start` | Full app with `package.json`, `.next`, and `node_modules/next` | Compatibility mode when standalone is not possible |
+| Next start | `next-start` | Full app with `package.json`, `.next`, and `node_modules/next/dist/bin/next` | Compatibility mode when standalone is not possible |
 
 Static export-only sites are not the primary target of this kit. Serve those as
 static files through IIS/Nginx/Apache or a CDN instead of installing a Node.js
@@ -79,6 +79,15 @@ Windows packaging helper:
   -OutputPath C:\deploy\example-node-app.zip
 ```
 
+For full-app `next-start` packaging, add `-Mode next-start`:
+
+```powershell
+.\scripts\windows\New-NextJsStandalonePackage.ps1 `
+  -ProjectPath C:\src\example-node-app `
+  -OutputPath C:\deploy\example-node-app.zip `
+  -Mode next-start
+```
+
 Linux/macOS/BSD packaging helper:
 
 ```bash
@@ -87,17 +96,33 @@ bash scripts/linux/package-nextjs-standalone.sh \
   --output-path /opt/releases/example-node-app.tar.gz
 ```
 
-Both helpers copy `.next/standalone`, add `.next/static`, copy `.next/BUILD_ID`,
-copy `public` when it exists, block obvious private files such as `.env`,
-private keys, and certificates from the staged package, then verify that the
-archive contains `server.js`, `.next/BUILD_ID`, and `.next/static`. The helpers
-also run the package validator on the produced archive before reporting
+For full-app `next-start` packaging, add `--mode next-start`:
+
+```bash
+bash scripts/linux/package-nextjs-standalone.sh \
+  --project-path /srv/src/example-node-app \
+  --output-path /opt/releases/example-node-app.tar.gz \
+  --mode next-start
+```
+
+In `standalone` mode, both helpers copy `.next/standalone`, add
+`.next/static`, copy `.next/BUILD_ID`, copy `public` when it exists, block
+obvious private files such as `.env`, private keys, and certificates from the
+staged package, then verify that the archive contains `server.js`,
+`.next/BUILD_ID`, and `.next/static`. In `next-start` mode, they stage
+`package.json`, `.next`, production `node_modules`, optional `public`, and
+common Next.js config/lock files, then verify that the archive contains
+`package.json`, `.next/BUILD_ID`, and `node_modules/next/dist/bin/next`. The
+helpers also run the package validator on the produced archive before reporting
 success.
 
 Unix tar deployment archives are also rejected when they contain symlink or
-hardlink entries. Keep production artifacts as real files and directories so
-package import cannot preserve links that point outside the deployed runtime
-tree.
+hardlink entries. The Unix `next-start` package helper therefore removes
+`node_modules/.bin` command shims after staging `node_modules`, because npm,
+pnpm, and yarn often create symlinks there. The managed service starts Next
+directly from `node_modules/next/dist/bin/next`, so those shims are not needed
+at runtime. Keep production artifacts as real files and directories so package
+import cannot preserve links that point outside the deployed runtime tree.
 
 Validate an existing package before deploying it:
 
@@ -128,7 +153,8 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
 The normal Windows and Unix package import flows run these validators
 automatically for Next.js `standalone` and `next-start` deployments before
 replacing the current application directory. A `next-start` package must contain
-`package.json`, built `.next` output, and `node_modules/next`.
+`package.json`, built `.next` output, and
+`node_modules/next/dist/bin/next`.
 
 After a successful package import, the importer writes
 `.node-enterprise-deploy.json` into the deployed app directory. The manifest is
@@ -226,10 +252,13 @@ subcommand plus hostname:
     "package.json",
     ".next/BUILD_ID",
     ".next",
-    "node_modules/next"
+    "node_modules/next/dist/bin/next"
   ]
 }
 ```
+
+You can also start from the committed Windows example:
+`config/windows/next-start.app.config.example.json`.
 
 Deploy a built artifact:
 
@@ -290,8 +319,11 @@ NEXTJS_DEPLOYMENT_MODE="next-start"
 START_SCRIPT="node_modules/next/dist/bin/next"
 NODE_ARGUMENTS="start -H 127.0.0.1"
 BIND_ADDRESS="127.0.0.1"
-PACKAGE_EXPECTED_FILES="package.json .next/BUILD_ID .next node_modules/next"
+PACKAGE_EXPECTED_FILES="package.json .next/BUILD_ID .next node_modules/next/dist/bin/next"
 ```
+
+You can also start from the committed Unix-like example:
+`config/linux/app.env.next-start.example`.
 
 The `start` argument runs `next start` in production mode. The `-H`/`--hostname`
 argument keeps the Next.js process bound to the configured local address instead
@@ -452,6 +484,9 @@ For `next-start`, the preflight validates:
 - `package.json` exists.
 - `.next` exists.
 - `node_modules/next` exists.
+- `node_modules/next/dist/bin/next` exists.
+- `StartCommand` / `START_SCRIPT` points exactly to
+  `node_modules/next/dist/bin/next` under the app directory.
 
 ## Post-Deploy Verification
 
@@ -467,9 +502,10 @@ Get-NetTCPConnection -State Listen |
 
 For `AppFramework=nextjs`, `status.ps1` also prints a safe Next.js runtime
 layout section and raises findings when `server.js`, `.next`, `.next/BUILD_ID`,
-`.next/static`, `node_modules/next`, or compatible Node.js runtime evidence are
-missing for the selected mode. To collect the same layout information in a
-machine-readable release evidence file, run:
+`.next/static`, `node_modules/next`, `node_modules/next/dist/bin/next`, or
+compatible Node.js runtime evidence are missing for the selected mode. To
+collect the same layout information in a machine-readable release evidence
+file, run:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-nextjs-status.json -FailOnCritical
@@ -500,10 +536,11 @@ curl -fsS http://127.0.0.1:3000/health
 The Unix status command checks service state, configured port, HTTP health,
 health-check history, and the Next.js runtime layout without printing raw
 environment values. Its JSON evidence includes `nodeVersion`,
-`minimumNodeVersion`, and `nodeVersionSatisfied`. Use `--json-output` for
-release evidence on Linux, macOS, and BSD hosts. Unix diagnostics include a
-safe Next.js runtime layout section for Linux, macOS, and BSD service-manager
-modes:
+`minimumNodeVersion`, `nodeVersionSatisfied`, and
+`nextStartScriptIsExpectedCli` for `next-start` services. Use `--json-output`
+for release evidence on Linux, macOS, and BSD hosts. Unix diagnostics include
+a safe Next.js runtime layout section for Linux, macOS, and BSD
+service-manager modes:
 
 Unix preflight blocks selected reverse-proxy deployments when the matching
 proxy executable is missing, so an `nginx`, Apache/httpd, HAProxy, or Traefik

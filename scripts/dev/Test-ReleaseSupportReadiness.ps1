@@ -449,8 +449,56 @@ if ($SelfTest) {
   $selfTestRoot = Join-Path $RepoRoot ".tmp\release-support-readiness-selftest-$([Guid]::NewGuid().ToString('N'))"
   $coverageJson = Join-Path $selfTestRoot "coverage.json"
   New-Item -ItemType Directory -Force -Path $selfTestRoot | Out-Null
+  $selfTestTargetIds = @("windows-10", "windows-server-2022", "ubuntu", "macos", "freebsd")
 
-  & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") -SelfTest -Format Json -OutputPath $coverageJson | Out-Null
+  function Invoke-SelfTestReadiness {
+    param(
+      [string]$BundlePath,
+      [switch]$IncludeServiceOnly,
+      [switch]$IncludeFallback,
+      [ValidateSet("Table", "Json")]
+      [string]$Format = "Table",
+      [string]$OutputPath = "",
+      [switch]$ProductionRecommendedOnly,
+      [switch]$RequireProductionRecommendedRuntime,
+      [switch]$RequireCleanSource,
+      [switch]$RequireCurrentCommit,
+      [switch]$RequireCiProvenance,
+      [switch]$RequireCollectionCiProvenance,
+      [switch]$RequireCollectionSourceCommit,
+      [switch]$RequireHostEvidenceWorkflowCollection,
+      [switch]$RequireRuntimeVersions,
+      [switch]$RequireCollectorSha256,
+      [int]$RequireMinimumUptimeHours = 0,
+      [switch]$StrictCiRelease
+    )
+
+    $readinessArgs = @{
+      MatrixPath = $MatrixPath
+      TargetId = [string[]]$selfTestTargetIds
+      BundlePath = $BundlePath
+    }
+    if ($IncludeServiceOnly) { $readinessArgs.IncludeServiceOnly = $true }
+    if ($IncludeFallback) { $readinessArgs.IncludeFallback = $true }
+    if ($Format -ne "Table") { $readinessArgs.Format = $Format }
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) { $readinessArgs.OutputPath = $OutputPath }
+    if ($ProductionRecommendedOnly) { $readinessArgs.ProductionRecommendedOnly = $true }
+    if ($RequireProductionRecommendedRuntime) { $readinessArgs.RequireProductionRecommendedRuntime = $true }
+    if ($RequireCleanSource) { $readinessArgs.RequireCleanSource = $true }
+    if ($RequireCurrentCommit) { $readinessArgs.RequireCurrentCommit = $true }
+    if ($RequireCiProvenance) { $readinessArgs.RequireCiProvenance = $true }
+    if ($RequireCollectionCiProvenance) { $readinessArgs.RequireCollectionCiProvenance = $true }
+    if ($RequireCollectionSourceCommit) { $readinessArgs.RequireCollectionSourceCommit = $true }
+    if ($RequireHostEvidenceWorkflowCollection) { $readinessArgs.RequireHostEvidenceWorkflowCollection = $true }
+    if ($RequireRuntimeVersions) { $readinessArgs.RequireRuntimeVersions = $true }
+    if ($RequireCollectorSha256) { $readinessArgs.RequireCollectorSha256 = $true }
+    if ($RequireMinimumUptimeHours -gt 0) { $readinessArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
+    if ($StrictCiRelease) { $readinessArgs.StrictCiRelease = $true }
+
+    & $PSCommandPath @readinessArgs | Out-Null
+  }
+
+  & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") -SelfTest -MatrixPath $MatrixPath -TargetId $selfTestTargetIds -Format Json -OutputPath $coverageJson | Out-Null
   $coverage = Get-Content -LiteralPath $coverageJson -Raw | ConvertFrom-Json
   $evidencePath = [string]$coverage.evidencePath
 
@@ -459,6 +507,8 @@ if ($SelfTest) {
   $IncludeFallback = $true
   & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") `
     -EvidencePath $evidencePath `
+    -MatrixPath $MatrixPath `
+    -TargetId $selfTestTargetIds `
     -OutputDirectory $bundleOutput `
     -BundleName "selftest-release-support-readiness" `
     -ValidateSupportClaim `
@@ -475,7 +525,7 @@ if ($SelfTest) {
   $selfTestRequiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
 
   $readinessJsonPath = Join-Path $selfTestRoot "readiness.json"
-  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -Format Json -OutputPath $readinessJsonPath | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -Format Json -OutputPath $readinessJsonPath
   $readinessJson = Get-Content -LiteralPath $readinessJsonPath -Raw | ConvertFrom-Json
   if ([int]$readinessJson.coverage.coveredCount -ne @($readinessJson.coverage.covered).Count) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve covered coverage rows."
@@ -511,7 +561,7 @@ if ($SelfTest) {
   $matrixMismatchManifest.matrixSha256 = ("0" * 64)
   ($matrixMismatchManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $matrixMismatchManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle support matrix SHA256 does not match" -Action {
-    & $PSCommandPath -BundlePath $matrixMismatchRoot -IncludeServiceOnly -IncludeFallback | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $matrixMismatchRoot -IncludeServiceOnly -IncludeFallback
   }
 
   $dirtySourceRoot = Join-Path $selfTestRoot "dirty-source"
@@ -522,7 +572,7 @@ if ($SelfTest) {
   $dirtySourceManifest.sourceControl.trackedDirty = $true
   ($dirtySourceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $dirtySourceManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle source-control provenance reports tracked dirty files" -Action {
-    & $PSCommandPath -BundlePath $dirtySourceRoot -IncludeServiceOnly -IncludeFallback -RequireCleanSource | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $dirtySourceRoot -IncludeServiceOnly -IncludeFallback -RequireCleanSource
   }
 
   $commitMismatchRoot = Join-Path $selfTestRoot "commit-mismatch"
@@ -537,7 +587,7 @@ if ($SelfTest) {
   }
   ($commitMismatchManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $commitMismatchManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle source-control commit SHA does not match current repository HEAD" -Action {
-    & $PSCommandPath -BundlePath $commitMismatchRoot -IncludeServiceOnly -IncludeFallback -RequireCurrentCommit | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $commitMismatchRoot -IncludeServiceOnly -IncludeFallback -RequireCurrentCommit
   }
 
   $missingCiProvenanceRoot = Join-Path $selfTestRoot "missing-ci-provenance"
@@ -549,7 +599,7 @@ if ($SelfTest) {
   $missingCiProvenanceManifest.ci.provider = ""
   ($missingCiProvenanceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingCiProvenanceManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle CI provenance is required" -Action {
-    & $PSCommandPath -BundlePath $missingCiProvenanceRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $missingCiProvenanceRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance
   }
 
   $completeCiProvenanceRoot = Join-Path $selfTestRoot "complete-ci-provenance"
@@ -566,13 +616,13 @@ if ($SelfTest) {
   $completeCiProvenanceManifest.ci.refName = "main"
   $completeCiProvenanceManifest.ci.sha = $completeCiProvenanceManifest.sourceControl.commitSha
   ($completeCiProvenanceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $completeCiProvenanceManifestPath -Encoding UTF8
-  & $PSCommandPath -BundlePath $completeCiProvenanceRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $completeCiProvenanceRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance
 
   $missingCollectionCiRoot = Join-Path $selfTestRoot "missing-collection-ci-provenance"
   New-Item -ItemType Directory -Force -Path $missingCollectionCiRoot | Out-Null
   Expand-Archive -LiteralPath $BundlePath -DestinationPath $missingCollectionCiRoot -Force
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collection CI provenance is required" -Action {
-    & $PSCommandPath -BundlePath $missingCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $missingCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance
   }
 
   $completeCollectionCiRoot = Join-Path $selfTestRoot "complete-collection-ci-provenance"
@@ -581,14 +631,14 @@ if ($SelfTest) {
   $completeCollectionCiManifestPath = Join-Path $completeCollectionCiRoot "support-evidence-manifest.json"
   $completeCollectionCiManifest = Get-Content -LiteralPath $completeCollectionCiManifestPath -Raw | ConvertFrom-Json
   Set-TestCollectionCiProvenance -BundleRoot $completeCollectionCiRoot -CommitSha $completeCollectionCiManifest.sourceControl.commitSha
-  & $PSCommandPath -BundlePath $completeCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireCollectionSourceCommit -RequireHostEvidenceWorkflowCollection | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $completeCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireCollectionSourceCommit -RequireHostEvidenceWorkflowCollection
 
   $mismatchCollectionCommitRoot = Join-Path $selfTestRoot "mismatch-collection-commit"
   New-Item -ItemType Directory -Force -Path $mismatchCollectionCommitRoot | Out-Null
   Expand-Archive -LiteralPath $BundlePath -DestinationPath $mismatchCollectionCommitRoot -Force
   Set-TestCollectionCiProvenance -BundleRoot $mismatchCollectionCommitRoot -CommitSha ("0" * 40)
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collection CI commit SHA must match bundle source-control commit SHA" -Action {
-    & $PSCommandPath -BundlePath $mismatchCollectionCommitRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireCollectionSourceCommit | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $mismatchCollectionCommitRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireCollectionSourceCommit
   }
 
   $mismatchCollectionWorkflowRoot = Join-Path $selfTestRoot "mismatch-collection-workflow"
@@ -598,7 +648,7 @@ if ($SelfTest) {
   $mismatchCollectionWorkflowManifest = Get-Content -LiteralPath $mismatchCollectionWorkflowManifestPath -Raw | ConvertFrom-Json
   Set-TestCollectionCiProvenance -BundleRoot $mismatchCollectionWorkflowRoot -CommitSha $mismatchCollectionWorkflowManifest.sourceControl.commitSha -WorkflowName "other-workflow"
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collection evidence must come from the host-evidence workflow" -Action {
-    & $PSCommandPath -BundlePath $mismatchCollectionWorkflowRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireHostEvidenceWorkflowCollection | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $mismatchCollectionWorkflowRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireHostEvidenceWorkflowCollection
   }
 
   $missingRuntimeVersionsRoot = Join-Path $selfTestRoot "missing-runtime-versions"
@@ -626,9 +676,9 @@ if ($SelfTest) {
   $missingRuntimeVersionsRow.bytes = (Get-Item -LiteralPath $missingRuntimeVersionsEvidencePath).Length
   ($missingRuntimeVersionsManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $missingRuntimeVersionsManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Runtime version evidence is required" -Action {
-    & $PSCommandPath -BundlePath $missingRuntimeVersionsRoot -IncludeServiceOnly -IncludeFallback -RequireRuntimeVersions | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $missingRuntimeVersionsRoot -IncludeServiceOnly -IncludeFallback -RequireRuntimeVersions
   }
-  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireRuntimeVersions | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireRuntimeVersions
 
   $missingCollectorDigestRoot = Join-Path $selfTestRoot "missing-collector-digest"
   New-Item -ItemType Directory -Force -Path $missingCollectorDigestRoot | Out-Null
@@ -654,9 +704,9 @@ if ($SelfTest) {
   $missingCollectorDigestRow.bytes = (Get-Item -LiteralPath $missingCollectorDigestEvidencePath).Length
   ($missingCollectorDigestManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $missingCollectorDigestManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collector SHA256 evidence is required" -Action {
-    & $PSCommandPath -BundlePath $missingCollectorDigestRoot -IncludeServiceOnly -IncludeFallback -RequireCollectorSha256 | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $missingCollectorDigestRoot -IncludeServiceOnly -IncludeFallback -RequireCollectorSha256
   }
-  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireCollectorSha256 | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireCollectorSha256
 
   $missingMinimumUptimeRoot = Join-Path $selfTestRoot "missing-minimum-uptime"
   New-Item -ItemType Directory -Force -Path $missingMinimumUptimeRoot | Out-Null
@@ -681,12 +731,12 @@ if ($SelfTest) {
   $missingMinimumUptimeRow.bytes = (Get-Item -LiteralPath $missingMinimumUptimeEvidencePath).Length
   ($missingMinimumUptimeManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $missingMinimumUptimeManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "does not prove required minimum uptime evidence" -Action {
-    & $PSCommandPath -BundlePath $missingMinimumUptimeRoot -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $missingMinimumUptimeRoot -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours
   }
-  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours | Out-Null
-  & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly | Out-Null
+  Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireMinimumUptimeHours $selfTestRequiredMinimumUptimeHours
+  Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly
   Invoke-ExpectReadinessFailure -ExpectedMessage "Production-recommended Node runtime targets are required" -Action {
-    & $PSCommandPath -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireProductionRecommendedRuntime | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireProductionRecommendedRuntime
   }
 
   $strictMissingCiRoot = Join-Path $selfTestRoot "strict-missing-ci"
@@ -705,7 +755,7 @@ if ($SelfTest) {
   $strictMissingCiManifest.ci.sha = ""
   ($strictMissingCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $strictMissingCiManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle CI provenance is required" -Action {
-    & $PSCommandPath -BundlePath $strictMissingCiRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease | Out-Null
+    Invoke-SelfTestReadiness -BundlePath $strictMissingCiRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease
   }
 
   $strictCompleteRoot = Join-Path $selfTestRoot "strict-complete"
@@ -716,7 +766,15 @@ if ($SelfTest) {
   $strictCompleteManifest = Get-Content -LiteralPath $strictCompleteManifestPath -Raw | ConvertFrom-Json
   Set-TestCollectionCiProvenance -BundleRoot $strictCompleteRoot -CommitSha $strictCompleteManifest.sourceControl.commitSha
   Remove-TestCollectionCiProvenanceFromLocalOnlyRows -BundleRoot $strictCompleteRoot
-  & $PSCommandPath -BundlePath $strictCompleteRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease | Out-Null
+  & $PSCommandPath `
+    -MatrixPath $MatrixPath `
+    -TargetId $selfTestTargetIds `
+    -BundlePath $strictCompleteRoot `
+    -IncludeServiceOnly `
+    -IncludeFallback `
+    -StrictCiRelease | Out-Null
+  Write-Host "Release support readiness self-test OK"
+  return
 }
 
 if ([string]::IsNullOrWhiteSpace($BundlePath)) {

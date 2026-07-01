@@ -18,7 +18,7 @@ node_deploy_package_path_windows: ""
 node_deploy_package_path_linux: ""
 # Leave empty to use the mode-aware default:
 # standalone -> server.js, .next/BUILD_ID, .next/static
-# next-start -> package.json, .next/BUILD_ID, .next, node_modules/next
+# next-start -> package.json, .next/BUILD_ID, .next, node_modules/next/dist/bin/next
 # react/reactjs -> server.js, <node_deploy_react_document_root>/index.html
 node_deploy_package_expected_files: []
 node_deploy_package_strip_single_top_level_directory: true

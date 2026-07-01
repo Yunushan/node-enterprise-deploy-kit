@@ -57,6 +57,15 @@ function Test-SafeRelativePath([string]$Path) {
     }
     return $true
 }
+function Get-NormalizedPathForCompare([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    try {
+        return ([System.IO.Path]::GetFullPath($expanded)).TrimEnd([char[]]@('\', '/')).Replace("\", "/").ToLowerInvariant()
+    } catch {
+        return $expanded.TrimEnd([char[]]@('\', '/')).Replace("\", "/").ToLowerInvariant()
+    }
+}
 function Split-ArgumentTokens([string]$Arguments) {
     if ([string]::IsNullOrWhiteSpace($Arguments)) { return @() }
     return @($Arguments -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -246,12 +255,12 @@ if ($modeNormalized -eq "standalone") {
         if ([string]::IsNullOrWhiteSpace($nextStartCommandPath)) {
             Add-Error "StartCommand must be a safe relative file path for Next.js next-start validation."
         } else {
-            $normalizedStartCommand = ($nextStartCommandPath -replace "\\", "/").ToLowerInvariant()
+            $expectedNextStartCommandPath = Join-Path $AppDirectory "node_modules\next\dist\bin\next"
             if (-not (Test-Path -LiteralPath $nextStartCommandPath -PathType Leaf)) {
                 Add-Error "Next.js next-start StartCommand file was not found: $nextStartCommandPath"
             }
-            if ($normalizedStartCommand -notmatch '/node_modules/next/') {
-                Add-Error "Next.js next-start StartCommand should point to the Next CLI under node_modules/next, for example node_modules/next/dist/bin/next."
+            if ((Get-NormalizedPathForCompare $nextStartCommandPath) -ine (Get-NormalizedPathForCompare $expectedNextStartCommandPath)) {
+                Add-Error "Next.js next-start StartCommand must point to node_modules/next/dist/bin/next under AppDirectory."
             }
         }
     }

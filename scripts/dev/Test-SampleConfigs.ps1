@@ -113,8 +113,17 @@ function Assert-BoolString {
 }
 
 function Test-WindowsExampleConfig {
-  Write-Step "Windows example config"
-  $path = Join-Path $RepoRoot "config/windows/app.config.example.json"
+  param(
+    [string]$RelativePath = "config/windows/app.config.example.json",
+    [string]$Label = "Windows example config",
+    [string]$ExpectedNextjsMode = "",
+    [string]$ExpectedStartCommand = "",
+    [string]$ExpectedNodeArguments = ""
+  )
+
+  Write-Step $Label
+  $path = Join-Path $RepoRoot $RelativePath
+  $relativePathForMessage = Get-RelativePath $path
   $config = Get-Content -Path $path -Raw | ConvertFrom-Json
   $values = ConvertTo-StringMap $config
 
@@ -153,17 +162,17 @@ function Test-WindowsExampleConfig {
     "IisWebSocketSupport",
     "IisProxyTimeoutSeconds",
     "ServiceAccount"
-  ) "config/windows/app.config.example.json"
+  ) $relativePathForMessage
   if (-not $config.PSObject.Properties["ServiceAccountPassword"]) {
-    throw "config/windows/app.config.example.json is missing ServiceAccountPassword."
+    throw "$relativePathForMessage is missing ServiceAccountPassword."
   }
   foreach ($name in @("PackagePath", "PackageExpectedFiles", "PackageStripSingleTopLevelDirectory")) {
     if (-not $config.PSObject.Properties[$name]) {
-      throw "config/windows/app.config.example.json is missing $name."
+      throw "$relativePathForMessage is missing $name."
     }
   }
   if (-not $config.PSObject.Properties["WinSWDownloadSha256"]) {
-    throw "config/windows/app.config.example.json is missing WinSWDownloadSha256."
+    throw "$relativePathForMessage is missing WinSWDownloadSha256."
   }
 
   Assert-Port ([string]$config.Port) "Windows Port"
@@ -243,9 +252,55 @@ function Test-WindowsExampleConfig {
       throw "Windows Environment.$name must match BindAddress in the example config."
     }
   }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedNextjsMode) -and [string]$config.NextjsDeploymentMode -ne $ExpectedNextjsMode) {
+    throw "$relativePathForMessage NextjsDeploymentMode must be $ExpectedNextjsMode."
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedStartCommand) -and [string]$config.StartCommand -ne $ExpectedStartCommand) {
+    throw "$relativePathForMessage StartCommand must be $ExpectedStartCommand."
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedNodeArguments) -and [string]$config.NodeArguments -ne $ExpectedNodeArguments) {
+    throw "$relativePathForMessage NodeArguments must be $ExpectedNodeArguments."
+  }
+  $packageExpectedFiles = @($config.PackageExpectedFiles | ForEach-Object { [string]$_ })
+  if ([string]$config.NextjsDeploymentMode -eq "standalone") {
+    foreach ($expected in @("server.js", ".next/BUILD_ID", ".next/static")) {
+      if ($packageExpectedFiles -notcontains $expected) {
+        throw "$relativePathForMessage standalone PackageExpectedFiles is missing $expected."
+      }
+    }
+  } elseif ([string]$config.NextjsDeploymentMode -eq "next-start") {
+    foreach ($expected in @("package.json", ".next", ".next/BUILD_ID", "node_modules/next/dist/bin/next")) {
+      if ($packageExpectedFiles -notcontains $expected) {
+        throw "$relativePathForMessage next-start PackageExpectedFiles is missing $expected."
+      }
+    }
+    if (([string]$config.StartCommand).Replace("\", "/") -ne "node_modules/next/dist/bin/next") {
+      throw "$relativePathForMessage next-start StartCommand must point to node_modules/next/dist/bin/next."
+    }
+    if ([string]$config.NodeArguments -ne "start -H $($config.BindAddress)") {
+      throw "$relativePathForMessage next-start NodeArguments must be 'start -H $($config.BindAddress)'."
+    }
+  }
 
-  Write-Host "Windows example config OK"
+  Write-Host "$Label OK"
   return $config
+}
+
+function Test-WindowsExampleConfigs {
+  $windowsConfig = Test-WindowsExampleConfig `
+    -RelativePath "config/windows/app.config.example.json" `
+    -Label "Windows example config" `
+    -ExpectedNextjsMode "standalone" `
+    -ExpectedStartCommand "server.js"
+
+  Test-WindowsExampleConfig `
+    -RelativePath "config/windows/next-start.app.config.example.json" `
+    -Label "Windows next-start example config" `
+    -ExpectedNextjsMode "next-start" `
+    -ExpectedStartCommand "node_modules\next\dist\bin\next" `
+    -ExpectedNodeArguments "start -H 127.0.0.1" | Out-Null
+
+  return $windowsConfig
 }
 
 function Test-WindowsStaticIisExampleConfig {
@@ -341,8 +396,17 @@ function Test-WindowsStaticIisExampleConfig {
 }
 
 function Test-LinuxExampleConfig {
-  Write-Step "Linux example env"
-  $path = Join-Path $RepoRoot "config/linux/app.env.example"
+  param(
+    [string]$RelativePath = "config/linux/app.env.example",
+    [string]$Label = "Linux example env",
+    [string]$ExpectedServiceManager = "",
+    [string]$ExpectedHealthcheckStatePrefix = "",
+    [string]$ExpectedNodeBin = ""
+  )
+
+  Write-Step $Label
+  $path = Join-Path $RepoRoot $RelativePath
+  $relativePathForMessage = Get-RelativePath $path
   $env = Read-EnvExample $path
 
   Assert-RequiredValue $env @(
@@ -381,7 +445,7 @@ function Test-LinuxExampleConfig {
     "FORWARDED_PORT",
     "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE",
     "HEALTHCHECK_STATE_DIR"
-  ) "config/linux/app.env.example"
+  ) $relativePathForMessage
 
   Assert-Port $env.APP_PORT "Linux APP_PORT"
   Assert-Port $env.PUBLIC_PORT "Linux PUBLIC_PORT"
@@ -391,7 +455,7 @@ function Test-LinuxExampleConfig {
     Assert-IntegerAtLeast $env[$name] $name
   }
   if (-not $env.ContainsKey("PACKAGE_PATH")) {
-    throw "config/linux/app.env.example is missing PACKAGE_PATH."
+    throw "$relativePathForMessage is missing PACKAGE_PATH."
   }
   foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "NEXTJS_REQUIRE_STATIC_ASSETS", "NEXTJS_REQUIRE_PUBLIC_DIR", "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY", "NEXTJS_REQUIRE_DEPLOYMENT_ID", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
@@ -446,9 +510,71 @@ function Test-LinuxExampleConfig {
   if ($env.TLS_ENABLED -ne "true") {
     throw "Linux TLS_ENABLED should default to true."
   }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedServiceManager) -and $env.SERVICE_MANAGER -ne $ExpectedServiceManager) {
+    throw "$relativePathForMessage SERVICE_MANAGER must be $ExpectedServiceManager."
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedHealthcheckStatePrefix) -and -not $env.HEALTHCHECK_STATE_DIR.StartsWith($ExpectedHealthcheckStatePrefix)) {
+    throw "$relativePathForMessage HEALTHCHECK_STATE_DIR should start with $ExpectedHealthcheckStatePrefix."
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedNodeBin) -and $env.NODE_BIN -ne $ExpectedNodeBin) {
+    throw "$relativePathForMessage NODE_BIN should be $ExpectedNodeBin."
+  }
+  $packageExpectedFiles = @([string]$env.PACKAGE_EXPECTED_FILES -split '\s+' | Where-Object { $_ })
+  if ($env.NEXTJS_DEPLOYMENT_MODE -eq "standalone") {
+    foreach ($expected in @("server.js", ".next/BUILD_ID", ".next/static")) {
+      if ($packageExpectedFiles -notcontains $expected) {
+        throw "$relativePathForMessage standalone PACKAGE_EXPECTED_FILES is missing $expected."
+      }
+    }
+    if ($env.START_SCRIPT -ne "server.js") {
+      throw "$relativePathForMessage standalone START_SCRIPT must be server.js."
+    }
+  } elseif ($env.NEXTJS_DEPLOYMENT_MODE -eq "next-start") {
+    foreach ($expected in @("package.json", ".next", ".next/BUILD_ID", "node_modules/next/dist/bin/next")) {
+      if ($packageExpectedFiles -notcontains $expected) {
+        throw "$relativePathForMessage next-start PACKAGE_EXPECTED_FILES is missing $expected."
+      }
+    }
+    if ($env.START_SCRIPT -ne "node_modules/next/dist/bin/next") {
+      throw "$relativePathForMessage next-start START_SCRIPT must point to node_modules/next/dist/bin/next."
+    }
+    if ($env.NODE_ARGUMENTS -ne "start -H $($env.BIND_ADDRESS)") {
+      throw "$relativePathForMessage next-start NODE_ARGUMENTS must be 'start -H $($env.BIND_ADDRESS)'."
+    }
+  }
 
-  Write-Host "Linux example env OK"
+  Write-Host "$Label OK"
   return $env
+}
+
+function Test-UnixExampleConfigs {
+  $linuxEnv = Test-LinuxExampleConfig `
+    -RelativePath "config/linux/app.env.example" `
+    -Label "Linux example env" `
+    -ExpectedServiceManager "systemd" `
+    -ExpectedHealthcheckStatePrefix "/var/lib/"
+
+  Test-LinuxExampleConfig `
+    -RelativePath "config/linux/app.env.next-start.example" `
+    -Label "Linux next-start example env" `
+    -ExpectedServiceManager "systemd" `
+    -ExpectedHealthcheckStatePrefix "/var/lib/" | Out-Null
+
+  Test-LinuxExampleConfig `
+    -RelativePath "config/linux/app.env.macos.example" `
+    -Label "macOS example env" `
+    -ExpectedServiceManager "launchd" `
+    -ExpectedHealthcheckStatePrefix "/usr/local/var/lib/" `
+    -ExpectedNodeBin "/opt/homebrew/bin/node" | Out-Null
+
+  Test-LinuxExampleConfig `
+    -RelativePath "config/linux/app.env.bsd.example" `
+    -Label "BSD example env" `
+    -ExpectedServiceManager "bsdrc" `
+    -ExpectedHealthcheckStatePrefix "/var/db/" `
+    -ExpectedNodeBin "/usr/local/bin/node" | Out-Null
+
+  return $linuxEnv
 }
 
 function Test-AnsibleDefaults {
@@ -555,7 +681,7 @@ function Test-AnsibleDefaults {
         "default_package_expected_files",
         "react_package_expected_files",
         "react_document_root",
-        "node_modules/next",
+        "node_modules/next/dist/bin/next",
         "configured_package_expected_files",
         "package_expected_files",
         "default_node_arguments",
@@ -836,9 +962,9 @@ function Test-AnsibleSyntaxIfAvailable {
   }
 }
 
-$windowsConfig = Test-WindowsExampleConfig
+$windowsConfig = Test-WindowsExampleConfigs
 Test-WindowsStaticIisExampleConfig
-$linuxEnv = Test-LinuxExampleConfig
+$linuxEnv = Test-UnixExampleConfigs
 Test-AnsibleDefaults
 Test-JinjaDelimiters
 Test-RenderedTemplates -WindowsConfig $windowsConfig -LinuxEnv $linuxEnv

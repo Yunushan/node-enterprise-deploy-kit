@@ -110,6 +110,15 @@ function Test-SafeRelativePath([string]$Path) {
     }
     return $true
 }
+function Get-NormalizedPathForCompare([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    try {
+        return ([System.IO.Path]::GetFullPath($expanded)).TrimEnd([char[]]@('\', '/')).Replace("\", "/").ToLowerInvariant()
+    } catch {
+        return $expanded.TrimEnd([char[]]@('\', '/')).Replace("\", "/").ToLowerInvariant()
+    }
+}
 function Split-ArgumentTokens([string]$Arguments) {
     if ([string]::IsNullOrWhiteSpace($Arguments)) { return @() }
     return @($Arguments -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -189,6 +198,7 @@ function Add-NextJsRuntimeLayout {
     $hostnameArgument = Get-HostnameArgumentValue $argumentTokens
     $nextStartCommandPath = ""
     $nextStartCommandUnderNextPackage = $true
+    $nextStartCommandIsExpectedCli = $true
     if ($mode -eq "next-start") {
         if (-not [string]::IsNullOrWhiteSpace($startCommand) -and -not $startHasArguments) {
             if ([System.IO.Path]::IsPathRooted($startCommand)) {
@@ -198,6 +208,8 @@ function Add-NextJsRuntimeLayout {
             }
         }
         $nextStartCommandUnderNextPackage = (-not [string]::IsNullOrWhiteSpace($nextStartCommandPath) -and (($nextStartCommandPath -replace "\\", "/").ToLowerInvariant() -match '/node_modules/next/'))
+        $expectedNextStartCommandPath = Join-Path $appDirectory "node_modules\next\dist\bin\next"
+        $nextStartCommandIsExpectedCli = (-not [string]::IsNullOrWhiteSpace($nextStartCommandPath) -and ((Get-NormalizedPathForCompare $nextStartCommandPath) -ieq (Get-NormalizedPathForCompare $expectedNextStartCommandPath)))
     }
 
     [pscustomobject]@{
@@ -209,6 +221,7 @@ function Add-NextJsRuntimeLayout {
         StartCommandHasArguments = $startHasArguments
         NextStartCommandPath = $nextStartCommandPath
         NextStartCommandUnderNextPackage = $nextStartCommandUnderNextPackage
+        NextStartCommandIsExpectedCli = $nextStartCommandIsExpectedCli
         NodeArguments = $nodeArguments
         BindAddress = $bindAddress
         NextStartCommandStartsWithStart = ($mode -ne "next-start" -or ($argumentTokens.Count -gt 0 -and $argumentTokens[0] -eq "start"))

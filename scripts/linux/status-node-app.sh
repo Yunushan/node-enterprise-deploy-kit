@@ -115,6 +115,7 @@ SERVICE_ENABLED_STATUS="unknown"
 NEXTJS_LAYOUT_APPLICABLE="false"
 NEXTJS_LAYOUT_STATUS="not-applicable"
 NEXTJS_RUNTIME_ROOT=""
+NEXT_START_SCRIPT_IS_EXPECTED_CLI=""
 DEFAULT_NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE="${NEXTJS_MINIMUM_NODE_VERSION:-$DEFAULT_NEXTJS_MINIMUM_NODE_VERSION}"
 NEXTJS_NODE_VERSION_SATISFIED="false"
@@ -1459,6 +1460,11 @@ write_json_output() {
       printf '    "nodeVersionSatisfied": null,\n'
     fi
     printf '    "nextVersion": "%s",\n' "$(json_escape "$NEXT_PACKAGE_VERSION")"
+    if [[ "$NEXT_START_SCRIPT_IS_EXPECTED_CLI" == "true" || "$NEXT_START_SCRIPT_IS_EXPECTED_CLI" == "false" ]]; then
+      printf '    "nextStartScriptIsExpectedCli": %s,\n' "$NEXT_START_SCRIPT_IS_EXPECTED_CLI"
+    else
+      printf '    "nextStartScriptIsExpectedCli": null,\n'
+    fi
     printf '    "runtimeRootName": "%s"\n' "$(json_escape "$(safe_path_name "${NEXTJS_RUNTIME_ROOT:-${APP_DIR:-}}")")"
     printf '  },\n'
     printf '  "reverseProxy": {\n'
@@ -1532,7 +1538,7 @@ write_json_output() {
 }
 
 run_nextjs_layout_check() {
-  local output exit_code runtime_root minimum_node_version node_version_satisfied
+  local output exit_code runtime_root minimum_node_version node_version_satisfied next_start_script_is_expected_cli
   NODE_RUNTIME_VERSION="$(node_runtime_version)"
   NEXT_PACKAGE_VERSION="$(next_package_version)"
   case "$APP_FRAMEWORK_NORMALIZED" in
@@ -1556,6 +1562,7 @@ run_nextjs_layout_check() {
   runtime_root="$(printf '%s\n' "$output" | awk -v key="RuntimeRoot" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   minimum_node_version="$(printf '%s\n' "$output" | awk -v key="MinimumNodeVersion" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   node_version_satisfied="$(printf '%s\n' "$output" | awk -v key="NodeVersionSatisfied" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
+  next_start_script_is_expected_cli="$(printf '%s\n' "$output" | awk -v key="NextStartScriptIsExpectedCli" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   if [[ -n "$runtime_root" ]]; then
     NEXTJS_RUNTIME_ROOT="$runtime_root"
   else
@@ -1566,6 +1573,9 @@ run_nextjs_layout_check() {
   fi
   case "$node_version_satisfied" in
     true|false) NEXTJS_NODE_VERSION_SATISFIED="$node_version_satisfied" ;;
+  esac
+  case "$next_start_script_is_expected_cli" in
+    true|false) NEXT_START_SCRIPT_IS_EXPECTED_CLI="$next_start_script_is_expected_cli" ;;
   esac
   if [[ "$exit_code" -ne 0 ]]; then
     NEXTJS_LAYOUT_STATUS="failed"
