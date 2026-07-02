@@ -375,6 +375,7 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["freebsd", "bsd"],
+      "localCommandOnly": true,
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
         "minimumNodeVersion": "20.9.0",
@@ -393,6 +394,7 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["openbsd", "bsd"],
+      "localCommandOnly": true,
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
         "minimumNodeVersion": "20.9.0",
@@ -411,6 +413,7 @@
       "nextjsModes": ["standalone", "next-start"],
       "staticVerification": ["linux-family-static-checks"],
       "evidenceTargets": ["netbsd", "bsd"],
+      "localCommandOnly": true,
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
         "minimumNodeVersion": "20.9.0",

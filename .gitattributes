@@ -33,4 +33,6 @@ build/ export-ignore
 coverage/ export-ignore
 logs/ export-ignore
 evidence/ export-ignore
+evidence-downloads/ export-ignore
+release-evidence/ export-ignore
 .tmp/ export-ignore

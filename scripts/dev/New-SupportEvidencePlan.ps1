@@ -155,7 +155,8 @@ function Get-ValidationCommand {
     [string]$ServiceManager,
     [string]$ReverseProxy,
     [int]$RequiredMinimumUptimeHours,
-    [bool]$FailOnWarnings
+    [bool]$FailOnWarnings,
+    [bool]$WorkflowDispatchSupported
   )
 
   $windowsPath = $EvidenceFile.Replace("/", "\")
@@ -183,6 +184,10 @@ function Get-ValidationCommand {
     )) {
     $args.Add($arg) | Out-Null
   }
+  if ($WorkflowDispatchSupported) {
+    $args.Add("-RequireCiCollection") | Out-Null
+    $args.Add("-RequireHostEvidenceWorkflowCollection") | Out-Null
+  }
   if ($ReverseProxy -eq "none") {
     $args.Add("-AllowReverseProxyNone") | Out-Null
   }
@@ -201,6 +206,16 @@ function Get-WorkflowPlatform {
 function Test-WorkflowDispatchSupported {
   param([string]$Category)
   return ($Category -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Test-TargetWorkflowDispatchSupported {
+  param([object]$Target)
+
+  $localCommandOnlyProperty = $Target.PSObject.Properties["localCommandOnly"]
+  if ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -eq $true) {
+    return $false
+  }
+  return (Test-WorkflowDispatchSupported -Category ([string]$Target.category))
 }
 
 function Get-WorkflowConfigPath {
@@ -306,7 +321,8 @@ function New-PlanEntry {
   $nodeRuntimeProductionRecommendedProperty = if ($nodeRuntimeSupport) { $nodeRuntimeSupport.PSObject.Properties["productionRecommended"] } else { $null }
   $nodeRuntimeProductionRecommended = if ($nodeRuntimeProductionRecommendedProperty -and $nodeRuntimeProductionRecommendedProperty.Value -is [bool]) { [bool]$nodeRuntimeProductionRecommendedProperty.Value } else { $null }
   $nodeRuntimeRequirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
-  $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $category
+  $workflowDispatchSupported = Test-TargetWorkflowDispatchSupported -Target $Target
+  $localCommandOnly = -not [bool]$workflowDispatchSupported
   $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
   $workflowDispatchCommand = ""
@@ -344,8 +360,9 @@ function New-PlanEntry {
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
-    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported
     workflowDispatchSupported = $workflowDispatchSupported
+    localCommandOnly = $localCommandOnly
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
     workflowDispatchCommand = $workflowDispatchCommand
@@ -383,7 +400,7 @@ function ConvertTo-PlanMarkdown {
   $lines.Add("| Production recommended only | $($Plan.filters.productionRecommendedOnly) |") | Out-Null
   $lines.Add("| Fail on warnings during collection | $($Plan.filters.failOnWarnings) |") | Out-Null
   $lines.Add("") | Out-Null
-  $lines.Add('Strict entries are the combinations enforced by `Test-SupportClaim.ps1 -RequireBothNextJsModes -RequireDeclaredServiceManagers -RequireDeclaredReverseProxies`.') | Out-Null
+  $lines.Add('Strict entries are the combinations enforced by `Test-SupportClaim.ps1 -RequireBothNextJsModes -RequireDeclaredServiceManagers -RequireDeclaredReverseProxies`, with optional collector, uptime, and workflow-provenance gates for final release signoff.') | Out-Null
   $lines.Add('Service-only entries cover `ReverseProxy=none` and are tracked separately because there is no concrete reverse-proxy implementation to probe.') | Out-Null
   $lines.Add("Fallback entries document compatibility paths such as PM2; they do not satisfy strict service-manager claims.") | Out-Null
   $lines.Add("") | Out-Null
@@ -397,8 +414,8 @@ function ConvertTo-PlanMarkdown {
       $lines.Add("") | Out-Null
       continue
     }
-    $lines.Add("| Target | Mode | Service | Proxy | Node runtime | Evidence file | Collection command | Validation command | Workflow route |") | Out-Null
-    $lines.Add("|---|---|---|---|---|---|---|---|---|") | Out-Null
+    $lines.Add("| Target | Mode | Service | Proxy | Node runtime | Evidence file | Collection route | Collection command | Validation command | Workflow route |") | Out-Null
+    $lines.Add("|---|---|---|---|---|---|---|---|---|---|") | Out-Null
     foreach ($item in $items) {
       $targetCell = ([string]$item.targetId).Replace("|", "\|")
       $modeCell = ([string]$item.nextJsMode).Replace("|", "\|")
@@ -409,8 +426,9 @@ function ConvertTo-PlanMarkdown {
       $runtimeCell = ("{0}; {1}" -f [string]$item.nodeRuntimeSupportTier, $runtimeSuffix).Replace("|", "\|")
       $commandCell = ([string]$item.collectionCommand).Replace("|", "\|")
       $validationCell = ([string]$item.validationCommand).Replace("|", "\|")
+      $routeCell = if ($item.localCommandOnly -eq $true) { "local command only" } else { "host-evidence workflow" }
       $workflowCell = ([string]$item.workflowInputSummary).Replace("|", "\|")
-      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | `{6}` | `{7}` | `{8}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $runtimeCell, $fileCell, $commandCell, $validationCell, $workflowCell)) | Out-Null
+      $lines.Add(('| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` | {6} | `{7}` | `{8}` | `{9}` |' -f $targetCell, $modeCell, $serviceCell, $proxyCell, $runtimeCell, $fileCell, $routeCell, $commandCell, $validationCell, $workflowCell)) | Out-Null
     }
     $lines.Add("") | Out-Null
   }
@@ -738,8 +756,16 @@ if ($SelfTest) {
   $allPlanEntries = @($parsed.strictEvidence) + @($parsed.serviceOnlyEvidence) + @($parsed.fallbackEvidence)
   foreach ($entry in $allPlanEntries) {
     $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
-    if (-not $entry.PSObject.Properties["validationCommand"] -or [string]::IsNullOrWhiteSpace([string]$entry.validationCommand)) {
+    foreach ($requiredPlanProperty in @("validationCommand", "workflowDispatchSupported", "localCommandOnly")) {
+      if (-not $entry.PSObject.Properties[$requiredPlanProperty]) {
+        throw "Support evidence plan self-test failed: $requiredPlanProperty missing from $context."
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$entry.validationCommand)) {
       throw "Support evidence plan self-test failed: validationCommand missing from $context."
+    }
+    if (($entry.workflowDispatchSupported -eq $true) -eq ($entry.localCommandOnly -eq $true)) {
+      throw "Support evidence plan self-test failed: workflowDispatchSupported and localCommandOnly disagree for $context."
     }
   }
   $workflowSupportedEntries = @($allPlanEntries | Where-Object { $_.workflowDispatchSupported -eq $true })
@@ -905,6 +931,9 @@ if ($SelfTest) {
       if ($entry.workflowDispatchSupported -ne $true) {
         throw "Support evidence plan self-test failed: $context should support host-evidence workflow dispatch."
       }
+      if (-not ([string]$entry.validationCommand).Contains("-RequireHostEvidenceWorkflowCollection")) {
+        throw "Support evidence plan self-test failed: $context validation command is missing workflow provenance enforcement."
+      }
       if ($null -eq $entry.workflowInputs) {
         throw "Support evidence plan self-test failed: $context is missing workflow inputs."
       }
@@ -932,11 +961,17 @@ if ($SelfTest) {
       if ($entry.workflowDispatchSupported -eq $true) {
         throw "Support evidence plan self-test failed: $context should not support host-evidence workflow dispatch."
       }
+      if ($entry.localCommandOnly -ne $true) {
+        throw "Support evidence plan self-test failed: $context should be marked localCommandOnly."
+      }
       if ($null -ne $entry.workflowInputs) {
         throw "Support evidence plan self-test failed: $context should not include workflow inputs."
       }
       if (-not [string]::IsNullOrWhiteSpace([string]$entry.workflowDispatchCommand)) {
         throw "Support evidence plan self-test failed: $context should not include a workflow dispatch command."
+      }
+      if (([string]$entry.validationCommand).Contains("-RequireHostEvidenceWorkflowCollection")) {
+        throw "Support evidence plan self-test failed: $context local-command-only validation command should not require workflow provenance."
       }
       if (-not ([string]$entry.workflowInputSummary).Contains("target category 'bsd'")) {
         throw "Support evidence plan self-test failed: $context is missing BSD local-command-only workflow guidance."

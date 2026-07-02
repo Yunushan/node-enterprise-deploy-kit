@@ -4,8 +4,9 @@ Repository checks prove that scripts, templates, and examples are internally
 consistent. Real deployment support is stronger only after the same release has
 safe status evidence from the target host families you claim to support.
 
-Do not commit real evidence files. Keep them in a local `evidence/` directory
-or in your private release/change record.
+Do not commit real evidence files. Keep them in local generated directories
+such as `evidence/`, `evidence-downloads/`, and `release-evidence/`, or in
+your private release/change record.
 
 ## Collect Evidence
 
@@ -111,6 +112,11 @@ The workflow is `workflow_dispatch` only. It is for release evidence collection
 from real hosts, not for replacing the normal push/PR CI checks. BSD evidence
 should still be collected with the local command above unless you operate a
 compatible self-hosted runner environment.
+Workflow-collected evidence is validated with `-RequireCiCollection` and
+`-RequireHostEvidenceWorkflowCollection`, so the safe `evidenceCollection.ci`
+metadata must prove a controlled `host-evidence` / `workflow_dispatch` run.
+Generated validation commands include those switches for workflow-capable
+targets and omit them for local-command-only rows.
 
 ## Validate Evidence
 
@@ -226,13 +232,19 @@ Next.js rows, still proves the required runtime platform floor.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
+`evidence/`, `evidence-downloads/`, and `release-evidence/` are generated,
+git-ignored local output. They may contain machine-specific paths from the
+collector host, so do not commit them. Publish final bundles as CI artifacts or
+release attachments instead of source files.
+
 For a single operator command after artifacts are downloaded, use the combined
 release workflow. It imports optional artifacts, writes coverage reports, fails
 when declared evidence is still missing, creates and verifies the evidence
 bundle, and writes release readiness JSON. The generated
 `release-readiness.json` preserves the covered and missing coverage rows with
-their local collection, workflow dispatch, and single-row validation commands
-so the final handoff can reproduce every claimed support tuple:
+their local collection, local-command-only flag, workflow dispatch, and
+single-row validation commands so the final handoff can reproduce every claimed
+support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -245,7 +257,8 @@ so the final handoff can reproduce every claimed support tuple:
 ```
 
 Use `-StrictCiRelease` only for final CI-controlled release signoff from a
-clean committed revision.
+clean committed revision. Strict release signoff refuses `-AllowWarnings`;
+final support evidence must be warning-clean.
 
 Create a private evidence bundle for the release record after validation:
 
@@ -258,6 +271,9 @@ Create a private evidence bundle for the release record after validation:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72 `
+  -RequireHostEvidenceWorkflowCollection `
   -RequireCoverageComplete `
   -IncludeServiceOnly `
   -IncludeFallback
@@ -281,6 +297,9 @@ and source-control commit SHA are present, they must match. Each manifest row
 also records safe collection CI provenance when it exists in the source evidence
 file, so workflow-collected evidence keeps its collection run identity after
 bundling.
+Bundle switches that require target-aware support-claim logic, such as
+`-RequireHostEvidenceWorkflowCollection`, must be used with
+`-ValidateSupportClaim`.
 
 Verify a saved bundle before using it in a support review:
 
@@ -300,6 +319,11 @@ support claim:
   -StrictCiRelease
 ```
 
+Readiness output includes `supportScope.kind`, `supportScope.proofLevel`,
+selected target counts, workflow-capable evidence counts, and local-command-only
+evidence counts. Treat `Ready: True` as valid only for that stated scope: a
+filtered or production-runtime-only result is not a full-matrix release claim.
+
 The verifier recalculates every evidence file hash, checks manifest byte sizes,
 proves manifest fields still match the JSON content, verifies live collector
 provenance, requires explicit non-synthetic/non-mock/non-sample evidence
@@ -310,7 +334,7 @@ metadata, even when the manifest hashes match. It also validates CI provenance
 when present, including CI/source commit consistency. The release readiness gate
 also rejects bundles whose recorded support matrix SHA256 does not match the
 current support matrix. Use `-StrictCiRelease` for CI-controlled final release
-signoff.
+signoff; it cannot be combined with `-AllowWarnings`.
 It enables the clean-source, current-commit, bundle CI, collection CI,
 collection source commit, controlled `host-evidence` workflow for
 workflow-capable rows, and runtime version plus collector SHA256 evidence
@@ -343,8 +367,14 @@ required evidence aliases from the support matrix:
   -MaxEvidenceAgeDays 30 `
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
-  -RequireDeclaredReverseProxies
+  -RequireDeclaredReverseProxies `
+  -RequireHostEvidenceWorkflowCollection
 ```
+
+`-RequireHostEvidenceWorkflowCollection` is target-aware in the support-claim
+gate: workflow-capable Windows, Linux, and macOS evidence must come from the
+controlled `host-evidence` workflow, while local-only BSD evidence remains
+valid when collected manually.
 
 For a stricter support claim across the expanded matrix:
 
@@ -419,6 +449,12 @@ Evidence is acceptable when:
   target-local deployment ID, the Next.js `.next/BUILD_ID`, or the package
   SHA256 from `.node-enterprise-deploy.json`, so the evidence identifies the
   release/build that is actually running.
+- `-RequireCollectorSha256` proves which status collector produced the
+  evidence.
+- `-RequireCiCollection` proves the status output includes safe CI collection
+  provenance.
+- `-RequireHostEvidenceWorkflowCollection` proves workflow-capable evidence was
+  collected through the controlled `host-evidence` / `workflow_dispatch` path.
 - The evidence is recent enough for the release or support decision.
 
 Evidence is not enough when:

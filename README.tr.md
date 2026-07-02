@@ -88,6 +88,12 @@ Belirli bir işletim sistemi ailesi için destek iddiasında bulunmadan önce
 [Host Verification Evidence](docs/HOST_VERIFICATION.md) rehberindeki akışı
 uygulayın.
 
+Release readiness çıktısındaki `Ready: True` tek başına "tüm matris kanıtlandı"
+anlamına gelmez. `supportScope.kind`, `supportScope.proofLevel`, seçili hedef
+sayısı ve local-command-only evidence sayıları hangi kapsamın kanıtlandığını
+gösterir; filtrelenmiş veya yalnızca üretim-runtime kapsamındaki sonuçlar tam
+matris iddiası değildir.
+
 ## Windows Server Kurulumu
 
 Windows tarafında önerilen model, uygulamayı WinSW tabanlı Windows servisi olarak çalıştırmak ve dış trafiği IIS üzerinden yönlendirmektir. Apache, HAProxy ve Traefik installer scriptleri bu kitte Linux/Unix tarafı içindir; Windows'ta bu proxy'ler kullanılacaksa proxy kurulumu ayrıca yönetilmelidir.

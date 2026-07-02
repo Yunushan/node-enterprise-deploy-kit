@@ -33,7 +33,7 @@ on:
           - standalone
           - next-start
       expected_service_manager:
-        description: Expected service manager, for example winsw, nssm, systemd, systemv, openrc, launchd, or bsdrc
+        description: Expected workflow-capable service manager, for example winsw, nssm, systemd, systemv, openrc, or launchd
         required: true
         type: choice
         options:
@@ -44,7 +44,6 @@ on:
           - systemv
           - openrc
           - launchd
-          - bsdrc
       expected_reverse_proxy:
         description: Expected reverse proxy, for example iis, nginx, apache, haproxy, traefik, or none
         required: true
@@ -282,6 +281,8 @@ jobs:
             "-RequireNextJs",
             "-RequireDeploymentIdentity",
             "-RequireCollectorSha256",
+            "-RequireCiCollection",
+            "-RequireHostEvidenceWorkflowCollection",
             "-RequireMinimumUptimeHours", $env:MINIMUM_UPTIME_HOURS,
             "-MaxEvidenceAgeDays", "1"
           )

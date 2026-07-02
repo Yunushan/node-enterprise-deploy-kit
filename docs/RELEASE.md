@@ -157,12 +157,18 @@ Next.js rows, still proves the required runtime platform floor.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
+`evidence/`, `evidence-downloads/`, and `release-evidence/` are generated,
+git-ignored local output. They may contain machine-specific paths from the
+collector host, so do not commit them. Publish final bundles as CI artifacts or
+release attachments instead of source files.
+
 To run the complete release evidence workflow in one operator command, import
 optional downloaded artifacts, write coverage reports, fail on missing coverage,
 create and verify the bundle, and emit release readiness JSON. The generated
 `release-readiness.json` preserves the covered and missing coverage rows with
-their local collection, workflow dispatch, and single-row validation commands
-so the final handoff can reproduce every claimed support tuple:
+their local collection, local-command-only flag, workflow dispatch, and
+single-row validation commands so the final handoff can reproduce every claimed
+support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -175,7 +181,8 @@ so the final handoff can reproduce every claimed support tuple:
 ```
 
 Use `-StrictCiRelease` only from the clean, committed, CI-controlled final
-signoff path.
+signoff path. Strict release signoff refuses `-AllowWarnings`; final support
+evidence must be warning-clean.
 
 To create a private release evidence bundle:
 
@@ -188,6 +195,9 @@ To create a private release evidence bundle:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72 `
+  -RequireHostEvidenceWorkflowCollection `
   -RequireCoverageComplete `
   -IncludeServiceOnly `
   -IncludeFallback
@@ -206,8 +216,13 @@ when the manifest hashes match. It also rejects saved Next.js evidence that no
 longer proves the required runtime platform floor. Release readiness rejects
 bundles whose recorded
 support matrix SHA256 does not match the current
-`config/support-matrix.example.json`. For final
-CI-controlled release signoff, pass `-StrictCiRelease`. It enables the
+`config/support-matrix.example.json`.
+Bundle switches that require target-aware support-claim logic, such as
+`-RequireHostEvidenceWorkflowCollection`, must be used with
+`-ValidateSupportClaim`.
+For final
+CI-controlled release signoff, pass `-StrictCiRelease`; it cannot be combined
+with `-AllowWarnings`. It enables the
 clean-source, current-commit, bundle CI, collection CI, collection source
 commit, controlled `host-evidence` workflow for workflow-capable rows, and
 runtime version plus collector SHA256 evidence checks, with the
@@ -241,6 +256,11 @@ support claim:
   -StrictCiRelease
 ```
 
+Readiness output includes `supportScope.kind`, `supportScope.proofLevel`,
+selected target counts, workflow-capable evidence counts, and local-command-only
+evidence counts. Treat `Ready: True` as valid only for that stated scope: a
+filtered or production-runtime-only result is not a full-matrix release claim.
+
 For a production-runtime-only release decision, add `-ProductionRecommendedOnly`
 to scope coverage and support-claim checks to matrix rows whose Node runtime is
 production-recommended. Add `-RequireProductionRecommendedRuntime` when the
@@ -254,6 +274,9 @@ workflow uploads safe `status.json` evidence and validates it with
 `Test-HostEvidence.ps1` on a clean Ubuntu runner. Set the expected target,
 Next.js mode, service manager, and reverse proxy inputs from the support
 evidence plan or generated dispatch commands; mismatched evidence is rejected.
+That workflow validation requires `-RequireCiCollection` and
+`-RequireHostEvidenceWorkflowCollection`, so workflow-capable evidence must
+prove it came from the controlled `host-evidence` / `workflow_dispatch` path.
 The workflow refuses GitHub-hosted labels and requires `runner_labels` to include
 `self-hosted` plus the expected target label before evidence collection starts.
 Hosted labels such as `ubuntu-latest`, `ubuntu-24.04`, `windows-2022`,
@@ -279,8 +302,14 @@ To validate a release support claim against real host evidence:
   -MaxEvidenceAgeDays 30 `
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
-  -RequireDeclaredReverseProxies
+  -RequireDeclaredReverseProxies `
+  -RequireHostEvidenceWorkflowCollection
 ```
+
+For support-claim validation, `-RequireHostEvidenceWorkflowCollection` is
+applied only to workflow-capable matrix targets. BSD/local-only evidence is
+still accepted because the support matrix marks that target category as
+local-command-only for workflow collection.
 
 For Unix-like hosts without PowerShell, run:
 
@@ -530,6 +559,9 @@ status JSON from those actual hosts and validate it:
 ```
 
 For stricter release gates, add `-MaxEvidenceAgeDays` and `-FailOnWarnings`.
+For individual workflow-collected files, also add `-RequireCiCollection` and
+`-RequireHostEvidenceWorkflowCollection`; do not add those switches for
+local-command-only evidence such as BSD rows.
 Run `Test-SupportEvidenceCoverage.ps1` when you need a missing-coverage report
 before making the final support claim.
 `Test-HostEvidence.ps1` rejects evidence whose declared `supportTargetId` is

@@ -184,6 +184,26 @@ foreach ($required in $requiredFiles) {
   }
 }
 
+$requiredDocSnippets = @(
+  @{ Path = "README.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
+  @{ Path = "docs/HOST_VERIFICATION.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
+  @{ Path = "docs/RELEASE.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
+  @{ Path = "docs/SUPPORT_MATRIX.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") }
+)
+
+foreach ($expectation in $requiredDocSnippets) {
+  $docPath = Join-Path $RepoRoot (($expectation.Path) -replace '/', '\')
+  if (-not (Test-Path -LiteralPath $docPath -PathType Leaf)) {
+    continue
+  }
+  $docText = Get-Content -LiteralPath $docPath -Raw
+  foreach ($snippet in @($expectation.Snippets)) {
+    if (-not $docText.Contains($snippet)) {
+      $failures.Add("$($expectation.Path) is missing required release-readiness text: $snippet") | Out-Null
+    }
+  }
+}
+
 foreach ($file in $docFiles) {
   $relative = Get-RelativePath $file.FullName
   $baseDirectory = Split-Path -Parent $file.FullName

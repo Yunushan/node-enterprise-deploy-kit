@@ -290,6 +290,16 @@ foreach ($target in $targets) {
   $reverseProxies = @(Get-ArrayValue $target.reverseProxies)
   $staticVerification = @(Get-ArrayValue $target.staticVerification)
   $evidenceTargets = @(Get-ArrayValue $target.evidenceTargets)
+  $localCommandOnlyProperty = $target.PSObject.Properties["localCommandOnly"]
+  $localCommandOnly = if ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -is [bool]) { [bool]$localCommandOnlyProperty.Value } else { $null }
+
+  if ([string]$target.category -eq "bsd") {
+    if ($localCommandOnly -ne $true) {
+      Add-Issue $issues "$id must set localCommandOnly to true because BSD evidence is collected by local real-host commands, not the GitHub host-evidence workflow."
+    }
+  } elseif ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -ne $false) {
+    Add-Issue $issues "$id must not set localCommandOnly to true because $($target.category) evidence is workflow-capable."
+  }
 
   if ($serviceManagers.Count -eq 0) {
     Add-Issue $issues "$id must list at least one service manager."

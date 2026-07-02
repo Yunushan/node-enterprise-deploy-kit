@@ -41,7 +41,7 @@ function Test-BlockedReleasePath {
   param([string]$Path)
 
   $normalized = $Path -replace "\\", "/"
-  if ($normalized -match '(^|/)(node_modules|\.next|dist|build|coverage|logs|\.tmp)/') { return $true }
+  if ($normalized -match '(^|/)(node_modules|\.next|dist|build|coverage|logs|evidence|evidence-downloads|release-evidence|\.tmp)/') { return $true }
   if ($normalized -in @("config/windows/app.config.json", "config/linux/app.env", ".env")) { return $true }
   if ($normalized -like ".env.*" -and $normalized -ne ".env.example") { return $true }
   if ($normalized -match '\.(key|pem|pfx|p12|crt|csr)$') { return $true }
@@ -147,11 +147,22 @@ foreach ($pattern in @(
   "config/linux/app.env export-ignore",
   "tools/winsw/*.exe export-ignore",
   "tools/nssm/*.exe export-ignore",
+  "logs/ export-ignore",
   "evidence/ export-ignore",
+  "evidence-downloads/ export-ignore",
+  "release-evidence/ export-ignore",
   ".tmp/ export-ignore"
 )) {
   if ($attributes -notmatch [regex]::Escape($pattern)) {
     throw ".gitattributes is missing release export-ignore pattern: $pattern"
+  }
+}
+
+$releaseBuilderPath = Join-Path $RepoRoot "scripts\dev\New-ReleasePackage.ps1"
+$releaseBuilder = Get-Content -Path $releaseBuilderPath -Raw
+foreach ($blockedDirectory in @("logs", "evidence", "evidence-downloads", "release-evidence", ".tmp")) {
+  if ($releaseBuilder -notmatch [regex]::Escape($blockedDirectory)) {
+    throw "New-ReleasePackage.ps1 is missing generated evidence exclusion: $blockedDirectory"
   }
 }
 

@@ -67,12 +67,13 @@ foreach ($expected in @(
     "expected_reverse_proxy:",
     "fail_on_warnings:",
     "expected_nextjs_mode must be standalone or next-start.",
-    "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, launchd, or bsdrc.",
+    "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, or launchd.",
     "expected_reverse_proxy must be one of iis, nginx, apache, haproxy, traefik, or none.",
     "expected_target_id, expected_nextjs_mode, expected_service_manager, and expected_reverse_proxy are required for real host evidence collection.",
     "config\support-matrix.example.json",
     '$expectedTarget = $ExpectedTargetId.Trim().ToLowerInvariant()',
     "expected_target_id must match a support matrix target id.",
+    "cannot be collected by the host-evidence workflow",
     "is not declared for support matrix target",
     "platform must be",
     "validate-dispatch:",
@@ -95,6 +96,8 @@ foreach ($expected in @(
     "-RequireNextJs",
     "-RequireDeploymentIdentity",
     "-RequireCollectorSha256",
+    "-RequireCiCollection",
+    "-RequireHostEvidenceWorkflowCollection",
     "-RequireMinimumUptimeHours",
     "-RequireReverseProxy",
     "-FailOnWarnings",
@@ -128,7 +131,8 @@ foreach ($expected in @(
 foreach ($unexpected in @(
     "push:",
     "pull_request:",
-    "schedule:"
+    "schedule:",
+    "          - bsdrc"
   )) {
   Assert-DoesNotContain -Text $workflow -Unexpected $unexpected -Context ".github/workflows/host-evidence.yml"
 }

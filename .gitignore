@@ -20,6 +20,8 @@ config/linux/app.env
 *.csr
 logs/
 evidence/
+evidence-downloads/
+release-evidence/
 .tmp/
 *.log
 *.out

@@ -90,9 +90,15 @@ The command validates the support matrix, imports optional artifacts, writes
 coverage JSON and Markdown reports, fails on missing required evidence, creates
 and verifies the bundle, and writes release readiness JSON. That readiness JSON
 preserves the covered and missing coverage rows with their local collection,
-workflow dispatch, and single-row validation commands so every claimed support
-tuple has reproducible proof commands. Add `-StrictCiRelease` only for final
-CI-controlled signoff.
+local-command-only flag, workflow dispatch, and single-row validation commands
+so every claimed support tuple has reproducible proof commands. Add
+`-StrictCiRelease` only for final CI-controlled signoff; strict signoff refuses
+`-AllowWarnings`.
+
+`evidence/`, `evidence-downloads/`, and `release-evidence/` are generated,
+git-ignored local output. They may contain machine-specific paths from the
+collector host, so do not commit them. Publish final bundles as CI artifacts or
+release attachments instead of source files.
 
 After evidence is collected and validated, create a private evidence bundle:
 
@@ -105,6 +111,9 @@ After evidence is collected and validated, create a private evidence bundle:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72 `
+  -RequireHostEvidenceWorkflowCollection `
   -RequireCoverageComplete `
   -IncludeServiceOnly `
   -IncludeFallback
@@ -135,6 +144,11 @@ Check strict release readiness from the saved bundle with:
   -IncludeFallback
 ```
 
+Readiness output includes `supportScope.kind`, `supportScope.proofLevel`,
+selected target counts, workflow-capable evidence counts, and local-command-only
+evidence counts. Treat `Ready: True` as valid only for that stated scope: a
+filtered or production-runtime-only result is not a full-matrix release claim.
+
 To audit collected evidence against the matrix and list missing combinations:
 
 ```powershell
@@ -163,7 +177,10 @@ validation command, and, where supported, the exact manual
 `gh workflow run host-evidence.yml` command to collect that evidence. These
 commands fail on warning-only status evidence by default; add
 `-AllowWarnings` when the missing-coverage report should generate
-warning-tolerant collection commands instead. Coverage counts only evidence
+warning-tolerant collection commands instead. Workflow-capable rows include
+`-RequireCiCollection` and `-RequireHostEvidenceWorkflowCollection` in the
+single-row validation command; local-command-only rows omit those switches.
+Coverage counts only evidence
 whose declared `supportTargetId` is corroborated by collected OS/platform
 metadata and, for Next.js rows, still proves the required runtime platform
 floor.
@@ -221,7 +238,8 @@ primary target:
   -MaxEvidenceAgeDays 30 `
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
-  -RequireDeclaredReverseProxies
+  -RequireDeclaredReverseProxies `
+  -RequireHostEvidenceWorkflowCollection
 ```
 
 The strict mode check uses the evidence file's primary platform identity, so a
@@ -230,6 +248,9 @@ Debian target claim.
 Current status evidence writes `supportTargetId` / `SupportTargetId` and the
 claim tools prefer that exact matrix ID before falling back to OS metadata
 inference.
+`-RequireHostEvidenceWorkflowCollection` applies to workflow-capable targets
+such as Windows, Linux, and macOS; local-only BSD evidence is not rejected just
+because GitHub Actions cannot collect it through the host-evidence workflow.
 
 `-RequireDeclaredReverseProxies` checks concrete reverse-proxy implementations
 such as IIS, Nginx, Apache, HAProxy, and Traefik. The matrix value `none` is a
@@ -266,8 +287,9 @@ collector commands include the matching `-MinimumUptimeHours` or
 Rows that cannot be dispatched through the GitHub `host-evidence` workflow are
 still real-host evidence rows, but the bundle manifest must mark them
 `localCommandOnly: true`. `-StrictCiRelease` requires controlled workflow
-collection for workflow-capable rows and accepts local-command-only rows only
-with the same live/runtime/collector/uptime evidence checks.
+collection for workflow-capable rows, rejects warning-tolerant signoff, and
+accepts local-command-only rows only with the same live/runtime/collector/uptime
+evidence checks.
 The host-evidence validator also requires the declared `supportTargetId` to be
 corroborated by platform metadata derived from the host OS; a JSON file cannot
 prove a matrix row by declaring that target ID alone.

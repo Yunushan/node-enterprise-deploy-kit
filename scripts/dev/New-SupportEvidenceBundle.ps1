@@ -11,6 +11,9 @@ param(
   [switch]$RequireBothNextJsModes,
   [switch]$RequireDeclaredServiceManagers,
   [switch]$RequireDeclaredReverseProxies,
+  [switch]$RequireCollectorSha256,
+  [switch]$RequireHostEvidenceWorkflowCollection,
+  [int]$RequireMinimumUptimeHours = 0,
   [switch]$RequireCoverageComplete,
   [switch]$IncludeServiceOnly,
   [switch]$IncludeFallback,
@@ -119,9 +122,41 @@ function Normalize-ReverseProxy {
   return $normalized
 }
 
+function Get-DisplayPath {
+  param(
+    [string]$Path,
+    [string]$OutsideRepositoryLabel = "outside-repository"
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+    return "."
+  }
+
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+
+  return $OutsideRepositoryLabel
+}
+
 function Test-WorkflowDispatchSupported {
   param([string]$Category)
   return ($Category -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Test-TargetWorkflowDispatchSupported {
+  param([object]$Target)
+
+  $localCommandOnlyProperty = $Target.PSObject.Properties["localCommandOnly"]
+  if ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -eq $true) {
+    return $false
+  }
+  return (Test-WorkflowDispatchSupported -Category ([string]$Target.category))
 }
 
 function Get-MatrixTargetsById {
@@ -432,6 +467,16 @@ function New-SelfTestEvidence {
     Collector = "status.ps1"
     CollectorVersion = 1
     CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    Ci = [ordered]@{
+      IsCi = $true
+      Provider = "github-actions"
+      WorkflowName = "host-evidence"
+      RunId = "123456789"
+      RunAttempt = "1"
+      EventName = "workflow_dispatch"
+      RefName = "main"
+      Sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
     LiveHost = $true
     Synthetic = $false
     Mock = $false
@@ -442,6 +487,16 @@ function New-SelfTestEvidence {
     collector = "scripts/linux/status-node-app.sh"
     collectorVersion = 1
     collectorSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ci = [ordered]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = "123456790"
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
     liveHost = $true
     synthetic = $false
     mock = $false
@@ -709,26 +764,53 @@ Write-Host ""
 Write-Host "==> Support evidence bundle"
 
 if ($SelfTest) {
-  $EvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-$([Guid]::NewGuid().ToString('N'))\evidence"
-  $OutputDirectory = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-output"
+  $selfTestId = [Guid]::NewGuid().ToString('N')
+  $EvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-$selfTestId\evidence"
+  $defaultOutputDirectory = Join-Path $RepoRoot ".tmp\support-evidence-bundles"
+  $resolvedOutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\', '/')
+  $resolvedDefaultOutputDirectory = [System.IO.Path]::GetFullPath($defaultOutputDirectory).TrimEnd('\', '/')
+  if ($resolvedOutputDirectory.Equals($resolvedDefaultOutputDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+    $OutputDirectory = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-output-$selfTestId"
+  }
   $BundleName = "selftest-support-evidence"
   $TargetId = @("windows-11", "ubuntu")
   $MaxEvidenceAgeDays = 30
   $NoZip = $false
   New-SelfTestEvidence -Path $EvidencePath
+
+  if (-not $ValidateSupportClaim -and -not $RequireBothNextJsModes -and -not $RequireDeclaredServiceManagers -and -not $RequireDeclaredReverseProxies -and -not $RequireHostEvidenceWorkflowCollection) {
+    $failedMissingClaimGate = $false
+    try {
+      & $PSCommandPath -SelfTest -RequireHostEvidenceWorkflowCollection *> $null
+    } catch {
+      $failedMissingClaimGate = ($_.Exception.Message -match "require -ValidateSupportClaim")
+    }
+    if (-not $failedMissingClaimGate) {
+      throw "Support evidence bundle self-test failed: claim-only strict switches should require -ValidateSupportClaim."
+    }
+  }
 }
 
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
   throw "EvidencePath is required unless -SelfTest is used."
 }
 if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
-  throw "Evidence path not found: $EvidencePath"
+  throw "Evidence path not found: $(Get-DisplayPath -Path $EvidencePath)"
 }
 if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
-  throw "Support matrix not found: $MatrixPath"
+  throw "Support matrix not found: $(Get-DisplayPath -Path $MatrixPath)"
 }
 if ($BundleName -notmatch '^[A-Za-z0-9._-]+$') {
   throw "BundleName must contain only letters, numbers, dot, underscore, or dash."
+}
+
+$claimOnlyRequirements = New-Object System.Collections.Generic.List[string]
+if ($RequireBothNextJsModes) { $claimOnlyRequirements.Add("-RequireBothNextJsModes") | Out-Null }
+if ($RequireDeclaredServiceManagers) { $claimOnlyRequirements.Add("-RequireDeclaredServiceManagers") | Out-Null }
+if ($RequireDeclaredReverseProxies) { $claimOnlyRequirements.Add("-RequireDeclaredReverseProxies") | Out-Null }
+if ($RequireHostEvidenceWorkflowCollection) { $claimOnlyRequirements.Add("-RequireHostEvidenceWorkflowCollection") | Out-Null }
+if ($claimOnlyRequirements.Count -gt 0 -and -not $ValidateSupportClaim) {
+  throw "$($claimOnlyRequirements -join ', ') require -ValidateSupportClaim because they are enforced by the target-aware support-claim gate."
 }
 
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
@@ -745,6 +827,8 @@ $hostEvidenceArgs = @{
   RequireDeploymentIdentity = $true
 }
 if ($hasTargetFilter) { $hostEvidenceArgs.RequiredTargets = [string[]]$selectedTargetIds }
+if ($RequireCollectorSha256) { $hostEvidenceArgs.RequireCollectorSha256 = $true }
+if ($RequireMinimumUptimeHours -gt 0) { $hostEvidenceArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
 if (-not $AllowWarnings) { $hostEvidenceArgs.FailOnWarnings = $true }
 if ($AllowReverseProxyNone -or $IncludeServiceOnly) { $hostEvidenceArgs.AllowReverseProxyNone = $true }
 & (Join-Path $ScriptDir "Test-HostEvidence.ps1") @hostEvidenceArgs | Out-Null
@@ -760,6 +844,9 @@ if ($ValidateSupportClaim) {
   if ($RequireBothNextJsModes) { $claimArgs.RequireBothNextJsModes = $true }
   if ($RequireDeclaredServiceManagers) { $claimArgs.RequireDeclaredServiceManagers = $true }
   if ($RequireDeclaredReverseProxies) { $claimArgs.RequireDeclaredReverseProxies = $true }
+  if ($RequireCollectorSha256) { $claimArgs.RequireCollectorSha256 = $true }
+  if ($RequireHostEvidenceWorkflowCollection) { $claimArgs.RequireHostEvidenceWorkflowCollection = $true }
+  if ($RequireMinimumUptimeHours -gt 0) { $claimArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
   if ($AllowReverseProxyNone -or $IncludeServiceOnly) { $claimArgs.AllowReverseProxyNone = $true }
   & (Join-Path $ScriptDir "Test-SupportClaim.ps1") @claimArgs | Out-Null
 }
@@ -788,7 +875,7 @@ New-Item -ItemType Directory -Force -Path $bundleEvidenceRoot | Out-Null
 
 $files = @(Get-ChildItem -Path $EvidencePath -Recurse -File -Filter "*.json" | Sort-Object FullName)
 if ($files.Count -eq 0) {
-  throw "No JSON evidence files found in $EvidencePath"
+  throw "No JSON evidence files found in $(Get-DisplayPath -Path $EvidencePath)"
 }
 $files = @(Select-EvidenceFilesForBundle -Files $files -SelectedTargetIds $selectedTargetIds -HasTargetFilter ([bool]$hasTargetFilter))
 if ($files.Count -eq 0) {
@@ -851,7 +938,7 @@ foreach ($file in $files) {
       $nodeRuntimeSupportTier = Get-StringValue -Object $nodeRuntimeSupport -Names @("supportTier")
       $nodeRuntimeProductionRecommended = Get-BooleanValue -Object $nodeRuntimeSupport -Names @("productionRecommended") -Default $null
       $nodeRuntimeRequirements = Get-StringValue -Object $nodeRuntimeSupport -Names @("requirements")
-      $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $targetCategory
+      $workflowDispatchSupported = Test-TargetWorkflowDispatchSupported -Target $matrixTarget
       $localCommandOnly = -not [bool]$workflowDispatchSupported
     }
     $mode = Get-NextJsMode -Evidence $evidence
@@ -957,6 +1044,9 @@ $manifest = [ordered]@{
   maxEvidenceAgeDays = $MaxEvidenceAgeDays
   allowWarnings = [bool]$AllowWarnings
   supportClaimValidated = [bool]$ValidateSupportClaim
+  requireCollectorSha256 = [bool]$RequireCollectorSha256
+  requireHostEvidenceWorkflowCollection = [bool]$RequireHostEvidenceWorkflowCollection
+  requireMinimumUptimeHours = $RequireMinimumUptimeHours
   coverageCompleteRequired = [bool]$RequireCoverageComplete
   targetIds = @($TargetId)
   categories = @($Category)
@@ -985,12 +1075,20 @@ if (-not $NoZip) {
   Compress-Archive -Path (Join-Path $bundleRoot "*") -DestinationPath $zipPath -Force
 }
 
-Write-Host "Support evidence manifest: $manifestPath"
+$manifestDisplayPath = Get-DisplayPath -Path $manifestPath
+$zipDisplayPath = Get-DisplayPath -Path $zipPath
+
+Write-Host "Support evidence manifest: $manifestDisplayPath"
 if ($zipPath) {
-  Write-Host "Support evidence bundle: $zipPath" -ForegroundColor Green
+  Write-Host "Support evidence bundle: $zipDisplayPath" -ForegroundColor Green
 }
 
 if ($SelfTest) {
+  foreach ($displayPath in @($manifestDisplayPath, $zipDisplayPath)) {
+    if ([System.IO.Path]::IsPathRooted([string]$displayPath) -or ([string]$displayPath).Contains($RepoRoot)) {
+      throw "Support evidence bundle self-test leaked an absolute display path."
+    }
+  }
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Support evidence bundle self-test did not create manifest."
   }

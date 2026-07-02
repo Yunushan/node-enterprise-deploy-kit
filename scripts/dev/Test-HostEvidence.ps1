@@ -11,6 +11,8 @@ param(
   [switch]$AllowReverseProxyNone,
   [switch]$RequireDeploymentIdentity,
   [switch]$RequireCollectorSha256,
+  [switch]$RequireCiCollection,
+  [switch]$RequireHostEvidenceWorkflowCollection,
   [int]$RequireMinimumUptimeHours = 0,
   [switch]$FailOnWarnings,
   [switch]$SelfTest
@@ -40,6 +42,42 @@ function Normalize-ReverseProxy {
   $normalized = Normalize-Target $Value
   if ($normalized -eq "httpd") { return "apache" }
   return $normalized
+}
+
+function Get-DisplayPath {
+  param(
+    [string]$Path,
+    [string]$BasePath = "",
+    [string]$OutsideRepositoryLabel = "outside-evidence"
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+    return "."
+  }
+
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($BasePath)) {
+    $baseFull = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')
+    if ($fullPath.Equals($baseFull, [StringComparison]::OrdinalIgnoreCase)) {
+      return $OutsideRepositoryLabel
+    }
+
+    $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+    if ($fullPath.StartsWith($basePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      $relativeToBase = $fullPath.Substring($basePrefix.Length).Replace("\", "/")
+      return "$OutsideRepositoryLabel/$relativeToBase"
+    }
+  }
+
+  return $OutsideRepositoryLabel
 }
 
 function Add-Target {
@@ -1445,6 +1483,9 @@ function Invoke-ExpectHostEvidenceFailure {
   if ($outputText -notlike "*$ExpectedMessage*") {
     throw "Expected host evidence validation failure containing '$ExpectedMessage', got: $outputText"
   }
+  if ($outputText.Contains($RepoRoot)) {
+    throw "Host evidence validation self-test leaked the repository absolute path in failure output."
+  }
 }
 
 function Invoke-ExpectHostEvidenceSuccess {
@@ -1466,11 +1507,13 @@ function Test-EvidenceFile {
     [System.Collections.Generic.List[string]]$Issues
   )
 
+  $displayFile = Get-DisplayPath -Path $File.FullName -BasePath $EvidencePath
+
   try {
     $raw = Get-Content -Path $File.FullName -Raw
     $evidence = $raw | ConvertFrom-Json
   } catch {
-    $Issues.Add("$($File.FullName) is not valid JSON: $($_.Exception.Message)") | Out-Null
+    $Issues.Add("$displayFile is not valid JSON: $($_.Exception.Message)") | Out-Null
     return $null
   }
 
@@ -1503,290 +1546,304 @@ function Test-EvidenceFile {
   $topLevelSample = Get-BooleanValue -Object $evidence -Names @("Sample", "sample") -Default $false
 
   if (-not $appName) {
-    $Issues.Add("$($File.FullName) is missing app name.") | Out-Null
+    $Issues.Add("$displayFile is missing app name.") | Out-Null
   }
   if (-not $collectionEvidence.Source -and -not $collectionEvidence.Collector) {
-    $Issues.Add("$($File.FullName) is missing evidenceCollection source/collector metadata from the live status collector.") | Out-Null
+    $Issues.Add("$displayFile is missing evidenceCollection source/collector metadata from the live status collector.") | Out-Null
   } elseif (-not (Test-SupportedEvidenceCollector -Collection $collectionEvidence)) {
-    $Issues.Add("$($File.FullName) does not identify a supported node-enterprise-deploy-kit live status collector.") | Out-Null
+    $Issues.Add("$displayFile does not identify a supported node-enterprise-deploy-kit live status collector.") | Out-Null
   }
   if ($null -eq $collectionEvidence.CollectorVersion -or $collectionEvidence.CollectorVersion -lt 1) {
-    $Issues.Add("$($File.FullName) is missing a valid evidence collector version.") | Out-Null
+    $Issues.Add("$displayFile is missing a valid evidence collector version.") | Out-Null
   }
   if ($collectionEvidence.CollectorSha256 -and $collectionEvidence.CollectorSha256 -notmatch '^[a-f0-9]{64}$') {
-    $Issues.Add("$($File.FullName) has an invalid evidence collector SHA256 digest.") | Out-Null
+    $Issues.Add("$displayFile has an invalid evidence collector SHA256 digest.") | Out-Null
   }
   if ($RequireCollectorSha256 -and [string]::IsNullOrWhiteSpace($collectionEvidence.CollectorSha256)) {
-    $Issues.Add("$($File.FullName) is missing evidence collector SHA256 digest required for strict support claims.") | Out-Null
+    $Issues.Add("$displayFile is missing evidence collector SHA256 digest required for strict support claims.") | Out-Null
   }
   if ($collectionEvidence.LiveHost -ne $true) {
-    $Issues.Add("$($File.FullName) does not declare live-host collection.") | Out-Null
+    $Issues.Add("$displayFile does not declare live-host collection.") | Out-Null
   }
   $missingCollectionMarkers = @()
   if ($null -eq $collectionEvidence.Synthetic) { $missingCollectionMarkers += "synthetic" }
   if ($null -eq $collectionEvidence.Mock) { $missingCollectionMarkers += "mock" }
   if ($null -eq $collectionEvidence.Sample) { $missingCollectionMarkers += "sample" }
   if ($missingCollectionMarkers.Count -gt 0) {
-    $Issues.Add("$($File.FullName) is missing explicit evidenceCollection anti-synthetic marker(s): $($missingCollectionMarkers -join ', ').") | Out-Null
+    $Issues.Add("$displayFile is missing explicit evidenceCollection anti-synthetic marker(s): $($missingCollectionMarkers -join ', ').") | Out-Null
   } elseif ($collectionEvidence.Synthetic -ne $false -or $collectionEvidence.Mock -ne $false -or $collectionEvidence.Sample -ne $false -or $topLevelSynthetic -eq $true -or $topLevelMock -eq $true -or $topLevelSample -eq $true) {
-    $Issues.Add("$($File.FullName) declares synthetic, mock, or sample evidence and cannot prove a real-host support claim.") | Out-Null
+    $Issues.Add("$displayFile declares synthetic, mock, or sample evidence and cannot prove a real-host support claim.") | Out-Null
   }
-  foreach ($ciIssue in @(Get-CollectionCiIssues -Ci $collectionEvidence.Ci -FileName $File.FullName)) {
+  foreach ($ciIssue in @(Get-CollectionCiIssues -Ci $collectionEvidence.Ci -FileName $displayFile)) {
     $Issues.Add($ciIssue) | Out-Null
   }
+  $collectionCiProvider = ([string]$collectionEvidence.Ci.Provider).Trim().ToLowerInvariant()
+  $collectionCiWorkflowName = ([string]$collectionEvidence.Ci.WorkflowName).Trim().ToLowerInvariant()
+  $collectionCiEventName = ([string]$collectionEvidence.Ci.EventName).Trim().ToLowerInvariant()
+  if ($RequireCiCollection -and ($collectionEvidence.Ci.IsCi -ne $true -or [string]::IsNullOrWhiteSpace($collectionCiProvider))) {
+    $Issues.Add("$displayFile does not prove CI collection provenance required for strict support claims.") | Out-Null
+  }
+  if ($RequireHostEvidenceWorkflowCollection -and (
+      $collectionEvidence.Ci.IsCi -ne $true -or
+      $collectionCiProvider -ne "github-actions" -or
+      $collectionCiWorkflowName -ne "host-evidence" -or
+      $collectionCiEventName -ne "workflow_dispatch"
+    )) {
+    $Issues.Add("$displayFile does not prove controlled host-evidence workflow_dispatch collection provenance.") | Out-Null
+  }
   if (Test-PropertyExists -Object $evidence -Names @("ComputerName", "computerName", "HostName", "hostName", "MachineName", "machineName")) {
-    $Issues.Add("$($File.FullName) contains a raw host identity field. Use a private evidence folder name or an external release record instead.") | Out-Null
+    $Issues.Add("$displayFile contains a raw host identity field. Use a private evidence folder name or an external release record instead.") | Out-Null
   }
   if (Test-PropertyExists -Object $evidence -Names @("ConfigPath", "configPath")) {
-    $Issues.Add("$($File.FullName) contains raw config path metadata. Status JSON should emit ConfigFileName/configFileName only.") | Out-Null
+    $Issues.Add("$displayFile contains raw config path metadata. Status JSON should emit ConfigFileName/configFileName only.") | Out-Null
   }
   if (Test-PropertyExists -Object $nextJsRawEvidence -Names @("RuntimeRoot", "runtimeRoot")) {
-    $Issues.Add("$($File.FullName) contains raw Next.js runtime path metadata. Status JSON should emit RuntimeRootName/runtimeRootName only.") | Out-Null
+    $Issues.Add("$displayFile contains raw Next.js runtime path metadata. Status JSON should emit RuntimeRootName/runtimeRootName only.") | Out-Null
   }
   if (Test-PropertyExists -Object $deploymentIdentityRawEvidence -Names @("AppDirectory", "appDirectory")) {
-    $Issues.Add("$($File.FullName) contains raw app directory metadata. Status JSON should emit AppDirectoryName/appDirectoryName only.") | Out-Null
+    $Issues.Add("$displayFile contains raw app directory metadata. Status JSON should emit AppDirectoryName/appDirectoryName only.") | Out-Null
   }
   foreach ($finding in @($findingsValue)) {
     $message = Get-StringValue -Object $finding -Names @("Message", "message")
     if (Test-UnsafeEvidenceText $message) {
-      $Issues.Add("$($File.FullName) contains a finding message with an unsafe raw path. Status JSON should redact paths in findings.") | Out-Null
+      $Issues.Add("$displayFile contains a finding message with an unsafe raw path. Status JSON should redact paths in findings.") | Out-Null
       break
     }
   }
   if (-not $generatedAt) {
-    $Issues.Add("$($File.FullName) is missing generated timestamp.") | Out-Null
+    $Issues.Add("$displayFile is missing generated timestamp.") | Out-Null
   } else {
     try {
       $generatedDate = [DateTime]::Parse($generatedAt).ToUniversalTime()
       if ($MaxEvidenceAgeDays -gt 0 -and ((Get-Date).ToUniversalTime() - $generatedDate).TotalDays -gt $MaxEvidenceAgeDays) {
-        $Issues.Add("$($File.FullName) is older than $MaxEvidenceAgeDays day(s).") | Out-Null
+        $Issues.Add("$displayFile is older than $MaxEvidenceAgeDays day(s).") | Out-Null
       }
     } catch {
-      $Issues.Add("$($File.FullName) has an invalid generated timestamp: $generatedAt") | Out-Null
+      $Issues.Add("$displayFile has an invalid generated timestamp: $generatedAt") | Out-Null
     }
   }
   if ($verdict -notin @("Healthy", "Warning", "Critical")) {
-    $Issues.Add("$($File.FullName) has invalid verdict: $verdict") | Out-Null
+    $Issues.Add("$displayFile has invalid verdict: $verdict") | Out-Null
   }
   if ($null -eq $critical) {
-    $Issues.Add("$($File.FullName) is missing critical count.") | Out-Null
+    $Issues.Add("$displayFile is missing critical count.") | Out-Null
   } elseif ($critical -gt 0) {
-    $Issues.Add("$($File.FullName) has $critical critical finding(s).") | Out-Null
+    $Issues.Add("$displayFile has $critical critical finding(s).") | Out-Null
   }
   if ($null -eq $warnings) {
-    $Issues.Add("$($File.FullName) is missing warning count.") | Out-Null
+    $Issues.Add("$displayFile is missing warning count.") | Out-Null
   } elseif ($FailOnWarnings -and $warnings -gt 0) {
-    $Issues.Add("$($File.FullName) has $warnings warning finding(s).") | Out-Null
+    $Issues.Add("$displayFile has $warnings warning finding(s).") | Out-Null
   }
   if (-not $hasFindings) {
-    $Issues.Add("$($File.FullName) is missing findings array.") | Out-Null
+    $Issues.Add("$displayFile is missing findings array.") | Out-Null
   }
   if (-not $supportTargetId) {
-    $Issues.Add("$($File.FullName) is missing supportTargetId metadata required for matrix-level support claims.") | Out-Null
+    $Issues.Add("$displayFile is missing supportTargetId metadata required for matrix-level support claims.") | Out-Null
   } elseif ($platformTargets -notcontains $supportTargetId) {
-    $Issues.Add("$($File.FullName) has supportTargetId '$supportTargetId' that is not corroborated by platform metadata: $($platformTargets -join ', ').") | Out-Null
+    $Issues.Add("$displayFile has supportTargetId '$supportTargetId' that is not corroborated by platform metadata: $($platformTargets -join ', ').") | Out-Null
   }
   if ($platformTargets.Count -eq 0) {
-    $Issues.Add("$($File.FullName) has no recognizable platform target metadata.") | Out-Null
+    $Issues.Add("$displayFile has no recognizable platform target metadata.") | Out-Null
   }
   if (-not (Test-ServiceActiveEvidence -Status $serviceEvidence.ActiveStatus)) {
-    $Issues.Add("$($File.FullName) does not prove an active service state (status: $($serviceEvidence.ActiveStatus)).") | Out-Null
+    $Issues.Add("$displayFile does not prove an active service state (status: $($serviceEvidence.ActiveStatus)).") | Out-Null
   }
   if (-not (Test-ServiceEnabledEvidence -Status $serviceEvidence.EnabledStatus)) {
-    $Issues.Add("$($File.FullName) does not prove service boot enablement (status: $($serviceEvidence.EnabledStatus)).") | Out-Null
+    $Issues.Add("$displayFile does not prove service boot enablement (status: $($serviceEvidence.EnabledStatus)).") | Out-Null
   }
   if ($serviceManager -in @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
     if ($serviceEvidence.DefinitionChecked -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed service definition was checked.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed service definition was checked.") | Out-Null
     }
     if ($serviceEvidence.DefinitionExists -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed service definition exists.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed service definition exists.") | Out-Null
     }
     if ($serviceManager -eq "winsw" -and $serviceEvidence.ServiceWrapperMatchesConfig -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the WinSW service wrapper path matches the current ServiceDirectory/AppName.") | Out-Null
+      $Issues.Add("$displayFile does not prove the WinSW service wrapper path matches the current ServiceDirectory/AppName.") | Out-Null
     }
     if ($serviceEvidence.NodeExeMatchesConfig -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed service Node executable matches the current config.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed service Node executable matches the current config.") | Out-Null
     }
     if ($serviceEvidence.WorkingDirectoryMatchesConfig -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed service working directory matches the current app directory.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed service working directory matches the current app directory.") | Out-Null
     }
     if ($serviceEvidence.ArgumentsMatchConfig -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed service arguments match the current start command and arguments.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed service arguments match the current start command and arguments.") | Out-Null
     }
     if ($serviceManager -eq "launchd" -and $serviceEvidence.RunnerScriptMatchesConfig -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the launchd service plist references the configured runner script.") | Out-Null
+      $Issues.Add("$displayFile does not prove the launchd service plist references the configured runner script.") | Out-Null
     }
   }
   if ($portEvidence.Checked -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the configured app port check was performed.") | Out-Null
+    $Issues.Add("$displayFile does not prove the configured app port check was performed.") | Out-Null
   }
   if ($portEvidence.Listening -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the configured app port is listening.") | Out-Null
+    $Issues.Add("$displayFile does not prove the configured app port is listening.") | Out-Null
   }
   if ($portEvidence.OwnerReadable -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove configured app port owner PID(s) were readable.") | Out-Null
+    $Issues.Add("$displayFile does not prove configured app port owner PID(s) were readable.") | Out-Null
   }
   if ($null -eq $portEvidence.OwnerProcessCount -or $portEvidence.OwnerProcessCount -lt 1) {
-    $Issues.Add("$($File.FullName) does not prove at least one owner process for the configured app port.") | Out-Null
+    $Issues.Add("$displayFile does not prove at least one owner process for the configured app port.") | Out-Null
   }
   if ($portEvidence.ServicePidKnown -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the service process ID was known for port ownership comparison.") | Out-Null
+    $Issues.Add("$displayFile does not prove the service process ID was known for port ownership comparison.") | Out-Null
   }
   if ($portEvidence.OwnedByService -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the configured app port is owned by the configured service process.") | Out-Null
+    $Issues.Add("$displayFile does not prove the configured app port is owned by the configured service process.") | Out-Null
   }
   if ($healthEvidence.Checked -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the HTTP health probe was performed.") | Out-Null
+    $Issues.Add("$displayFile does not prove the HTTP health probe was performed.") | Out-Null
   }
   if ($healthEvidence.Status -ne "ok") {
-    $Issues.Add("$($File.FullName) does not prove HTTP health status ok (status: $($healthEvidence.Status)).") | Out-Null
+    $Issues.Add("$displayFile does not prove HTTP health status ok (status: $($healthEvidence.Status)).") | Out-Null
   }
   if ($null -eq $healthEvidence.StatusCode -or $healthEvidence.StatusCode -lt 200 -or $healthEvidence.StatusCode -ge 400) {
-    $Issues.Add("$($File.FullName) does not prove a successful HTTP health status code.") | Out-Null
+    $Issues.Add("$displayFile does not prove a successful HTTP health status code.") | Out-Null
   }
   if ($uptimeEvidence.ServiceStartKnown -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove service start time / service process uptime was known.") | Out-Null
+    $Issues.Add("$displayFile does not prove service start time / service process uptime was known.") | Out-Null
   }
   if ($null -eq $uptimeEvidence.ServiceUptimeSeconds -or $uptimeEvidence.ServiceUptimeSeconds -lt 0) {
-    $Issues.Add("$($File.FullName) does not prove service process uptime seconds.") | Out-Null
+    $Issues.Add("$displayFile does not prove service process uptime seconds.") | Out-Null
   }
   if ($null -ne $uptimeEvidence.MinimumUptimeHours -and $uptimeEvidence.MinimumUptimeHours -gt 0 -and $uptimeEvidence.MinimumSatisfied -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove the requested minimum uptime window was satisfied.") | Out-Null
+    $Issues.Add("$displayFile does not prove the requested minimum uptime window was satisfied.") | Out-Null
   }
   if ($RequireMinimumUptimeHours -gt 0) {
     $requiredMinimumSeconds = [int64]$RequireMinimumUptimeHours * 3600
     if ($null -eq $uptimeEvidence.MinimumUptimeHours -or $uptimeEvidence.MinimumUptimeHours -lt $RequireMinimumUptimeHours) {
-      $Issues.Add("$($File.FullName) does not prove required minimum uptime evidence of $RequireMinimumUptimeHours hour(s).") | Out-Null
+      $Issues.Add("$displayFile does not prove required minimum uptime evidence of $RequireMinimumUptimeHours hour(s).") | Out-Null
     }
     if ($uptimeEvidence.MinimumSatisfied -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the required minimum uptime window was satisfied.") | Out-Null
+      $Issues.Add("$displayFile does not prove the required minimum uptime window was satisfied.") | Out-Null
     }
     if ($null -eq $uptimeEvidence.ServiceUptimeSeconds -or $uptimeEvidence.ServiceUptimeSeconds -lt $requiredMinimumSeconds) {
-      $Issues.Add("$($File.FullName) does not prove service uptime reached the required $RequireMinimumUptimeHours hour window.") | Out-Null
+      $Issues.Add("$displayFile does not prove service uptime reached the required $RequireMinimumUptimeHours hour window.") | Out-Null
     }
   }
   if ($healthMonitorEvidence.Status -ne "ok") {
-    $Issues.Add("$($File.FullName) does not prove health monitor status ok (status: $($healthMonitorEvidence.Status)).") | Out-Null
+    $Issues.Add("$displayFile does not prove health monitor status ok (status: $($healthMonitorEvidence.Status)).") | Out-Null
   }
   if ($healthMonitorEvidence.Scheduled -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove a recurring health monitor has run.") | Out-Null
+    $Issues.Add("$displayFile does not prove a recurring health monitor has run.") | Out-Null
   }
   if ([string]::IsNullOrWhiteSpace($healthMonitorEvidence.ScheduleType)) {
-    $Issues.Add("$($File.FullName) does not identify the health monitor schedule type.") | Out-Null
+    $Issues.Add("$displayFile does not identify the health monitor schedule type.") | Out-Null
   }
   if ($healthMonitorEvidence.StateExists -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove health monitor state exists.") | Out-Null
+    $Issues.Add("$displayFile does not prove health monitor state exists.") | Out-Null
   }
   if ($healthMonitorEvidence.LastSuccessFresh -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove a recent successful health monitor run.") | Out-Null
+    $Issues.Add("$displayFile does not prove a recent successful health monitor run.") | Out-Null
   }
   if ($null -eq $healthMonitorEvidence.ConsecutiveFailures -or $healthMonitorEvidence.ConsecutiveFailures -ne 0) {
-    $Issues.Add("$($File.FullName) does not prove zero consecutive health monitor failures.") | Out-Null
+    $Issues.Add("$displayFile does not prove zero consecutive health monitor failures.") | Out-Null
   }
   if ($healthMonitorEvidence.LogExists -ne $true) {
-    $Issues.Add("$($File.FullName) does not prove health monitor log summary exists.") | Out-Null
+    $Issues.Add("$displayFile does not prove health monitor log summary exists.") | Out-Null
   }
   if ($null -eq $healthMonitorEvidence.LogFailureCount -or $healthMonitorEvidence.LogFailureCount -ne 0) {
-    $Issues.Add("$($File.FullName) does not prove zero recent health monitor failures in the log summary.") | Out-Null
+    $Issues.Add("$displayFile does not prove zero recent health monitor failures in the log summary.") | Out-Null
   }
   if ($null -eq $healthMonitorEvidence.LogRestartCount -or $healthMonitorEvidence.LogRestartCount -ne 0) {
-    $Issues.Add("$($File.FullName) does not prove zero recent health monitor restarts in the log summary.") | Out-Null
+    $Issues.Add("$displayFile does not prove zero recent health monitor restarts in the log summary.") | Out-Null
   }
   if ((Normalize-Target $healthMonitorEvidence.ScheduleType) -eq "windows-task") {
     if ($healthMonitorEvidence.TaskExists -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task exists.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task exists.") | Out-Null
     }
     if ($healthMonitorEvidence.TaskActionChecked -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task action was checked.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task action was checked.") | Out-Null
     }
     if ($healthMonitorEvidence.TaskActionUsesHealthCheckScript -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task runs this kit's health-check script.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task runs this kit's health-check script.") | Out-Null
     }
     if ($healthMonitorEvidence.TaskActionUsesConfigPath -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task uses the current config path.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses the current config path.") | Out-Null
     }
     if ($null -eq $healthMonitorEvidence.TaskMissedRuns -or $healthMonitorEvidence.TaskMissedRuns -ne 0) {
-      $Issues.Add("$($File.FullName) does not prove zero missed Windows health check task runs.") | Out-Null
+      $Issues.Add("$displayFile does not prove zero missed Windows health check task runs.") | Out-Null
     }
     if ($null -eq $healthMonitorEvidence.TaskLastResult -or $healthMonitorEvidence.TaskLastResult -ne 0) {
-      $Issues.Add("$($File.FullName) does not prove the Windows health check scheduled task last result was successful.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task last result was successful.") | Out-Null
     }
   }
   if ((Normalize-Target $healthMonitorEvidence.ScheduleType) -eq "systemd-timer") {
     if ($healthMonitorEvidence.SchedulerChecked -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the systemd healthcheck timer was checked.") | Out-Null
+      $Issues.Add("$displayFile does not prove the systemd healthcheck timer was checked.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerExists -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the systemd healthcheck timer exists.") | Out-Null
+      $Issues.Add("$displayFile does not prove the systemd healthcheck timer exists.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerActive -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the systemd healthcheck timer is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the systemd healthcheck timer is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerEnabled -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the systemd healthcheck timer is enabled for boot (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the systemd healthcheck timer is enabled for boot (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
     }
   }
   if ((Normalize-Target $healthMonitorEvidence.ScheduleType) -eq "launchd-timer") {
     if ($healthMonitorEvidence.SchedulerChecked -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the launchd healthcheck scheduler was checked.") | Out-Null
+      $Issues.Add("$displayFile does not prove the launchd healthcheck scheduler was checked.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerExists -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the launchd healthcheck plist exists.") | Out-Null
+      $Issues.Add("$displayFile does not prove the launchd healthcheck plist exists.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerActive -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the launchd healthcheck job is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the launchd healthcheck job is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerEnabled -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the launchd healthcheck job is enabled (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the launchd healthcheck job is enabled (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
     }
   }
   if ((Normalize-Target $healthMonitorEvidence.ScheduleType) -eq "cron") {
     if ($healthMonitorEvidence.SchedulerChecked -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the cron healthcheck scheduler was checked.") | Out-Null
+      $Issues.Add("$displayFile does not prove the cron healthcheck scheduler was checked.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerExists -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the managed cron healthcheck entry exists.") | Out-Null
+      $Issues.Add("$displayFile does not prove the managed cron healthcheck entry exists.") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerActive -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the cron daemon is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the cron daemon is active (status: $($healthMonitorEvidence.SchedulerActiveStatus)).") | Out-Null
     }
     if ($healthMonitorEvidence.SchedulerEnabled -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the cron healthcheck entry is persistent (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
+      $Issues.Add("$displayFile does not prove the cron healthcheck entry is persistent (status: $($healthMonitorEvidence.SchedulerEnabledStatus)).") | Out-Null
     }
   }
   if ($RequireNextJs) {
     if (-not (Test-NextJsFrameworkEvidence -Value $nextJsEvidence.AppFramework)) {
-      $Issues.Add("$($File.FullName) does not prove AppFramework=nextjs (value: $($nextJsEvidence.AppFramework)).") | Out-Null
+      $Issues.Add("$displayFile does not prove AppFramework=nextjs (value: $($nextJsEvidence.AppFramework)).") | Out-Null
     }
     if ($nextJsEvidence.Mode -notin @("standalone", "next-start")) {
-      $Issues.Add("$($File.FullName) does not prove a valid Next.js deployment mode (value: $($nextJsEvidence.Mode)).") | Out-Null
+      $Issues.Add("$displayFile does not prove a valid Next.js deployment mode (value: $($nextJsEvidence.Mode)).") | Out-Null
     }
     if (-not $nextJsEvidence.Applicable) {
-      $Issues.Add("$($File.FullName) does not prove Next.js runtime layout validation was applicable.") | Out-Null
+      $Issues.Add("$displayFile does not prove Next.js runtime layout validation was applicable.") | Out-Null
     }
     if ($nextJsEvidence.Status -ne "ok") {
-      $Issues.Add("$($File.FullName) does not prove a successful Next.js runtime layout check (status: $($nextJsEvidence.Status)).") | Out-Null
+      $Issues.Add("$displayFile does not prove a successful Next.js runtime layout check (status: $($nextJsEvidence.Status)).") | Out-Null
     }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NodeVersion)) {
-      $Issues.Add("$($File.FullName) contains an unsafe Node.js runtime version value in Next.js evidence.") | Out-Null
+      $Issues.Add("$displayFile contains an unsafe Node.js runtime version value in Next.js evidence.") | Out-Null
     }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.MinimumNodeVersion)) {
-      $Issues.Add("$($File.FullName) contains an unsafe minimum Node.js version value in Next.js evidence.") | Out-Null
+      $Issues.Add("$displayFile contains an unsafe minimum Node.js version value in Next.js evidence.") | Out-Null
     }
     if ([string]::IsNullOrWhiteSpace($nextJsEvidence.MinimumNodeVersion)) {
-      $Issues.Add("$($File.FullName) does not prove the minimum Node.js version required for Next.js.") | Out-Null
+      $Issues.Add("$displayFile does not prove the minimum Node.js version required for Next.js.") | Out-Null
     }
     if ($nextJsEvidence.NodeVersionSatisfied -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove the configured Node.js runtime satisfies the Next.js minimum version requirement.") | Out-Null
+      $Issues.Add("$displayFile does not prove the configured Node.js runtime satisfies the Next.js minimum version requirement.") | Out-Null
     }
     if ((Normalize-Target $nextJsEvidence.Mode) -eq "next-start" -and $nextJsEvidence.NextStartScriptIsExpectedCli -ne $true) {
-      $Issues.Add("$($File.FullName) does not prove Next.js next-start uses node_modules/next/dist/bin/next.") | Out-Null
+      $Issues.Add("$displayFile does not prove Next.js next-start uses node_modules/next/dist/bin/next.") | Out-Null
     }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
-      $Issues.Add("$($File.FullName) contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
+      $Issues.Add("$displayFile contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
     }
-    foreach ($platformRuntimeIssue in @(Get-NextJsPlatformRuntimeIssues -Evidence $evidence -SupportTargetId $supportTargetId -FileName $File.FullName)) {
+    foreach ($platformRuntimeIssue in @(Get-NextJsPlatformRuntimeIssues -Evidence $evidence -SupportTargetId $supportTargetId -FileName $displayFile)) {
       $Issues.Add($platformRuntimeIssue) | Out-Null
     }
   }
@@ -1794,65 +1851,65 @@ function Test-EvidenceFile {
     $normalizedProxyMode = Normalize-Target $reverseProxyEvidence.Mode
     $serviceOnlyReverseProxy = ($AllowReverseProxyNone -and $normalizedProxyMode -eq "none")
     if ((-not $serviceOnlyReverseProxy) -and -not $reverseProxyEvidence.Applicable) {
-      $Issues.Add("$($File.FullName) does not prove a reverse-proxy check was applicable.") | Out-Null
+      $Issues.Add("$displayFile does not prove a reverse-proxy check was applicable.") | Out-Null
     }
     if ((-not $serviceOnlyReverseProxy) -and ($normalizedProxyMode -in @("", "none", "unknown"))) {
-      $Issues.Add("$($File.FullName) does not prove a configured reverse-proxy mode (value: $($reverseProxyEvidence.Mode)).") | Out-Null
+      $Issues.Add("$displayFile does not prove a configured reverse-proxy mode (value: $($reverseProxyEvidence.Mode)).") | Out-Null
     }
     if ($serviceOnlyReverseProxy -and ((Normalize-Target $reverseProxyEvidence.Status) -notin @("not-applicable", "none", "disabled", "skipped"))) {
-      $Issues.Add("$($File.FullName) does not prove reverse-proxy mode 'none' is explicitly not applicable (status: $($reverseProxyEvidence.Status)).") | Out-Null
+      $Issues.Add("$displayFile does not prove reverse-proxy mode 'none' is explicitly not applicable (status: $($reverseProxyEvidence.Status)).") | Out-Null
     }
     if ((-not $serviceOnlyReverseProxy) -and $reverseProxyEvidence.Status -ne "ok") {
-      $Issues.Add("$($File.FullName) does not prove a successful reverse-proxy health probe (status: $($reverseProxyEvidence.Status)).") | Out-Null
+      $Issues.Add("$displayFile does not prove a successful reverse-proxy health probe (status: $($reverseProxyEvidence.Status)).") | Out-Null
     }
     if ((-not $serviceOnlyReverseProxy) -and ($null -eq $reverseProxyEvidence.StatusCode -or $reverseProxyEvidence.StatusCode -lt 200 -or $reverseProxyEvidence.StatusCode -ge 400)) {
-      $Issues.Add("$($File.FullName) does not prove a successful reverse-proxy HTTP status code.") | Out-Null
+      $Issues.Add("$displayFile does not prove a successful reverse-proxy HTTP status code.") | Out-Null
     }
     if ($normalizedProxyMode -eq "iis") {
       if ($reverseProxyEvidence.IisModuleAvailable -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove IIS WebAdministration evidence was available.") | Out-Null
+        $Issues.Add("$displayFile does not prove IIS WebAdministration evidence was available.") | Out-Null
       }
       if ($reverseProxyEvidence.IisSiteExists -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the configured IIS site exists.") | Out-Null
+        $Issues.Add("$displayFile does not prove the configured IIS site exists.") | Out-Null
       }
       if ($reverseProxyEvidence.IisSiteStarted -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the configured IIS site is started.") | Out-Null
+        $Issues.Add("$displayFile does not prove the configured IIS site is started.") | Out-Null
       }
       if ($reverseProxyEvidence.IisSitePathMatchesConfig -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the IIS site physical path matches the configured IisSitePath.") | Out-Null
+        $Issues.Add("$displayFile does not prove the IIS site physical path matches the configured IisSitePath.") | Out-Null
       }
       if ($reverseProxyEvidence.IisBindingMatchesConfig -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the configured IIS site owns the expected public binding.") | Out-Null
+        $Issues.Add("$displayFile does not prove the configured IIS site owns the expected public binding.") | Out-Null
       }
       if ($reverseProxyEvidence.IisDuplicateBindingConflict -eq $true) {
-        $Issues.Add("$($File.FullName) reports an IIS duplicate binding conflict.") | Out-Null
+        $Issues.Add("$displayFile reports an IIS duplicate binding conflict.") | Out-Null
       }
     }
     if ($normalizedProxyMode -in @("nginx", "apache", "httpd", "haproxy", "traefik")) {
       if ($reverseProxyEvidence.ConfigApplicable -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove reverse-proxy config evidence was applicable for mode '$($reverseProxyEvidence.Mode)'.") | Out-Null
+        $Issues.Add("$displayFile does not prove reverse-proxy config evidence was applicable for mode '$($reverseProxyEvidence.Mode)'.") | Out-Null
       }
       if ($reverseProxyEvidence.ConfigExists -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the expected reverse-proxy config file exists.") | Out-Null
+        $Issues.Add("$displayFile does not prove the expected reverse-proxy config file exists.") | Out-Null
       }
       if ($reverseProxyEvidence.ConfigManagedMarkerFound -ne $true) {
-        $Issues.Add("$($File.FullName) does not prove the reverse-proxy config contains this kit's managed marker for the app.") | Out-Null
+        $Issues.Add("$displayFile does not prove the reverse-proxy config contains this kit's managed marker for the app.") | Out-Null
       }
     }
   }
   if ($RequireDeploymentIdentity) {
     if ($deploymentIdentityEvidence.Status -ne "ok") {
-      $Issues.Add("$($File.FullName) does not prove deployment identity status ok (status: $($deploymentIdentityEvidence.Status)).") | Out-Null
+      $Issues.Add("$displayFile does not prove deployment identity status ok (status: $($deploymentIdentityEvidence.Status)).") | Out-Null
     }
     if ([string]::IsNullOrWhiteSpace($deploymentIdentityEvidence.DeploymentId) -and [string]::IsNullOrWhiteSpace($deploymentIdentityEvidence.NextBuildId)) {
       if ([string]::IsNullOrWhiteSpace($deploymentIdentityEvidence.PackageSha256)) {
-        $Issues.Add("$($File.FullName) does not prove a deployment ID, Next.js build ID, or package SHA256.") | Out-Null
+        $Issues.Add("$displayFile does not prove a deployment ID, Next.js build ID, or package SHA256.") | Out-Null
       }
     }
   }
 
   return [pscustomobject]@{
-    File = $File.FullName.Substring($RepoRoot.Length + 1)
+    File = $displayFile
     AppName = $appName
     Verdict = $verdict
     Critical = if ($null -eq $critical) { "" } else { $critical }
@@ -2158,6 +2215,44 @@ if ($SelfTest) {
     RequireDeploymentIdentity = $true
   }
 
+  $workflowCiEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-workflow-ci-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $workflowCiEvidencePath
+  $workflowCiFile = Join-Path $workflowCiEvidencePath "ubuntu.json"
+  $workflowCiEvidence = Get-Content -LiteralPath $workflowCiFile -Raw | ConvertFrom-Json
+  $workflowCiEvidence.evidenceCollection | Add-Member -NotePropertyName "ci" -NotePropertyValue ([pscustomobject]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = "12345"
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = ("b" * 40)
+    }) -Force
+  $workflowCiEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowCiFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceSuccess -Name "expected controlled host-evidence workflow provenance" -Parameters @{
+    EvidencePath = $workflowCiFile
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    RequireCiCollection = $true
+    RequireHostEvidenceWorkflowCollection = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "does not prove controlled host-evidence workflow_dispatch collection provenance" -Parameters @{
+    EvidencePath = (Join-Path $EvidencePath "ubuntu.json")
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireHostEvidenceWorkflowCollection = $true
+  }
+
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "No evidence file matched expected collection dimensions" -Parameters @{
     EvidencePath = $EvidencePath
     RequireNextJs = $true
@@ -2219,23 +2314,24 @@ if ($SelfTest) {
 if (-not [System.IO.Path]::IsPathRooted($EvidencePath)) {
   $EvidencePath = Join-Path (Get-Location) $EvidencePath
 }
+$evidenceDisplayPath = Get-DisplayPath -Path $EvidencePath
 $evidenceItem = Get-Item -LiteralPath $EvidencePath -ErrorAction SilentlyContinue
 if ($null -eq $evidenceItem) {
-  throw "Evidence path not found: $EvidencePath"
+  throw "Evidence path not found: $evidenceDisplayPath"
 }
 
 $issues = New-Object System.Collections.Generic.List[string]
 $files = @()
 if ($evidenceItem -is [System.IO.FileInfo]) {
   if ($evidenceItem.Extension -ine ".json") {
-    throw "Host evidence file must be a JSON file: $EvidencePath"
+    throw "Host evidence file must be a JSON file: $evidenceDisplayPath"
   }
   $files = @($evidenceItem)
 } else {
   $files = @(Get-ChildItem -Path $EvidencePath -Recurse -File -Filter "*.json")
 }
 if ($files.Count -eq 0) {
-  throw "No host evidence JSON files found under: $EvidencePath"
+  throw "No host evidence JSON files found under: $evidenceDisplayPath"
 }
 
 $results = New-Object System.Collections.Generic.List[object]

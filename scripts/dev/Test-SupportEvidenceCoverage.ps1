@@ -216,7 +216,8 @@ function Get-ValidationCommand {
     [string]$ServiceManager,
     [string]$ReverseProxy,
     [int]$RequiredMinimumUptimeHours,
-    [bool]$FailOnWarnings
+    [bool]$FailOnWarnings,
+    [bool]$WorkflowDispatchSupported
   )
 
   $windowsPath = $EvidenceFile.Replace("/", "\")
@@ -244,6 +245,10 @@ function Get-ValidationCommand {
     )) {
     $args.Add($arg) | Out-Null
   }
+  if ($WorkflowDispatchSupported) {
+    $args.Add("-RequireCiCollection") | Out-Null
+    $args.Add("-RequireHostEvidenceWorkflowCollection") | Out-Null
+  }
   if ($ReverseProxy -eq "none") {
     $args.Add("-AllowReverseProxyNone") | Out-Null
   }
@@ -262,6 +267,16 @@ function Get-WorkflowPlatform {
 function Test-WorkflowDispatchSupported {
   param([string]$Category)
   return ($Category -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Test-TargetWorkflowDispatchSupported {
+  param([object]$Target)
+
+  $localCommandOnlyProperty = $Target.PSObject.Properties["localCommandOnly"]
+  if ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -eq $true) {
+    return $false
+  }
+  return (Test-WorkflowDispatchSupported -Category ([string]$Target.category))
 }
 
 function Get-WorkflowConfigPath {
@@ -600,13 +615,39 @@ function Test-LiveEvidenceCollection {
 }
 
 function Get-DisplayPath {
-  param([string]$Path)
+  param(
+    [string]$Path,
+    [string]$BasePath = "",
+    [string]$OutsideRepositoryLabel = "outside-repository"
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
 
   $fullPath = [System.IO.Path]::GetFullPath($Path)
-  if ($fullPath.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    return $fullPath.Substring($RepoRoot.Length + 1)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+    return "."
   }
-  return $fullPath
+
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($BasePath)) {
+    $baseFull = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/')
+    if ($fullPath.Equals($baseFull, [StringComparison]::OrdinalIgnoreCase)) {
+      return $OutsideRepositoryLabel
+    }
+
+    $basePrefix = $baseFull + [System.IO.Path]::DirectorySeparatorChar
+    if ($fullPath.StartsWith($basePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      $relativeToBase = $fullPath.Substring($basePrefix.Length).Replace("\", "/")
+      return "$OutsideRepositoryLabel/$relativeToBase"
+    }
+  }
+
+  return $OutsideRepositoryLabel
 }
 
 function Resolve-BundleRoot {
@@ -621,7 +662,7 @@ function Resolve-BundleRoot {
   }
   if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
     if ([System.IO.Path]::GetExtension($fullPath).ToLowerInvariant() -ne ".zip") {
-      throw "BundlePath file must be a .zip bundle: $fullPath"
+      throw "BundlePath file must be a .zip bundle: $(Get-DisplayPath -Path $fullPath)"
     }
     $extractRoot = Join-Path $RepoRoot ".tmp\support-evidence-coverage-bundle-$([Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
@@ -631,7 +672,7 @@ function Resolve-BundleRoot {
       Cleanup = $true
     }
   }
-  throw "BundlePath not found: $fullPath"
+  throw "BundlePath not found: $(Get-DisplayPath -Path $fullPath)"
 }
 
 function Get-BundleManifestRoot {
@@ -666,7 +707,7 @@ function Get-EvidenceRecords {
       }
       [pscustomobject]@{
         file = $file.FullName
-        relativeFile = Get-DisplayPath -Path $file.FullName
+        relativeFile = Get-DisplayPath -Path $file.FullName -BasePath $Path -OutsideRepositoryLabel "outside-evidence"
         targetId = Get-PrimaryEvidenceTarget -Evidence $evidence
         declaredTargetId = $declaredTargetId
         platformTargets = @($platformTargets)
@@ -685,7 +726,7 @@ function Get-EvidenceRecords {
     } catch {
       [pscustomobject]@{
         file = $file.FullName
-        relativeFile = Get-DisplayPath -Path $file.FullName
+        relativeFile = Get-DisplayPath -Path $file.FullName -BasePath $Path -OutsideRepositoryLabel "outside-evidence"
         targetId = ""
         declaredTargetId = ""
         platformTargets = @()
@@ -753,7 +794,8 @@ function New-ExpectedEntry {
   $nodeRuntimeProductionRecommendedProperty = if ($nodeRuntimeSupport) { $nodeRuntimeSupport.PSObject.Properties["productionRecommended"] } else { $null }
   $nodeRuntimeProductionRecommended = if ($nodeRuntimeProductionRecommendedProperty -and $nodeRuntimeProductionRecommendedProperty.Value -is [bool]) { [bool]$nodeRuntimeProductionRecommendedProperty.Value } else { $null }
   $nodeRuntimeRequirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
-  $workflowDispatchSupported = Test-WorkflowDispatchSupported -Category $category
+  $workflowDispatchSupported = Test-TargetWorkflowDispatchSupported -Target $Target
+  $localCommandOnly = -not [bool]$workflowDispatchSupported
   $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
   $workflowDispatchCommand = ""
@@ -796,8 +838,9 @@ function New-ExpectedEntry {
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
-    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported
     workflowDispatchSupported = $workflowDispatchSupported
+    localCommandOnly = $localCommandOnly
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
     workflowDispatchCommand = $workflowDispatchCommand
@@ -1265,7 +1308,7 @@ function New-SelfTestEvidence {
 }
 
 if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
-  throw "Support matrix not found: $MatrixPath"
+  throw "Support matrix not found: $(Get-DisplayPath -Path $MatrixPath)"
 }
 
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
@@ -1296,7 +1339,7 @@ if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
   throw "EvidencePath or BundlePath is required unless -SelfTest is used."
 }
 if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
-  throw "Evidence path not found: $EvidencePath"
+  throw "Evidence path not found: $(Get-DisplayPath -Path $EvidencePath)"
 }
 
 $expectedEntries = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings $failOnWarningsDuringCollection)
@@ -1330,6 +1373,7 @@ foreach ($entry in $expectedEntries) {
       collectionCommand = $entry.collectionCommand
       validationCommand = $entry.validationCommand
       workflowDispatchSupported = $entry.workflowDispatchSupported
+      localCommandOnly = $entry.localCommandOnly
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
       file = [string]$matches[0].relativeFile
@@ -1351,6 +1395,7 @@ foreach ($entry in $expectedEntries) {
       collectionCommand = $entry.collectionCommand
       validationCommand = $entry.validationCommand
       workflowDispatchSupported = $entry.workflowDispatchSupported
+      localCommandOnly = $entry.localCommandOnly
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
       file = ""
@@ -1365,8 +1410,8 @@ $missingRows = @($missing | ForEach-Object { $_ })
 $result = [pscustomobject]@{
   schemaVersion = 1
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-  evidencePath = $EvidencePath
-  bundlePath = $BundlePath
+  evidencePath = Get-DisplayPath -Path $EvidencePath
+  bundlePath = Get-DisplayPath -Path $BundlePath
   reportOnly = [bool]$ReportOnly
   workflowFile = $WorkflowFile
   workflowRef = $WorkflowRef
@@ -1424,6 +1469,12 @@ if ($SelfTest) {
   if (-not $selfTestReport.Contains("_No missing entries._")) {
     throw "Support evidence coverage self-test failed: Markdown report should show no missing entries."
   }
+  if ($selfTestReport.Contains($RepoRoot)) {
+    throw "Support evidence coverage self-test failed: Markdown report leaked the repository absolute path."
+  }
+  if ([System.IO.Path]::IsPathRooted([string]$result.evidencePath) -or ([string]$result.evidencePath).Contains($RepoRoot)) {
+    throw "Support evidence coverage self-test failed: JSON evidencePath leaked an absolute path."
+  }
 
   $mismatchedTargetEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $mismatchedTargetEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
@@ -1435,6 +1486,9 @@ if ($SelfTest) {
   $mismatchedTargetJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N')).json"
   & $PSCommandPath @selfTestCoverageArgs -EvidencePath $mismatchedTargetEvidencePath -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
   $mismatchedTargetJson = Get-Content -LiteralPath $mismatchedTargetJsonPath -Raw | ConvertFrom-Json
+  if ([System.IO.Path]::IsPathRooted([string]$mismatchedTargetJson.evidencePath) -or ([string]$mismatchedTargetJson.evidencePath).Contains($RepoRoot)) {
+    throw "Support evidence coverage self-test failed: JSON report leaked an absolute evidencePath."
+  }
   $missingMismatchedRow = @($mismatchedTargetJson.missing | Where-Object {
       $_.kind -eq "strict" -and
       $_.targetId -eq "ubuntu" -and
@@ -1512,7 +1566,7 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: default missing report did not record strict warning collection."
   }
   $firstMissing = @($missingJson.missing | Select-Object -First 1)[0]
-  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "validationCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
+  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "validationCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "localCommandOnly", "workflowInputSummary", "workflowDispatchCommand")) {
     if (-not $firstMissing.PSObject.Properties[$requiredProperty]) {
       throw "Support evidence coverage self-test failed: missing JSON row did not include $requiredProperty."
     }
@@ -1535,7 +1589,9 @@ if ($SelfTest) {
       "-ExpectedNextJsMode $($firstWindowsMissing.nextJsMode)",
       "-ExpectedServiceManager $($firstWindowsMissing.serviceManager)",
       "-ExpectedReverseProxy $($firstWindowsMissing.reverseProxy)",
-      "-RequireMinimumUptimeHours $requiredMinimumUptimeHours"
+      "-RequireMinimumUptimeHours $requiredMinimumUptimeHours",
+      "-RequireCiCollection",
+      "-RequireHostEvidenceWorkflowCollection"
     )) {
     if (-not ([string]$firstWindowsMissing.validationCommand).Contains($expectedValidationFragment)) {
       throw "Support evidence coverage self-test failed: Windows validation command is missing $expectedValidationFragment."
@@ -1549,6 +1605,13 @@ if ($SelfTest) {
   }
   if (-not ([string]$firstWindowsMissing.workflowDispatchCommand).Contains("fail_on_warnings=true")) {
     throw "Support evidence coverage self-test failed: strict workflow dispatch command is missing fail_on_warnings=true."
+  }
+  $firstLocalOnlyMissing = @($missingJson.missing | Where-Object { $_.workflowDispatchSupported -ne $true } | Select-Object -First 1)[0]
+  if ($null -ne $firstLocalOnlyMissing -and $firstLocalOnlyMissing.localCommandOnly -ne $true) {
+    throw "Support evidence coverage self-test failed: local-command-only row should be marked localCommandOnly."
+  }
+  if ($null -ne $firstLocalOnlyMissing -and ([string]$firstLocalOnlyMissing.validationCommand).Contains("-RequireHostEvidenceWorkflowCollection")) {
+    throw "Support evidence coverage self-test failed: local-command-only validation command should not require workflow provenance."
   }
   $firstUnixMissing = @($missingJson.missing | Where-Object { ([string]$_.targetId) -eq "ubuntu" } | Select-Object -First 1)[0]
   if ($null -eq $firstUnixMissing -or -not ([string]$firstUnixMissing.collectionCommand).Contains("--minimum-uptime-hours $requiredMinimumUptimeHours")) {
@@ -1646,6 +1709,9 @@ if ($SelfTest) {
   $bundleCoverageArgs.MaxEvidenceAgeDays = $MaxEvidenceAgeDays
   & $PSCommandPath @bundleCoverageArgs -Format Json -OutputPath $bundleCoverageJson | Out-Null
   $bundleCoverage = Get-Content -LiteralPath $bundleCoverageJson -Raw | ConvertFrom-Json
+  if ([System.IO.Path]::IsPathRooted([string]$bundleCoverage.bundlePath) -or ([string]$bundleCoverage.bundlePath).Contains($RepoRoot)) {
+    throw "Support evidence coverage self-test failed: BundlePath report leaked an absolute bundlePath."
+  }
   if ([int]$bundleCoverage.summary.missingCount -ne 0) {
     throw "Support evidence coverage self-test failed: BundlePath coverage reported missing entries."
   }

@@ -53,6 +53,10 @@ function Get-MatrixRequiredMinimumUptimeHours {
   }
 }
 
+if ($StrictCiRelease -and $AllowWarnings) {
+  throw "-StrictCiRelease cannot be combined with -AllowWarnings; final release evidence must be warning-clean."
+}
+
 if ($StrictCiRelease) {
   $RequireCleanSource = $true
   $RequireCurrentCommit = $true
@@ -87,6 +91,45 @@ function Get-RelativePath {
   return $pathFull
 }
 
+function Get-DisplayPath {
+  param(
+    [string]$Path,
+    [string]$OutsideRepositoryLabel = "outside-repository"
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+    return "."
+  }
+
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+
+  return $OutsideRepositoryLabel
+}
+
+function Resolve-DisplayPath {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+  $pathText = ([string]$Path).Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+  if ([System.IO.Path]::IsPathRooted($pathText)) {
+    return [System.IO.Path]::GetFullPath($pathText)
+  }
+  if ($pathText -eq ".") {
+    return $RepoRoot
+  }
+  if ($pathText.StartsWith("." + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+    $pathText = $pathText.Substring(2)
+  }
+  return Join-Path $RepoRoot $pathText
+}
+
 function Resolve-BundleRoot {
   param([string]$Path)
 
@@ -99,7 +142,7 @@ function Resolve-BundleRoot {
   }
   if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
     if ([System.IO.Path]::GetExtension($fullPath).ToLowerInvariant() -ne ".zip") {
-      throw "BundlePath file must be a .zip bundle: $fullPath"
+      throw "BundlePath file must be a .zip bundle: $(Get-DisplayPath -Path $fullPath)"
     }
     $extractRoot = Join-Path $RepoRoot ".tmp\release-support-readiness-bundle-$([Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
@@ -109,7 +152,7 @@ function Resolve-BundleRoot {
       Cleanup = $true
     }
   }
-  throw "BundlePath not found: $fullPath"
+  throw "BundlePath not found: $(Get-DisplayPath -Path $fullPath)"
 }
 
 function Get-BundleManifestRoot {
@@ -246,6 +289,62 @@ function Select-MatrixTargets {
   return $selected
 }
 
+function Get-SupportScopeKind {
+  param(
+    [string[]]$SelectedTargetIds,
+    [string[]]$AllTargetIds,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly
+  )
+
+  if ($ProductionRecommendedOnly) {
+    return "production-recommended"
+  }
+
+  $hasTargetFilter = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0
+  $hasCategoryFilter = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0
+  if ($hasTargetFilter -or $hasCategoryFilter) {
+    return "filtered"
+  }
+
+  $missingFromSelection = @($AllTargetIds | Where-Object { $SelectedTargetIds -notcontains $_ })
+  $extraInSelection = @($SelectedTargetIds | Where-Object { $AllTargetIds -notcontains $_ })
+  if ($missingFromSelection.Count -eq 0 -and $extraInSelection.Count -eq 0) {
+    return "full-matrix"
+  }
+
+  return "filtered"
+}
+
+function Get-ProofLevel {
+  param(
+    [bool]$StrictCiRelease,
+    [bool]$RequireCleanSource,
+    [bool]$RequireCurrentCommit,
+    [bool]$RequireCiProvenance,
+    [bool]$RequireCollectionCiProvenance,
+    [bool]$RequireCollectionSourceCommit,
+    [bool]$RequireHostEvidenceWorkflowCollection,
+    [bool]$RequireRuntimeVersions,
+    [bool]$RequireCollectorSha256,
+    [int]$RequireMinimumUptimeHours
+  )
+
+  if ($StrictCiRelease) {
+    return "strict-ci-release"
+  }
+
+  if ($RequireCleanSource -or $RequireCurrentCommit -or $RequireCiProvenance -or
+    $RequireCollectionCiProvenance -or $RequireCollectionSourceCommit -or
+    $RequireHostEvidenceWorkflowCollection -or $RequireRuntimeVersions -or
+    $RequireCollectorSha256 -or $RequireMinimumUptimeHours -gt 0) {
+    return "hardened-real-host-evidence"
+  }
+
+  return "basic-real-host-evidence"
+}
+
 function Test-SafeRuntimeVersionValue {
   param([string]$Value)
 
@@ -290,7 +389,7 @@ function Set-TestCollectionCiProvenance {
     $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
     $collection = Get-PropertyValue -Object $evidence -Names @("EvidenceCollection", "evidenceCollection")
     if ($null -eq $collection) {
-      throw "Self-test evidence file is missing evidenceCollection: $evidencePath"
+      throw "Self-test evidence file is missing evidenceCollection: $(Get-DisplayPath -Path $evidencePath)"
     }
     Add-OrSetNoteProperty -Object $collection -Name "ci" -Value ([pscustomobject]@{
         isCi = $true
@@ -335,7 +434,7 @@ function Remove-TestCollectionCiProvenanceFromLocalOnlyRows {
     $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
     $collection = Get-PropertyValue -Object $evidence -Names @("EvidenceCollection", "evidenceCollection")
     if ($null -eq $collection) {
-      throw "Self-test evidence file is missing evidenceCollection: $evidencePath"
+      throw "Self-test evidence file is missing evidenceCollection: $(Get-DisplayPath -Path $evidencePath)"
     }
     foreach ($ciProperty in @("Ci", "ci")) {
       if ($collection.PSObject.Properties[$ciProperty]) {
@@ -437,6 +536,7 @@ function ConvertTo-ReadinessCoverageRows {
         collectionCommand = Get-StringValue -Object $row -Names @("collectionCommand")
         validationCommand = Get-StringValue -Object $row -Names @("validationCommand")
         workflowDispatchSupported = Get-BooleanValue -Object $row -Names @("workflowDispatchSupported") -Default $null
+        localCommandOnly = Get-BooleanValue -Object $row -Names @("localCommandOnly") -Default $null
         workflowInputSummary = Get-StringValue -Object $row -Names @("workflowInputSummary")
         workflowDispatchCommand = Get-StringValue -Object $row -Names @("workflowDispatchCommand")
       }) | Out-Null
@@ -470,7 +570,8 @@ if ($SelfTest) {
       [switch]$RequireRuntimeVersions,
       [switch]$RequireCollectorSha256,
       [int]$RequireMinimumUptimeHours = 0,
-      [switch]$StrictCiRelease
+      [switch]$StrictCiRelease,
+      [switch]$AllowWarnings
     )
 
     $readinessArgs = @{
@@ -494,13 +595,14 @@ if ($SelfTest) {
     if ($RequireCollectorSha256) { $readinessArgs.RequireCollectorSha256 = $true }
     if ($RequireMinimumUptimeHours -gt 0) { $readinessArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
     if ($StrictCiRelease) { $readinessArgs.StrictCiRelease = $true }
+    if ($AllowWarnings) { $readinessArgs.AllowWarnings = $true }
 
     & $PSCommandPath @readinessArgs | Out-Null
   }
 
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") -SelfTest -MatrixPath $MatrixPath -TargetId $selfTestTargetIds -Format Json -OutputPath $coverageJson | Out-Null
   $coverage = Get-Content -LiteralPath $coverageJson -Raw | ConvertFrom-Json
-  $evidencePath = [string]$coverage.evidencePath
+  $evidencePath = Resolve-DisplayPath -Path ([string]$coverage.evidencePath)
 
   $bundleOutput = Join-Path $selfTestRoot "bundles"
   $IncludeServiceOnly = $true
@@ -527,6 +629,9 @@ if ($SelfTest) {
   $readinessJsonPath = Join-Path $selfTestRoot "readiness.json"
   Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -Format Json -OutputPath $readinessJsonPath
   $readinessJson = Get-Content -LiteralPath $readinessJsonPath -Raw | ConvertFrom-Json
+  if ([System.IO.Path]::IsPathRooted([string]$readinessJson.bundlePath) -or ([string]$readinessJson.bundlePath).Contains($RepoRoot)) {
+    throw "Release support readiness self-test failed: readiness JSON leaked an absolute bundlePath."
+  }
   if ([int]$readinessJson.coverage.coveredCount -ne @($readinessJson.coverage.covered).Count) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve covered coverage rows."
   }
@@ -537,7 +642,7 @@ if ($SelfTest) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve strict warning collection policy."
   }
   $firstCoveredRow = @($readinessJson.coverage.covered | Select-Object -First 1)[0]
-  foreach ($requiredProperty in @("evidenceFile", "file", "collectionCommand", "validationCommand", "requiredMinimumUptimeHours", "workflowDispatchSupported", "workflowInputSummary", "workflowDispatchCommand")) {
+  foreach ($requiredProperty in @("evidenceFile", "file", "collectionCommand", "validationCommand", "requiredMinimumUptimeHours", "workflowDispatchSupported", "localCommandOnly", "workflowInputSummary", "workflowDispatchCommand")) {
     if (-not $firstCoveredRow.PSObject.Properties[$requiredProperty]) {
       throw "Release support readiness self-test failed: readiness coverage row is missing $requiredProperty."
     }
@@ -551,6 +656,28 @@ if ($SelfTest) {
   $firstWorkflowCoveredRow = @($readinessJson.coverage.covered | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
   if ($null -eq $firstWorkflowCoveredRow -or -not ([string]$firstWorkflowCoveredRow.workflowDispatchCommand).Contains("gh workflow run")) {
     throw "Release support readiness self-test failed: readiness coverage rows did not preserve workflow dispatch commands."
+  }
+  $firstLocalOnlyCoveredRow = @($readinessJson.coverage.covered | Where-Object { $_.localCommandOnly -eq $true } | Select-Object -First 1)[0]
+  if ($null -eq $firstLocalOnlyCoveredRow -or $firstLocalOnlyCoveredRow.workflowDispatchSupported -eq $true) {
+    throw "Release support readiness self-test failed: readiness coverage rows did not preserve local-command-only metadata."
+  }
+  if (-not $readinessJson.PSObject.Properties["supportScope"]) {
+    throw "Release support readiness self-test failed: readiness JSON is missing supportScope metadata."
+  }
+  if ([string]$readinessJson.supportScope.kind -ne "filtered") {
+    throw "Release support readiness self-test failed: self-test readiness scope should be filtered."
+  }
+  if ([string]$readinessJson.supportScope.proofLevel -ne "basic-real-host-evidence") {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve the proof level."
+  }
+  if ([int]$readinessJson.supportScope.selectedTargetCount -ne @($selfTestTargetIds).Count) {
+    throw "Release support readiness self-test failed: readiness JSON selected target count is incorrect."
+  }
+  if ([int]$readinessJson.supportScope.matrixTargetCount -le [int]$readinessJson.supportScope.selectedTargetCount) {
+    throw "Release support readiness self-test failed: readiness JSON did not distinguish filtered scope from full matrix scope."
+  }
+  if ([int]$readinessJson.supportScope.localCommandOnlyEvidenceCount -le 0) {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve local-command-only evidence counts."
   }
 
   $matrixMismatchRoot = Join-Path $selfTestRoot "matrix-mismatch"
@@ -662,7 +789,7 @@ if ($SelfTest) {
   $missingRuntimeVersionsEvidence = Get-Content -LiteralPath $missingRuntimeVersionsEvidencePath -Raw | ConvertFrom-Json
   $missingRuntimeVersionsNextJs = Get-PropertyValue -Object $missingRuntimeVersionsEvidence -Names @("NextJsRuntime", "nextJsRuntime")
   if ($null -eq $missingRuntimeVersionsNextJs) {
-    throw "Self-test evidence file is missing Next.js runtime evidence: $missingRuntimeVersionsEvidencePath"
+    throw "Self-test evidence file is missing Next.js runtime evidence: $(Get-DisplayPath -Path $missingRuntimeVersionsEvidencePath)"
   }
   foreach ($runtimeVersionProperty in @("NodeVersion", "nodeVersion", "NextVersion", "nextVersion")) {
     if ($missingRuntimeVersionsNextJs.PSObject.Properties[$runtimeVersionProperty]) {
@@ -691,7 +818,7 @@ if ($SelfTest) {
   $missingCollectorDigestEvidence = Get-Content -LiteralPath $missingCollectorDigestEvidencePath -Raw | ConvertFrom-Json
   $missingCollectorDigestCollection = Get-PropertyValue -Object $missingCollectorDigestEvidence -Names @("EvidenceCollection", "evidenceCollection")
   if ($null -eq $missingCollectorDigestCollection) {
-    throw "Self-test evidence file is missing evidence collection metadata: $missingCollectorDigestEvidencePath"
+    throw "Self-test evidence file is missing evidence collection metadata: $(Get-DisplayPath -Path $missingCollectorDigestEvidencePath)"
   }
   foreach ($collectorDigestProperty in @("CollectorSha256", "collectorSha256")) {
     if ($missingCollectorDigestCollection.PSObject.Properties[$collectorDigestProperty]) {
@@ -719,7 +846,7 @@ if ($SelfTest) {
   $missingMinimumUptimeEvidence = Get-Content -LiteralPath $missingMinimumUptimeEvidencePath -Raw | ConvertFrom-Json
   $missingMinimumUptime = Get-PropertyValue -Object $missingMinimumUptimeEvidence -Names @("Uptime", "uptime")
   if ($null -eq $missingMinimumUptime) {
-    throw "Self-test evidence file is missing uptime metadata: $missingMinimumUptimeEvidencePath"
+    throw "Self-test evidence file is missing uptime metadata: $(Get-DisplayPath -Path $missingMinimumUptimeEvidencePath)"
   }
   foreach ($uptimeProperty in @("MinimumUptimeHours", "minimumUptimeHours", "MinimumSatisfied", "minimumSatisfied")) {
     if ($missingMinimumUptime.PSObject.Properties[$uptimeProperty]) {
@@ -737,6 +864,10 @@ if ($SelfTest) {
   Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -ProductionRecommendedOnly
   Invoke-ExpectReadinessFailure -ExpectedMessage "Production-recommended Node runtime targets are required" -Action {
     Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireProductionRecommendedRuntime
+  }
+
+  Invoke-ExpectReadinessFailure -ExpectedMessage "-StrictCiRelease cannot be combined with -AllowWarnings" -Action {
+    Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -StrictCiRelease -AllowWarnings
   }
 
   $strictMissingCiRoot = Join-Path $selfTestRoot "strict-missing-ci"
@@ -794,11 +925,30 @@ try {
   $manifestPath = Join-Path $bundleRoot "support-evidence-manifest.json"
   $evidencePath = Join-Path $bundleRoot "evidence"
   if (-not (Test-Path -LiteralPath $evidencePath -PathType Container)) {
-    throw "Bundle evidence directory not found: $evidencePath"
+    throw "Bundle evidence directory not found: $(Get-DisplayPath -Path $evidencePath)"
   }
 
+  $allMatrixTargets = @(Select-MatrixTargets -MatrixPath $MatrixPath -TargetId @() -Category @() -ProductionRecommendedOnly $false)
+  $allMatrixTargetIds = @($allMatrixTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
   $selectedTargets = @(Select-MatrixTargets -MatrixPath $MatrixPath -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
   $selectedTargetIds = @($selectedTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
+  $supportScopeKind = Get-SupportScopeKind `
+    -SelectedTargetIds $selectedTargetIds `
+    -AllTargetIds $allMatrixTargetIds `
+    -TargetId $TargetId `
+    -Category $Category `
+    -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly)
+  $proofLevel = Get-ProofLevel `
+    -StrictCiRelease ([bool]$StrictCiRelease) `
+    -RequireCleanSource ([bool]$RequireCleanSource) `
+    -RequireCurrentCommit ([bool]$RequireCurrentCommit) `
+    -RequireCiProvenance ([bool]$RequireCiProvenance) `
+    -RequireCollectionCiProvenance ([bool]$RequireCollectionCiProvenance) `
+    -RequireCollectionSourceCommit ([bool]$RequireCollectionSourceCommit) `
+    -RequireHostEvidenceWorkflowCollection ([bool]$RequireHostEvidenceWorkflowCollection) `
+    -RequireRuntimeVersions ([bool]$RequireRuntimeVersions) `
+    -RequireCollectorSha256 ([bool]$RequireCollectorSha256) `
+    -RequireMinimumUptimeHours $RequireMinimumUptimeHours
 
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
   $currentMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -997,8 +1147,8 @@ try {
     schemaVersion = 1
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     ready = $true
-    bundlePath = Get-RelativePath -BasePath $RepoRoot -Path $BundlePath
-    matrixPath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
+    bundlePath = Get-DisplayPath -Path $BundlePath
+    matrixPath = Get-DisplayPath -Path $MatrixPath
     maxEvidenceAgeDays = $MaxEvidenceAgeDays
     allowWarnings = [bool]$AllowWarnings
     targetId = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
@@ -1020,6 +1170,22 @@ try {
       requireBothNextJsModes = $true
       requireDeclaredServiceManagers = $true
       requireDeclaredReverseProxies = $true
+    }
+    supportScope = [pscustomobject]@{
+      kind = $supportScopeKind
+      proofLevel = $proofLevel
+      fullMatrix = [bool]($supportScopeKind -eq "full-matrix")
+      targetFiltersApplied = [bool](@($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0 -or @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0)
+      productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+      selectedTargetCount = $selectedTargetIds.Count
+      matrixTargetCount = $allMatrixTargetIds.Count
+      selectedTargets = $selectedTargetIds
+      includeServiceOnly = [bool]$IncludeServiceOnly
+      includeFallback = [bool]$IncludeFallback
+      strictNextJsModeServiceProxyClaim = $true
+      workflowCapableEvidenceCount = $workflowCapableEvidenceCount
+      localCommandOnlyEvidenceCount = $localCommandOnlyEvidenceCount
+      requiredMinimumUptimeHours = $RequireMinimumUptimeHours
     }
     coverage = [pscustomobject]@{
       includeServiceOnly = [bool]$IncludeServiceOnly
@@ -1087,6 +1253,9 @@ try {
         ($result | ConvertTo-Json -Depth 8) | Set-Content -Path $OutputPath -Encoding UTF8
       }
       Write-Host "Ready: $($result.ready)"
+      Write-Host "Scope: $($result.supportScope.kind)"
+      Write-Host "Proof level: $($result.supportScope.proofLevel)"
+      Write-Host "Selected targets: $($result.supportScope.selectedTargetCount) of $($result.supportScope.matrixTargetCount)"
       Write-Host "Bundle evidence files: $($result.bundle.evidenceFileCount)"
       Write-Host "Coverage expected: $($result.coverage.expectedCount)"
       Write-Host "Coverage covered:  $($result.coverage.coveredCount)"

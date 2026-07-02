@@ -167,6 +167,12 @@ array containing `self-hosted` plus the expected target label; GitHub-hosted
 labels such as `ubuntu-latest`, `ubuntu-24.04`, `windows-latest`,
 `windows-2022`, `windows-2025`, `macos-latest`, and `macos-15` are rejected
 for real evidence collection.
+The workflow validation job also requires `-RequireCiCollection` and
+`-RequireHostEvidenceWorkflowCollection`, so a workflow-collected `status.json`
+must prove it came from the controlled `host-evidence` / `workflow_dispatch`
+run. Generated validation commands add those switches only for
+workflow-capable targets; local-command-only targets such as BSD rows should
+not use them.
 The workflow also requires expected target, Next.js mode, service manager, and
 reverse proxy inputs from the generated support evidence plan so collected
 artifacts are rejected when they do not match the matrix combination being
@@ -289,13 +295,19 @@ Next.js rows, still proves the required runtime platform floor.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
+`evidence/`, `evidence-downloads/`, and `release-evidence/` are generated,
+git-ignored local output. They may contain machine-specific paths from the
+collector host, so do not commit them. Publish final bundles as CI artifacts or
+release attachments instead of source files.
+
 For the final operator handoff, run the combined release workflow. It can
 optionally import downloaded workflow artifacts, writes JSON and Markdown
 coverage reports, fails if matrix evidence is incomplete, creates the evidence
 bundle, verifies the bundle, and writes release readiness JSON. The generated
 `release-readiness.json` preserves the covered and missing coverage rows with
-their local collection, workflow dispatch, and single-row validation commands
-so the final handoff can reproduce every claimed support tuple:
+their local collection, local-command-only flag, workflow dispatch, and
+single-row validation commands so the final handoff can reproduce every claimed
+support tuple:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -308,7 +320,8 @@ so the final handoff can reproduce every claimed support tuple:
 ```
 
 Add `-StrictCiRelease` only for final CI-controlled signoff from a clean,
-committed revision with workflow-collected evidence.
+committed revision with workflow-collected evidence. Strict release signoff
+refuses `-AllowWarnings`; final support evidence must be warning-clean.
 
 To create a private release evidence bundle with per-file SHA256 hashes:
 
@@ -321,6 +334,9 @@ To create a private release evidence bundle with per-file SHA256 hashes:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -RequireCollectorSha256 `
+  -RequireMinimumUptimeHours 72 `
+  -RequireHostEvidenceWorkflowCollection `
   -RequireCoverageComplete `
   -IncludeServiceOnly `
   -IncludeFallback
@@ -338,12 +354,16 @@ floor.
 When individual evidence files contain safe collection CI provenance, the
 manifest records and verifies it per file so workflow-collected status evidence
 keeps its collection run identity after bundling.
+Bundle switches that require target-aware support-claim logic, such as
+`-RequireHostEvidenceWorkflowCollection`, must be used with
+`-ValidateSupportClaim`.
 `Test-ReleaseSupportReadiness.ps1` rejects a bundle if it was built against a
 different support matrix than the current repository. Use `-StrictCiRelease`
 for final CI-controlled signoff. It requires a clean source revision, current
 commit match, bundle CI provenance, collection CI provenance, collection SHA
 matching the bundle source commit, and collection through the controlled
-`host-evidence` workflow dispatch for workflow-capable evidence rows. Targets
+`host-evidence` workflow dispatch for workflow-capable evidence rows. It also
+rejects `-AllowWarnings`, so final signoff cannot be warning-tolerant. Targets
 marked local-command-only, such as the BSD rows in the example matrix, are
 accepted without workflow collection only when the bundle manifest explicitly
 marks them local-only; they must still prove live Node.js and Next.js runtime
@@ -369,6 +389,11 @@ support claim:
   -StrictCiRelease
 ```
 
+Readiness output includes `supportScope.kind`, `supportScope.proofLevel`,
+selected target counts, workflow-capable evidence counts, and local-command-only
+evidence counts. Treat `Ready: True` as valid only for that stated scope: a
+filtered or production-runtime-only result is not a full-matrix release claim.
+
 For a production-runtime-only support decision, add `-ProductionRecommendedOnly`
 to scope coverage and support-claim checks to matrix rows whose Node runtime is
 production-recommended. Add `-RequireProductionRecommendedRuntime` when the
@@ -390,7 +415,8 @@ To validate a strict real release claim against collected target evidence:
   -TargetId windows-11,windows-server-2022,ubuntu,macos `
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
-  -RequireDeclaredReverseProxies
+  -RequireDeclaredReverseProxies `
+  -RequireHostEvidenceWorkflowCollection
 ```
 
 See [Host Verification Evidence](docs/HOST_VERIFICATION.md) and

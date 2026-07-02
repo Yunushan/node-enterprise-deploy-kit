@@ -107,9 +107,6 @@ function Invoke-HostEvidenceWorkflowInputValidation {
   if ($expectedNextJsMode -notin @("standalone", "next-start")) {
     throw "expected_nextjs_mode must be standalone or next-start."
   }
-  if ($expectedServiceManager -notin @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
-    throw "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, launchd, or bsdrc."
-  }
   if ($expectedReverseProxy -notin @("iis", "nginx", "apache", "haproxy", "traefik", "none")) {
     throw "expected_reverse_proxy must be one of iis, nginx, apache, haproxy, traefik, or none."
   }
@@ -120,10 +117,20 @@ function Invoke-HostEvidenceWorkflowInputValidation {
     throw "expected_target_id must match a support matrix target id."
   }
   $target = $target[0]
+  $targetCategory = ([string]$target.category).Trim().ToLowerInvariant()
+  $workflowCapableCategories = @("windows-client", "windows-server", "linux", "macos")
+  $localCommandOnlyProperty = $target.PSObject.Properties["localCommandOnly"]
+  $localCommandOnly = ($localCommandOnlyProperty -and $localCommandOnlyProperty.Value -eq $true)
+  if ($localCommandOnly -or $workflowCapableCategories -notcontains $targetCategory) {
+    throw "expected_target_id '$expectedTarget' is local-command-only and cannot be collected by the host-evidence workflow."
+  }
 
   $targetModes = @(Get-NormalizedArray $target.nextjsModes)
   if ($targetModes -notcontains $expectedNextJsMode) {
     throw "expected_nextjs_mode '$expectedNextJsMode' is not declared for support matrix target '$expectedTarget'."
+  }
+  if ($expectedServiceManager -notin @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd")) {
+    throw "expected_service_manager must be one of winsw, nssm, pm2, systemd, systemv, openrc, or launchd."
   }
   $targetPrimaryServiceManagers = @(Get-NormalizedArray $target.serviceManagers)
   $targetFallbackServiceManagers = @(Get-NormalizedArray (Get-OptionalPropertyValue -Object $target -Name "fallbackManagers"))
@@ -176,7 +183,6 @@ function Invoke-HostEvidenceWorkflowInputValidation {
     throw "upload_retention_days must be an integer from 1 to 90."
   }
 
-  $targetCategory = ([string]$target.category).Trim().ToLowerInvariant()
   $expectedPlatform = if ($targetCategory -in @("windows-client", "windows-server")) { "windows" } else { "unix" }
   if ($Platform.Trim().ToLowerInvariant() -ne $expectedPlatform) {
     throw "platform must be '$expectedPlatform' for support matrix target '$expectedTarget'."
@@ -284,19 +290,6 @@ function Invoke-SelfTest {
   $macos.ExpectedReverseProxy = "nginx"
   Invoke-HostEvidenceWorkflowInputValidation @macos
 
-  foreach ($bsdTarget in @("freebsd", "openbsd", "netbsd")) {
-    $bsd = $base.Clone()
-    $bsd.RunnerLabels = "[`"self-hosted`",`"$bsdTarget`"]"
-    $bsd.Platform = "unix"
-    $bsd.ConfigPath = "config/linux/app.env"
-    $bsd.EvidenceName = "$bsdTarget-standalone-bsdrc-nginx"
-    $bsd.ExpectedTargetId = $bsdTarget
-    $bsd.ExpectedNextJsMode = "standalone"
-    $bsd.ExpectedServiceManager = "bsdrc"
-    $bsd.ExpectedReverseProxy = "nginx"
-    Invoke-HostEvidenceWorkflowInputValidation @bsd
-  }
-
   $fallback = $base.Clone()
   $fallback.RunnerLabels = '["self-hosted","windows-10"]'
   $fallback.ExpectedTargetId = "windows-10"
@@ -322,6 +315,18 @@ function Invoke-SelfTest {
     $case.ExpectedReverseProxy = "nginx"
     $case.EvidenceName = "macos-next-start-launchd-nginx"
     Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  foreach ($bsdTarget in @("freebsd", "openbsd", "netbsd")) {
+    Invoke-ExpectValidationFailure -Name "$bsdTarget local command only" -ExpectedMessage "cannot be collected by the host-evidence workflow" -Action {
+      $case = $unix.Clone()
+      $case.RunnerLabels = "[`"self-hosted`",`"$bsdTarget`"]"
+      $case.EvidenceName = "$bsdTarget-standalone-bsdrc-nginx"
+      $case.ExpectedTargetId = $bsdTarget
+      $case.ExpectedNextJsMode = "standalone"
+      $case.ExpectedServiceManager = "bsdrc"
+      $case.ExpectedReverseProxy = "nginx"
+      Invoke-HostEvidenceWorkflowInputValidation @case
+    }
   }
   Invoke-ExpectValidationFailure -Name "missing target label" -ExpectedMessage "runner_labels must include the expected target label" -Action {
     $case = $base.Clone()

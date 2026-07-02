@@ -8,6 +8,7 @@ param(
   [switch]$RequireDeclaredServiceManagers,
   [switch]$RequireDeclaredReverseProxies,
   [switch]$RequireCollectorSha256,
+  [switch]$RequireHostEvidenceWorkflowCollection,
   [int]$RequireMinimumUptimeHours = 0,
   [switch]$AllowWarnings,
   [switch]$AllowReverseProxyNone,
@@ -104,10 +105,86 @@ function Get-StringValue {
   return [string]$value
 }
 
+function Get-BooleanValue {
+  param(
+    [object]$Object,
+    [string[]]$Names,
+    $Default = $null
+  )
+
+  $value = Get-PropertyValue -Object $Object -Names $Names
+  if ($null -eq $value) { return $Default }
+  if ($value -is [bool]) { return [bool]$value }
+  $text = ([string]$value).Trim().ToLowerInvariant()
+  if ($text -in @("true", "1", "yes")) { return $true }
+  if ($text -in @("false", "0", "no")) { return $false }
+  return $Default
+}
+
 function Get-ArrayValue {
   param($Value)
   if ($null -eq $Value) { return @() }
   return @($Value)
+}
+
+function Get-DisplayPath {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+  try {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+    if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+      return "."
+    }
+    $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+    if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+    }
+  } catch {
+    return (Split-Path -Leaf $Path)
+  }
+  return (Split-Path -Leaf $Path)
+}
+
+function Test-WorkflowDispatchSupported {
+  param([string]$Category)
+  return ((Normalize-Token $Category) -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Test-TargetWorkflowDispatchSupported {
+  param([object]$Target)
+
+  $localCommandOnly = Get-BooleanValue -Object $Target -Names @("localCommandOnly") -Default $false
+  if ($localCommandOnly -eq $true) {
+    return $false
+  }
+  return (Test-WorkflowDispatchSupported -Category ([string]$Target.category))
+}
+
+function Get-EvidenceCollectionCi {
+  param([object]$Evidence)
+
+  $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
+  [pscustomobject]@{
+    IsCi = Get-BooleanValue -Object $ci -Names @("IsCi", "isCi") -Default $null
+    Provider = (Get-StringValue -Object $ci -Names @("Provider", "provider")).Trim().ToLowerInvariant()
+    WorkflowName = (Get-StringValue -Object $ci -Names @("WorkflowName", "workflowName")).Trim().ToLowerInvariant()
+    EventName = (Get-StringValue -Object $ci -Names @("EventName", "eventName")).Trim().ToLowerInvariant()
+  }
+}
+
+function Test-HostEvidenceWorkflowCollection {
+  param([object]$Evidence)
+
+  $ci = Get-EvidenceCollectionCi -Evidence $Evidence
+  return (
+    $ci.IsCi -eq $true -and
+    $ci.Provider -eq "github-actions" -and
+    $ci.WorkflowName -eq "host-evidence" -and
+    $ci.EventName -eq "workflow_dispatch"
+  )
 }
 
 function Get-EvidenceTargets {
@@ -294,6 +371,7 @@ function Get-EvidenceRecords {
         NextJsMode = Get-NextJsMode -Evidence $evidence
         ServiceManager = Get-ServiceManager -Evidence $evidence
         ReverseProxy = Get-ReverseProxyMode -Evidence $evidence
+        HostEvidenceWorkflowCollected = Test-HostEvidenceWorkflowCollection -Evidence $evidence
       }
     } catch {
       [pscustomobject]@{
@@ -303,8 +381,43 @@ function Get-EvidenceRecords {
         NextJsMode = ""
         ServiceManager = ""
         ReverseProxy = ""
+        HostEvidenceWorkflowCollected = $false
       }
     }
+  }
+}
+
+function Set-SelfTestWorkflowCollection {
+  param(
+    [string]$Path,
+    [string[]]$LocalOnlyTargets = @()
+  )
+
+  $localOnly = @($LocalOnlyTargets | ForEach-Object { Normalize-Token $_ })
+  foreach ($file in @(Get-ChildItem -Path $Path -Recurse -File -Filter "*.json")) {
+    $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+    $targetId = Get-PrimaryEvidenceTarget -Evidence $evidence
+    $collection = Get-PropertyValue -Object $evidence -Names @("EvidenceCollection", "evidenceCollection")
+    if ($null -eq $collection) { continue }
+    foreach ($name in @("Ci", "ci")) {
+      if ($null -ne $collection.PSObject.Properties[$name]) {
+        $collection.PSObject.Properties.Remove($name)
+      }
+    }
+    if ($localOnly -notcontains $targetId) {
+      $ci = [ordered]@{
+        isCi = $true
+        provider = "github-actions"
+        workflowName = "host-evidence"
+        runId = "123456789"
+        runAttempt = "1"
+        eventName = "workflow_dispatch"
+        refName = "main"
+        sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+      $collection | Add-Member -MemberType NoteProperty -Name "ci" -Value $ci -Force
+    }
+    $evidence | ConvertTo-Json -Depth 10 | Set-Content -Path $file.FullName -Encoding UTF8
   }
 }
 
@@ -734,6 +847,31 @@ if ($SelfTest) {
     $EvidencePath = Join-Path $RepoRoot ".tmp\support-claim-selftest-$([Guid]::NewGuid().ToString('N'))"
   }
   New-ClaimSelfTestEvidence -Path $EvidencePath
+  $failedWithoutWorkflowCollection = $false
+  $workflowFailureArgs = @{
+    EvidencePath = $EvidencePath
+    MatrixPath = $MatrixPath
+    TargetId = [string[]]@("windows-11")
+    RequireHostEvidenceWorkflowCollection = $true
+    AllowReverseProxyNone = $true
+  }
+  try {
+    & $PSCommandPath @workflowFailureArgs *> $null
+  } catch {
+    $failedWithoutWorkflowCollection = ($_.Exception.Message -match "workflow provenance validation failed")
+  }
+  if (-not $failedWithoutWorkflowCollection) {
+    throw "Support claim self-test failed: workflow-capable evidence without host-evidence workflow provenance should be rejected."
+  }
+  Set-SelfTestWorkflowCollection -Path $EvidencePath -LocalOnlyTargets @("freebsd", "openbsd", "netbsd")
+  $workflowSuccessArgs = @{
+    EvidencePath = $EvidencePath
+    MatrixPath = $MatrixPath
+    TargetId = [string[]]@("windows-11", "freebsd")
+    RequireHostEvidenceWorkflowCollection = $true
+    AllowReverseProxyNone = $true
+  }
+  & $PSCommandPath @workflowSuccessArgs *> $null
   if ($TargetId.Count -eq 0 -and $Category.Count -eq 0) {
     $TargetId = @(
       "windows-10",
@@ -799,6 +937,14 @@ if ($TargetId.Count -gt 0) {
   $selected = $targets
 }
 
+$selectedTargetsById = @{}
+foreach ($target in $selected) {
+  $selectedTargetId = Normalize-Token ([string]$target.id)
+  if ($selectedTargetId) {
+    $selectedTargetsById[$selectedTargetId] = $target
+  }
+}
+
 $requiredEvidenceTargets = New-Object System.Collections.Generic.List[string]
 foreach ($target in $selected) {
   foreach ($evidenceTarget in @(Get-ArrayValue $target.evidenceTargets)) {
@@ -832,8 +978,31 @@ if ($AllowReverseProxyNone) {
 
 & (Join-Path $ScriptDir "Test-HostEvidence.ps1") @hostEvidenceArgs
 
-if ($RequireBothNextJsModes -or $RequireDeclaredServiceManagers -or $RequireDeclaredReverseProxies) {
+$needsEvidenceRecords = ($RequireHostEvidenceWorkflowCollection -or $RequireBothNextJsModes -or $RequireDeclaredServiceManagers -or $RequireDeclaredReverseProxies)
+$records = @()
+if ($needsEvidenceRecords) {
   $records = @(Get-EvidenceRecords -Path $EvidencePath)
+}
+
+if ($RequireHostEvidenceWorkflowCollection) {
+  $workflowIssues = New-Object System.Collections.Generic.List[string]
+  foreach ($record in $records) {
+    if (-not $record.PrimaryTarget -or -not $selectedTargetsById.ContainsKey($record.PrimaryTarget)) { continue }
+    $target = $selectedTargetsById[$record.PrimaryTarget]
+    if (-not (Test-TargetWorkflowDispatchSupported -Target $target)) { continue }
+    if ($record.HostEvidenceWorkflowCollected -ne $true) {
+      $workflowIssues.Add("$(Get-DisplayPath -Path $record.File) for $($record.PrimaryTarget) does not prove github-actions host-evidence workflow_dispatch collection.") | Out-Null
+    }
+  }
+  if ($workflowIssues.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Support claim workflow provenance failures:"
+    $workflowIssues | ForEach-Object { Write-Host "  $_" }
+    throw "Support claim workflow provenance validation failed."
+  }
+}
+
+if ($RequireBothNextJsModes -or $RequireDeclaredServiceManagers -or $RequireDeclaredReverseProxies) {
   $issues = New-Object System.Collections.Generic.List[string]
   foreach ($target in $selected) {
     $targetId = Normalize-Token ([string]$target.id)

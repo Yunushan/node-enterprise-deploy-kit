@@ -706,6 +706,20 @@ function Test-Bundle {
       }
     }
 
+    $supportClaimValidated = Get-BooleanValue -Object $manifest -Names @("supportClaimValidated") -Default $false
+    $requireCollectorSha256 = Get-BooleanValue -Object $manifest -Names @("requireCollectorSha256") -Default $false
+    $requireHostEvidenceWorkflowCollection = Get-BooleanValue -Object $manifest -Names @("requireHostEvidenceWorkflowCollection") -Default $false
+    $requireMinimumUptimeHours = Get-IntegerValue -Object $manifest -Names @("requireMinimumUptimeHours")
+    if ($null -eq $requireMinimumUptimeHours) {
+      $requireMinimumUptimeHours = 0
+    }
+    if ($requireMinimumUptimeHours -lt 0) {
+      throw "support-evidence-manifest.json requireMinimumUptimeHours must be zero or a positive integer."
+    }
+    if ($requireHostEvidenceWorkflowCollection -eq $true -and $supportClaimValidated -ne $true) {
+      throw "support-evidence-manifest.json cannot require host-evidence workflow collection unless supportClaimValidated is true."
+    }
+
     $manifestRows = @($manifest.files)
     if ($manifestRows.Count -eq 0) {
       throw "support-evidence-manifest.json must list at least one evidence file."
@@ -792,11 +806,13 @@ function Test-Bundle {
       if ($workflowDispatchSupported -eq $localCommandOnly) {
         throw "workflowDispatchSupported and localCommandOnly manifest values disagree for $relative."
       }
-      if ($targetCategory -eq "bsd" -and ($workflowDispatchSupported -ne $false -or $localCommandOnly -ne $true)) {
-        throw "BSD evidence must be marked local-command-only in the manifest for $relative."
+      $matrixLocalCommandOnly = Get-BooleanValue -Object $matrixTarget -Names @("localCommandOnly") -Default $false
+      $matrixWorkflowDispatchSupported = ($matrixLocalCommandOnly -ne $true -and $targetCategory -in @("windows-client", "windows-server", "linux", "macos"))
+      if ($workflowDispatchSupported -ne $matrixWorkflowDispatchSupported -or $localCommandOnly -ne (-not [bool]$matrixWorkflowDispatchSupported)) {
+        throw "workflowDispatchSupported and localCommandOnly manifest values must match the support matrix for $relative."
       }
-      if ($targetCategory -in @("windows-client", "windows-server", "linux", "macos") -and ($workflowDispatchSupported -ne $true -or $localCommandOnly -ne $false)) {
-        throw "Workflow-capable evidence is not marked correctly in the manifest for $relative."
+      if ($targetCategory -eq "bsd" -and $localCommandOnly -ne $true) {
+        throw "BSD evidence must be marked local-command-only in the manifest for $relative."
       }
       if ([string]$row.nextJsMode -ne (Get-NextJsMode -Evidence $evidence)) {
         throw "nextJsMode manifest mismatch for $relative."
@@ -863,6 +879,9 @@ function Test-Bundle {
       if ([string]$row.collectorSha256 -ne $collection.CollectorSha256) {
         throw "collectorSha256 manifest mismatch for $relative."
       }
+      if ($requireCollectorSha256 -eq $true -and ([string]::IsNullOrWhiteSpace($collection.CollectorSha256) -or $collection.CollectorSha256 -notmatch '^[a-f0-9]{64}$')) {
+        throw "Bundle requirement requireCollectorSha256 is true, but collectorSha256 is missing or invalid for $relative."
+      }
       $liveHost = Get-BooleanValue -Object $row -Names @("liveHost") -Default $null
       if ($liveHost -ne $collection.LiveHost) {
         throw "liveHost manifest mismatch for $relative."
@@ -919,6 +938,14 @@ function Test-Bundle {
         -not [string]::IsNullOrWhiteSpace($collection.Ci.RefName) -or
         -not [string]::IsNullOrWhiteSpace($collection.Ci.Sha)
       )
+      if ($requireHostEvidenceWorkflowCollection -eq $true -and $workflowDispatchSupported -eq $true -and (
+          $collection.Ci.IsCi -ne $true -or
+          $collection.Ci.Provider -ne "github-actions" -or
+          $collection.Ci.WorkflowName -ne "host-evidence" -or
+          $collection.Ci.EventName -ne "workflow_dispatch"
+        )) {
+        throw "Bundle requirement requireHostEvidenceWorkflowCollection is true, but workflow-capable evidence was not collected by the host-evidence workflow for $relative."
+      }
       if ($rowHasCollectionCi -or $evidenceHasCollectionCi) {
         if ($rowCollectionCiIsCi -ne $collection.Ci.IsCi) {
           throw "collectionCiIsCi manifest mismatch for $relative."
@@ -945,6 +972,17 @@ function Test-Bundle {
           throw "collectionCiSha manifest mismatch for $relative."
         }
         Assert-CollectionCiProvenance -Ci $collection.Ci -Context $relative
+      }
+      if ($requireMinimumUptimeHours -gt 0) {
+        $uptime = Get-PropertyValue -Object $evidence -Names @("Uptime", "uptime")
+        if ($null -eq $uptime) {
+          throw "Bundle requirement requireMinimumUptimeHours is $requireMinimumUptimeHours, but uptime evidence is missing for $relative."
+        }
+        $minimumUptimeHours = Get-IntegerValue -Object $uptime -Names @("MinimumUptimeHours", "minimumUptimeHours")
+        $minimumSatisfied = Get-BooleanValue -Object $uptime -Names @("MinimumSatisfied", "minimumSatisfied") -Default $null
+        if ($null -eq $minimumUptimeHours -or $minimumUptimeHours -lt $requireMinimumUptimeHours -or $minimumSatisfied -ne $true) {
+          throw "Bundle requirement requireMinimumUptimeHours is $requireMinimumUptimeHours, but uptime evidence does not prove that window for $relative."
+        }
       }
     }
 
@@ -973,9 +1011,10 @@ Write-Host ""
 Write-Host "==> Support evidence bundle verification"
 
 if ($SelfTest) {
-  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -SelfTest | Out-Null
-  $selfTestRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-output\selftest-support-evidence"
-  $selfTestZip = Join-Path $RepoRoot ".tmp\support-evidence-bundle-selftest-output\selftest-support-evidence.zip"
+  $selfTestOutputDirectory = Join-Path $RepoRoot ".tmp\support-evidence-bundle-verifier-selftest-$([Guid]::NewGuid().ToString('N'))"
+  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -SelfTest -OutputDirectory $selfTestOutputDirectory | Out-Null
+  $selfTestRoot = Join-Path $selfTestOutputDirectory "selftest-support-evidence"
+  $selfTestZip = Join-Path $selfTestOutputDirectory "selftest-support-evidence.zip"
   Test-Bundle -Path $selfTestRoot
   Test-Bundle -Path $selfTestZip
 
@@ -1169,6 +1208,80 @@ if ($SelfTest) {
   ($incompleteGithubCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $incompleteGithubCiManifestPath -Encoding UTF8
   Invoke-ExpectBundleFailure -ExpectedMessage "ci.runId is required for github-actions provenance" -Action {
     Test-Bundle -Path $incompleteGithubCiRoot
+  }
+
+  $claimMismatchRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-claim-flags-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $claimMismatchRoot
+  $claimMismatchManifestPath = Join-Path $claimMismatchRoot "support-evidence-manifest.json"
+  $claimMismatchManifest = Get-Content -LiteralPath $claimMismatchManifestPath -Raw | ConvertFrom-Json
+  $claimMismatchManifest.supportClaimValidated = $false
+  $claimMismatchManifest | Add-Member -NotePropertyName "requireHostEvidenceWorkflowCollection" -NotePropertyValue $true -Force
+  ($claimMismatchManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $claimMismatchManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "cannot require host-evidence workflow collection unless supportClaimValidated is true" -Action {
+    Test-Bundle -Path $claimMismatchRoot
+  }
+
+  $requiredCollectorRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-required-collector-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $requiredCollectorRoot
+  $requiredCollectorFile = Join-Path $requiredCollectorRoot "evidence\ubuntu-systemd-nginx.json"
+  $requiredCollectorEvidence = Get-Content -LiteralPath $requiredCollectorFile -Raw | ConvertFrom-Json
+  $requiredCollectorEvidence.evidenceCollection.collectorSha256 = ""
+  ($requiredCollectorEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredCollectorFile -Encoding UTF8
+  $requiredCollectorManifestPath = Join-Path $requiredCollectorRoot "support-evidence-manifest.json"
+  $requiredCollectorManifest = Get-Content -LiteralPath $requiredCollectorManifestPath -Raw | ConvertFrom-Json
+  $requiredCollectorManifest | Add-Member -NotePropertyName "requireCollectorSha256" -NotePropertyValue $true -Force
+  foreach ($row in @($requiredCollectorManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $requiredCollectorFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $requiredCollectorFile).Length
+      $row.collectorSha256 = ""
+    }
+  }
+  ($requiredCollectorManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredCollectorManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "requireCollectorSha256 is true" -Action {
+    Test-Bundle -Path $requiredCollectorRoot
+  }
+
+  $requiredWorkflowRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-required-workflow-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $requiredWorkflowRoot
+  $requiredWorkflowFile = Join-Path $requiredWorkflowRoot "evidence\ubuntu-systemd-nginx.json"
+  $requiredWorkflowEvidence = Get-Content -LiteralPath $requiredWorkflowFile -Raw | ConvertFrom-Json
+  $requiredWorkflowEvidence.evidenceCollection.ci.workflowName = "other-workflow"
+  ($requiredWorkflowEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredWorkflowFile -Encoding UTF8
+  $requiredWorkflowManifestPath = Join-Path $requiredWorkflowRoot "support-evidence-manifest.json"
+  $requiredWorkflowManifest = Get-Content -LiteralPath $requiredWorkflowManifestPath -Raw | ConvertFrom-Json
+  $requiredWorkflowManifest.supportClaimValidated = $true
+  $requiredWorkflowManifest | Add-Member -NotePropertyName "requireHostEvidenceWorkflowCollection" -NotePropertyValue $true -Force
+  foreach ($row in @($requiredWorkflowManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $requiredWorkflowFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $requiredWorkflowFile).Length
+      $row.collectionCiWorkflowName = "other-workflow"
+    }
+  }
+  ($requiredWorkflowManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredWorkflowManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "requireHostEvidenceWorkflowCollection is true" -Action {
+    Test-Bundle -Path $requiredWorkflowRoot
+  }
+
+  $requiredUptimeRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-required-uptime-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $requiredUptimeRoot
+  $requiredUptimeFile = Join-Path $requiredUptimeRoot "evidence\ubuntu-systemd-nginx.json"
+  $requiredUptimeEvidence = Get-Content -LiteralPath $requiredUptimeFile -Raw | ConvertFrom-Json
+  $requiredUptimeEvidence.uptime.minimumSatisfied = $false
+  ($requiredUptimeEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredUptimeFile -Encoding UTF8
+  $requiredUptimeManifestPath = Join-Path $requiredUptimeRoot "support-evidence-manifest.json"
+  $requiredUptimeManifest = Get-Content -LiteralPath $requiredUptimeManifestPath -Raw | ConvertFrom-Json
+  $requiredUptimeManifest | Add-Member -NotePropertyName "requireMinimumUptimeHours" -NotePropertyValue 72 -Force
+  foreach ($row in @($requiredUptimeManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $requiredUptimeFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $requiredUptimeFile).Length
+    }
+  }
+  ($requiredUptimeManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $requiredUptimeManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "requireMinimumUptimeHours is 72" -Action {
+    Test-Bundle -Path $requiredUptimeRoot
   }
 
   Write-Host "Support evidence bundle verification OK"

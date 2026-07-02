@@ -227,7 +227,7 @@ function Test-NoObviousSecrets {
     "(?i)(password|secret|token|apikey|api_key)\s*[:=]\s*['""]?[A-Za-z0-9_\-]{12,}",
     "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
   )
-  $ignoreDirs = @(".git", ".tmp", "node_modules", ".next", "dist", "build")
+  $ignoreDirs = @(".git", ".tmp", "node_modules", ".next", "dist", "build", "evidence", "evidence-downloads", "release-evidence")
   $binaryExt = @(".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe")
   $failed = $false
 
@@ -302,6 +302,42 @@ function Test-ReleasePackageHygiene {
   & (Join-Path $ScriptDir "Test-ReleasePackage.ps1")
 }
 
+function Test-GeneratedPrivateOutputNotTracked {
+  Write-Step "Generated/private output tracking"
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $git) {
+    Write-Host "git was not found; skipping tracked generated output check."
+    return
+  }
+
+  $blockedRoots = @(
+    "evidence",
+    "evidence-downloads",
+    "release-evidence",
+    ".tmp",
+    "logs"
+  )
+
+  Push-Location $RepoRoot
+  try {
+    $tracked = @(& $git.Source ls-files -- @blockedRoots)
+    if ($LASTEXITCODE -ne 0) {
+      throw "git ls-files failed while checking generated/private output tracking."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+
+  if ($tracked.Count -gt 0) {
+    Write-Host "Generated/private output paths are tracked by git:"
+    $tracked | ForEach-Object { Write-Host "  $_" }
+    throw "Generated/private output tracking check failed."
+  }
+
+  Write-Host "Generated/private output tracking OK"
+}
+
 function Test-HostEvidenceSelfTest {
   & (Join-Path $ScriptDir "Test-HostEvidence.ps1") -SelfTest -RequireNextJs -RequireReverseProxy -RequireDeploymentIdentity
 }
@@ -328,6 +364,12 @@ function Test-SupportEvidencePlanSelfTest {
 
 function Test-SupportEvidenceBundleSelfTest {
   & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -SelfTest
+  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") `
+    -SelfTest `
+    -ValidateSupportClaim `
+    -RequireCollectorSha256 `
+    -RequireMinimumUptimeHours 72 `
+    -RequireHostEvidenceWorkflowCollection
 }
 
 function Test-SupportEvidenceBundleVerifierSelfTest {
@@ -367,6 +409,7 @@ Test-ReactSupport
 Test-StaticIisSupport
 Test-NextJsRuntimeSmoke
 Test-ReleasePackageHygiene
+Test-GeneratedPrivateOutputNotTracked
 Test-HostEvidenceSelfTest
 Test-SupportMatrix
 Test-WindowsServiceManagers

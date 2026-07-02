@@ -449,6 +449,10 @@ function Invoke-HostEvidenceValidation {
   if (-not $AllowWarnings) {
     $validationArgs.FailOnWarnings = $true
   }
+  if (-not $AllowLocalCollection) {
+    $validationArgs.RequireCiCollection = $true
+    $validationArgs.RequireHostEvidenceWorkflowCollection = $true
+  }
 
   & (Join-Path $ScriptDir "Test-HostEvidence.ps1") @validationArgs | Out-Null
 }

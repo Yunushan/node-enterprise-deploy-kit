@@ -50,7 +50,7 @@ function Test-BlockedReleasePath {
   param([string]$Path)
 
   $normalized = $Path -replace "\\", "/"
-  if ($normalized -match '(^|/)(node_modules|\.next|dist|build|coverage|logs|\.tmp)/') { return $true }
+  if ($normalized -match '(^|/)(node_modules|\.next|dist|build|coverage|logs|evidence|evidence-downloads|release-evidence|\.tmp)/') { return $true }
   if ($normalized -in @("config/windows/app.config.json", "config/linux/app.env", ".env")) { return $true }
   if ($normalized -like ".env.*" -and $normalized -ne ".env.example") { return $true }
   if ($normalized -match '\.(key|pem|pfx|p12|crt|csr)$') { return $true }
