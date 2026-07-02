@@ -1341,6 +1341,14 @@ write_json_output() {
     printf '    "synthetic": false,\n'
     printf '    "mock": false,\n'
     printf '    "sample": false,\n'
+    printf '    "workflowDispatch": {\n'
+    printf '      "evidenceName": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EVIDENCE_NAME:-}")")"
+    printf '      "expectedTargetId": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_TARGET_ID:-}")")"
+    printf '      "expectedNextJsMode": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_NEXTJS_MODE:-}")")"
+    printf '      "expectedServiceManager": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_SERVICE_MANAGER:-}")")"
+    printf '      "expectedReverseProxy": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_REVERSE_PROXY:-}")")"
+    printf '      "minimumUptimeHours": "%s"\n' "$(json_escape "$(safe_ci_digits_value "${MINIMUM_UPTIME_HOURS:-}")")"
+    printf '    },\n'
     printf '    "ci": {\n'
     printf '      "isCi": %s,\n' "$ci_is_ci"
     printf '      "provider": "%s",\n' "$(json_escape "$ci_provider")"

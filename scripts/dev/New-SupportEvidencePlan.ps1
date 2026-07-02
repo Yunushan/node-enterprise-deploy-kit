@@ -651,6 +651,9 @@ foreach ($target in $targets) {
       foreach ($proxy in $concreteProxies) {
         $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback evidence; not a strict service-manager claim." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings ([bool]$FailOnWarnings))) | Out-Null
       }
+      foreach ($proxy in $serviceOnlyMarkers) {
+        $fallbackEvidence.Add((New-PlanEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -Notes "Compatibility fallback service-only evidence; not a strict service-manager claim." -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings ([bool]$FailOnWarnings))) | Out-Null
+      }
     }
   }
 }
@@ -771,6 +774,18 @@ if ($SelfTest) {
   $workflowSupportedEntries = @($allPlanEntries | Where-Object { $_.workflowDispatchSupported -eq $true })
   if ($workflowSupportedEntries.Count -lt 1) {
     throw "Support evidence plan self-test failed: expected at least one workflow-dispatch-supported evidence entry."
+  }
+  $fallbackServiceOnlyEntry = @($allPlanEntries | Where-Object {
+      $_.kind -eq "fallback" -and
+      $_.targetId -eq "windows-10" -and
+      $_.serviceManager -eq "pm2" -and
+      $_.reverseProxy -eq "none"
+    } | Select-Object -First 1)
+  if ($fallbackServiceOnlyEntry.Count -ne 1) {
+    throw "Support evidence plan self-test failed: expected fallback service-only PM2 evidence entry."
+  }
+  if (-not ([string]$fallbackServiceOnlyEntry[0].evidenceFile).EndsWith("pm2-none-fallback.json")) {
+    throw "Support evidence plan self-test failed: fallback service-only evidence file should use the fallback suffix."
   }
   foreach ($entry in $workflowSupportedEntries) {
     $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"

@@ -525,10 +525,30 @@ function Test-NextJsPlatformRuntimeFloor {
   return $true
 }
 
-function Get-NextJsMode {
+function Test-NextJsFrameworkEvidence {
+  param([string]$Value)
+  return ((Normalize-Token $Value) -in @("next", "nextjs", "next-js"))
+}
+
+function Test-SafeRuntimeVersionEvidence {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+  return ($Value -match '^[A-Za-z0-9._+:-]{1,80}$')
+}
+
+function Get-NextJsRuntimeEvidence {
   param([object]$Evidence)
+
   $nextJs = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
   $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
+  $appFramework = Get-StringValue -Object $nextJs -Names @("AppFramework", "appFramework")
+  if (-not $appFramework) {
+    $appFramework = Get-StringValue -Object $platform -Names @("AppFramework", "appFramework")
+  }
+  if (-not $appFramework) {
+    $appFramework = Get-StringValue -Object $Evidence -Names @("AppFramework", "appFramework")
+  }
+
   $mode = Get-StringValue -Object $nextJs -Names @("Mode", "mode")
   if (-not $mode) {
     $mode = Get-StringValue -Object $platform -Names @("NextjsDeploymentMode", "nextjsDeploymentMode", "NextJsDeploymentMode")
@@ -536,7 +556,40 @@ function Get-NextJsMode {
   if (-not $mode) {
     $mode = Get-StringValue -Object $Evidence -Names @("NextjsDeploymentMode", "nextjsDeploymentMode", "NextJsDeploymentMode")
   }
-  return (Normalize-Token $mode)
+
+  [pscustomobject]@{
+    applicable = Get-BooleanValue -Object $nextJs -Names @("Applicable", "applicable") -Default $false
+    status = Get-StringValue -Object $nextJs -Names @("Status", "status")
+    appFramework = $appFramework
+    mode = Normalize-Token $mode
+    nodeVersion = Get-StringValue -Object $nextJs -Names @("NodeVersion", "nodeVersion")
+    minimumNodeVersion = Get-StringValue -Object $nextJs -Names @("MinimumNodeVersion", "minimumNodeVersion")
+    nodeVersionSatisfied = Get-BooleanValue -Object $nextJs -Names @("NodeVersionSatisfied", "nodeVersionSatisfied") -Default $null
+    nextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
+    nextStartScriptIsExpectedCli = Get-BooleanValue -Object $nextJs -Names @("NextStartScriptIsExpectedCli", "nextStartScriptIsExpectedCli", "NextStartCommandIsExpectedCli", "nextStartCommandIsExpectedCli") -Default $null
+  }
+}
+
+function Test-NextJsRuntimeEvidence {
+  param([object]$Evidence)
+
+  if (-not (Test-NextJsFrameworkEvidence -Value $Evidence.appFramework)) { return $false }
+  if ($Evidence.mode -notin @("standalone", "next-start")) { return $false }
+  if ($Evidence.applicable -ne $true) { return $false }
+  if ($Evidence.status -ne "ok") { return $false }
+  if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.nodeVersion)) { return $false }
+  if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.minimumNodeVersion)) { return $false }
+  if ([string]::IsNullOrWhiteSpace([string]$Evidence.minimumNodeVersion)) { return $false }
+  if ($Evidence.nodeVersionSatisfied -ne $true) { return $false }
+  if ($Evidence.mode -eq "next-start" -and $Evidence.nextStartScriptIsExpectedCli -ne $true) { return $false }
+  if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.nextVersion)) { return $false }
+  return $true
+}
+
+function Get-NextJsMode {
+  param([object]$Evidence)
+  $runtime = Get-NextJsRuntimeEvidence -Evidence $Evidence
+  return $runtime.mode
 }
 
 function Get-ServiceManager {
@@ -549,8 +602,187 @@ function Get-ServiceManager {
   return (Normalize-Token $serviceManager)
 }
 
-function Get-ReverseProxyMode {
+function Get-ServiceEvidence {
   param([object]$Evidence)
+
+  $service = Get-PropertyValue -Object $Evidence -Names @("Service", "service")
+  $definition = Get-PropertyValue -Object $Evidence -Names @("ServiceDefinition", "serviceDefinition")
+  $activeStatus = Get-StringValue -Object $Evidence -Names @("ServiceActiveStatus", "serviceActiveStatus")
+  $enabledStatus = Get-StringValue -Object $Evidence -Names @("ServiceEnabledStatus", "serviceEnabledStatus")
+
+  if ($service) {
+    $status = Get-StringValue -Object $service -Names @("Status", "status")
+    $startType = Get-StringValue -Object $service -Names @("StartType", "startType")
+    $win32State = Get-StringValue -Object $service -Names @("Win32State", "win32State")
+    $win32StartMode = Get-StringValue -Object $service -Names @("Win32StartMode", "win32StartMode")
+
+    if (-not $activeStatus) {
+      if ($status -eq "Running" -or $win32State -eq "Running") {
+        $activeStatus = "active"
+      } elseif ($status -or $win32State) {
+        $activeStatus = "inactive"
+      }
+    }
+    if (-not $enabledStatus) {
+      if ($startType -eq "Automatic" -or $win32StartMode -eq "Auto") {
+        $enabledStatus = "enabled"
+      } elseif ($startType -or $win32StartMode) {
+        $enabledStatus = "disabled"
+      }
+    }
+  }
+
+  [pscustomobject]@{
+    activeStatus = if ($activeStatus) { $activeStatus } else { "unknown" }
+    enabledStatus = if ($enabledStatus) { $enabledStatus } else { "unknown" }
+    definitionChecked = Get-BooleanValue -Object $definition -Names @("Checked", "checked") -Default $false
+    definitionExists = Get-BooleanValue -Object $definition -Names @("DefinitionExists", "definitionExists") -Default $false
+    serviceWrapperMatchesConfig = Get-BooleanValue -Object $definition -Names @("ServiceWrapperMatchesConfig", "serviceWrapperMatchesConfig") -Default $null
+    nodeExeMatchesConfig = Get-BooleanValue -Object $definition -Names @("NodeExeMatchesConfig", "nodeExeMatchesConfig") -Default $false
+    workingDirectoryMatchesConfig = Get-BooleanValue -Object $definition -Names @("WorkingDirectoryMatchesConfig", "workingDirectoryMatchesConfig") -Default $false
+    argumentsMatchConfig = Get-BooleanValue -Object $definition -Names @("ArgumentsMatchConfig", "argumentsMatchConfig") -Default $false
+    runnerScriptMatchesConfig = Get-BooleanValue -Object $definition -Names @("RunnerScriptMatchesConfig", "runnerScriptMatchesConfig") -Default $null
+  }
+}
+
+function Test-ServiceActiveEvidence {
+  param([string]$Status)
+  return ($Status -in @("active", "running"))
+}
+
+function Test-ServiceEnabledEvidence {
+  param([string]$Status)
+  return ($Status -in @("enabled", "automatic", "auto", "static", "generated", "linked", "linked-runtime", "indirect", "enabled-runtime"))
+}
+
+function Test-ServiceEvidence {
+  param(
+    [object]$Evidence,
+    [string]$ServiceManager
+  )
+
+  if (-not (Test-ServiceActiveEvidence -Status $Evidence.activeStatus)) { return $false }
+  if (-not (Test-ServiceEnabledEvidence -Status $Evidence.enabledStatus)) { return $false }
+  if ($ServiceManager -in @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
+    if ($Evidence.definitionChecked -ne $true) { return $false }
+    if ($Evidence.definitionExists -ne $true) { return $false }
+    if ($ServiceManager -eq "winsw" -and $Evidence.serviceWrapperMatchesConfig -ne $true) { return $false }
+    if ($Evidence.nodeExeMatchesConfig -ne $true) { return $false }
+    if ($Evidence.workingDirectoryMatchesConfig -ne $true) { return $false }
+    if ($Evidence.argumentsMatchConfig -ne $true) { return $false }
+    if ($ServiceManager -eq "launchd" -and $Evidence.runnerScriptMatchesConfig -ne $true) { return $false }
+  }
+  return $true
+}
+
+function Get-PortEvidence {
+  param([object]$Evidence)
+
+  $port = Get-PropertyValue -Object $Evidence -Names @("Port", "port")
+  [pscustomobject]@{
+    checked = Get-BooleanValue -Object $port -Names @("Checked", "checked") -Default $false
+    listening = Get-BooleanValue -Object $port -Names @("Listening", "listening") -Default $false
+    ownerReadable = Get-BooleanValue -Object $port -Names @("OwnerReadable", "ownerReadable") -Default $false
+    ownerProcessCount = Get-IntegerValue -Object $port -Names @("OwnerProcessCount", "ownerProcessCount")
+    servicePidKnown = Get-BooleanValue -Object $port -Names @("ServicePidKnown", "servicePidKnown", "ServiceProcessIdsKnown", "serviceProcessIdsKnown") -Default $false
+    ownedByService = Get-BooleanValue -Object $port -Names @("OwnedByService", "ownedByService") -Default $false
+  }
+}
+
+function Test-PortEvidence {
+  param([object]$Evidence)
+
+  if ($Evidence.checked -ne $true) { return $false }
+  if ($Evidence.listening -ne $true) { return $false }
+  if ($Evidence.ownerReadable -ne $true) { return $false }
+  if ($null -eq $Evidence.ownerProcessCount -or [int]$Evidence.ownerProcessCount -lt 1) { return $false }
+  if ($Evidence.servicePidKnown -ne $true) { return $false }
+  if ($Evidence.ownedByService -ne $true) { return $false }
+  return $true
+}
+
+function Get-HealthEvidence {
+  param([object]$Evidence)
+
+  $health = Get-PropertyValue -Object $Evidence -Names @("Health", "health")
+  [pscustomobject]@{
+    checked = Get-BooleanValue -Object $health -Names @("Checked", "checked") -Default $false
+    status = Get-StringValue -Object $health -Names @("Status", "status")
+    statusCode = Get-IntegerValue -Object $health -Names @("StatusCode", "statusCode")
+  }
+}
+
+function Test-HealthEvidence {
+  param([object]$Evidence)
+
+  if ($Evidence.checked -ne $true) { return $false }
+  if ($Evidence.status -ne "ok") { return $false }
+  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 400) { return $false }
+  return $true
+}
+
+function Get-HealthMonitorEvidence {
+  param([object]$Evidence)
+
+  $monitor = Get-PropertyValue -Object $Evidence -Names @("HealthMonitor", "healthMonitor")
+  [pscustomobject]@{
+    status = Get-StringValue -Object $monitor -Names @("Status", "status")
+    scheduled = Get-BooleanValue -Object $monitor -Names @("Scheduled", "scheduled") -Default $false
+    scheduleType = Normalize-Token (Get-StringValue -Object $monitor -Names @("ScheduleType", "scheduleType"))
+    taskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists") -Default $false
+    taskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked") -Default $false
+    taskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript") -Default $false
+    taskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath") -Default $false
+    taskLastResult = Get-IntegerValue -Object $monitor -Names @("TaskLastResult", "taskLastResult")
+    taskMissedRuns = Get-IntegerValue -Object $monitor -Names @("TaskMissedRuns", "taskMissedRuns")
+    schedulerChecked = Get-BooleanValue -Object $monitor -Names @("SchedulerChecked", "schedulerChecked") -Default $false
+    schedulerExists = Get-BooleanValue -Object $monitor -Names @("SchedulerExists", "schedulerExists") -Default $false
+    schedulerActive = Get-BooleanValue -Object $monitor -Names @("SchedulerActive", "schedulerActive") -Default $false
+    schedulerEnabled = Get-BooleanValue -Object $monitor -Names @("SchedulerEnabled", "schedulerEnabled") -Default $false
+    stateExists = Get-BooleanValue -Object $monitor -Names @("StateExists", "stateExists") -Default $false
+    consecutiveFailures = Get-IntegerValue -Object $monitor -Names @("ConsecutiveFailures", "consecutiveFailures")
+    lastSuccessFresh = Get-BooleanValue -Object $monitor -Names @("LastSuccessFresh", "lastSuccessFresh") -Default $false
+    logExists = Get-BooleanValue -Object $monitor -Names @("LogExists", "logExists") -Default $false
+    logFailureCount = Get-IntegerValue -Object $monitor -Names @("LogFailureCount", "logFailureCount")
+    logRestartCount = Get-IntegerValue -Object $monitor -Names @("LogRestartCount", "logRestartCount")
+  }
+}
+
+function Test-HealthMonitorEvidence {
+  param([object]$Evidence)
+
+  if ($Evidence.status -ne "ok") { return $false }
+  if ($Evidence.scheduled -ne $true) { return $false }
+  if (-not $Evidence.scheduleType) { return $false }
+  if ($Evidence.stateExists -ne $true) { return $false }
+  if ($Evidence.lastSuccessFresh -ne $true) { return $false }
+  if ($null -eq $Evidence.consecutiveFailures -or [int]$Evidence.consecutiveFailures -ne 0) { return $false }
+  if ($Evidence.logExists -ne $true) { return $false }
+  if ($null -eq $Evidence.logFailureCount -or [int]$Evidence.logFailureCount -ne 0) { return $false }
+  if ($null -eq $Evidence.logRestartCount -or [int]$Evidence.logRestartCount -ne 0) { return $false }
+
+  if ($Evidence.scheduleType -eq "windows-task") {
+    if ($Evidence.taskExists -ne $true) { return $false }
+    if ($Evidence.taskActionChecked -ne $true) { return $false }
+    if ($Evidence.taskActionUsesHealthCheckScript -ne $true) { return $false }
+    if ($Evidence.taskActionUsesConfigPath -ne $true) { return $false }
+    if ($null -eq $Evidence.taskMissedRuns -or [int]$Evidence.taskMissedRuns -ne 0) { return $false }
+    if ($null -eq $Evidence.taskLastResult -or [int]$Evidence.taskLastResult -ne 0) { return $false }
+  }
+
+  if ($Evidence.scheduleType -in @("systemd-timer", "launchd-timer", "cron")) {
+    if ($Evidence.schedulerChecked -ne $true) { return $false }
+    if ($Evidence.schedulerExists -ne $true) { return $false }
+    if ($Evidence.schedulerActive -ne $true) { return $false }
+    if ($Evidence.schedulerEnabled -ne $true) { return $false }
+  }
+
+  return $true
+}
+
+function Get-ReverseProxyEvidence {
+  param([object]$Evidence)
+
   $reverseProxy = Get-PropertyValue -Object $Evidence -Names @("ReverseProxy", "reverseProxy")
   $platform = Get-PropertyValue -Object $Evidence -Names @("Platform", "platform")
   $mode = Get-StringValue -Object $reverseProxy -Names @("Mode", "mode")
@@ -560,7 +792,61 @@ function Get-ReverseProxyMode {
   if (-not $mode) {
     $mode = Get-StringValue -Object $Evidence -Names @("ReverseProxy", "reverseProxy")
   }
-  return (Normalize-ReverseProxy $mode)
+
+  $applicable = Get-BooleanValue -Object $reverseProxy -Names @("Applicable", "applicable") -Default $null
+  if ($null -eq $applicable -and $mode -and (Normalize-ReverseProxy $mode) -ne "none") {
+    $applicable = $true
+  }
+  $iis = Get-PropertyValue -Object $reverseProxy -Names @("Iis", "iis")
+  $config = Get-PropertyValue -Object $reverseProxy -Names @("Config", "config")
+
+  [pscustomobject]@{
+    applicable = if ($null -ne $applicable) { [bool]$applicable } else { $false }
+    mode = if ($mode) { Normalize-ReverseProxy $mode } else { "unknown" }
+    status = Get-StringValue -Object $reverseProxy -Names @("Status", "status")
+    statusCode = Get-IntegerValue -Object $reverseProxy -Names @("StatusCode", "statusCode")
+    iisModuleAvailable = Get-BooleanValue -Object $iis -Names @("ModuleAvailable", "moduleAvailable") -Default $false
+    iisSiteExists = Get-BooleanValue -Object $iis -Names @("SiteExists", "siteExists") -Default $false
+    iisSiteStarted = Get-BooleanValue -Object $iis -Names @("SiteStarted", "siteStarted") -Default $false
+    iisSitePathMatchesConfig = Get-BooleanValue -Object $iis -Names @("SitePathMatchesConfig", "sitePathMatchesConfig") -Default $false
+    iisBindingMatchesConfig = Get-BooleanValue -Object $iis -Names @("BindingMatchesConfig", "bindingMatchesConfig") -Default $false
+    iisDuplicateBindingConflict = Get-BooleanValue -Object $iis -Names @("DuplicateBindingConflict", "duplicateBindingConflict") -Default $false
+    configApplicable = Get-BooleanValue -Object $config -Names @("Applicable", "applicable") -Default $false
+    configExists = Get-BooleanValue -Object $config -Names @("Exists", "exists") -Default $false
+    configManagedMarkerFound = Get-BooleanValue -Object $config -Names @("ManagedMarkerFound", "managedMarkerFound") -Default $false
+  }
+}
+
+function Test-ReverseProxyEvidence {
+  param([object]$Evidence)
+
+  if ($Evidence.mode -eq "none") {
+    return ((Normalize-Token $Evidence.status) -in @("not-applicable", "none", "disabled", "skipped"))
+  }
+  if ($Evidence.applicable -ne $true) { return $false }
+  if ($Evidence.mode -in @("", "none", "unknown")) { return $false }
+  if ($Evidence.status -ne "ok") { return $false }
+  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 400) { return $false }
+
+  if ($Evidence.mode -eq "iis") {
+    if ($Evidence.iisModuleAvailable -ne $true) { return $false }
+    if ($Evidence.iisSiteExists -ne $true) { return $false }
+    if ($Evidence.iisSiteStarted -ne $true) { return $false }
+    if ($Evidence.iisSitePathMatchesConfig -ne $true) { return $false }
+    if ($Evidence.iisBindingMatchesConfig -ne $true) { return $false }
+    if ($Evidence.iisDuplicateBindingConflict -eq $true) { return $false }
+  } else {
+    if ($Evidence.configApplicable -ne $true) { return $false }
+    if ($Evidence.configExists -ne $true) { return $false }
+    if ($Evidence.configManagedMarkerFound -ne $true) { return $false }
+  }
+  return $true
+}
+
+function Get-ReverseProxyMode {
+  param([object]$Evidence)
+  $proxy = Get-ReverseProxyEvidence -Evidence $Evidence
+  return $proxy.mode
 }
 
 function Get-EvidenceGeneratedAt {
@@ -568,10 +854,24 @@ function Get-EvidenceGeneratedAt {
   return (Get-StringValue -Object $Evidence -Names @("GeneratedAtUtc", "generatedAtUtc"))
 }
 
+function Get-UptimeEvidence {
+  param([object]$Evidence)
+
+  $uptime = Get-PropertyValue -Object $Evidence -Names @("Uptime", "uptime")
+  [pscustomobject]@{
+    hostUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("HostUptimeSeconds", "hostUptimeSeconds")
+    serviceUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("ServiceUptimeSeconds", "serviceUptimeSeconds")
+    minimumUptimeHours = Get-IntegerValue -Object $uptime -Names @("MinimumUptimeHours", "minimumUptimeHours")
+    minimumSatisfied = Get-BooleanValue -Object $uptime -Names @("MinimumSatisfied", "minimumSatisfied") -Default $null
+    serviceStartKnown = Get-BooleanValue -Object $uptime -Names @("ServiceStartKnown", "serviceStartKnown") -Default $false
+  }
+}
+
 function Get-EvidenceCollectionEvidence {
   param([object]$Evidence)
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $workflowDispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
   return [pscustomobject]@{
     source = Get-StringValue -Object $collection -Names @("Source", "source")
     collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
@@ -581,6 +881,12 @@ function Get-EvidenceCollectionEvidence {
     synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
     mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
     sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+    workflowDispatchEvidenceName = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("EvidenceName", "evidenceName"))
+    workflowDispatchExpectedTargetId = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
+    workflowDispatchExpectedNextJsMode = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
+    workflowDispatchExpectedServiceManager = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
+    workflowDispatchExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
+    workflowDispatchMinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
     topLevelSynthetic = Get-BooleanValue -Object $Evidence -Names @("Synthetic", "synthetic") -Default $false
     topLevelMock = Get-BooleanValue -Object $Evidence -Names @("Mock", "mock") -Default $false
     topLevelSample = Get-BooleanValue -Object $Evidence -Names @("Sample", "sample") -Default $false
@@ -699,6 +1005,14 @@ function Get-EvidenceRecords {
     try {
       $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
       $collection = Get-EvidenceCollectionEvidence -Evidence $evidence
+      $uptime = Get-UptimeEvidence -Evidence $evidence
+      $nextJsRuntime = Get-NextJsRuntimeEvidence -Evidence $evidence
+      $serviceManager = Get-ServiceManager -Evidence $evidence
+      $serviceEvidence = Get-ServiceEvidence -Evidence $evidence
+      $portEvidence = Get-PortEvidence -Evidence $evidence
+      $healthEvidence = Get-HealthEvidence -Evidence $evidence
+      $healthMonitorEvidence = Get-HealthMonitorEvidence -Evidence $evidence
+      $reverseProxyEvidence = Get-ReverseProxyEvidence -Evidence $evidence
       $declaredTargetId = Get-DeclaredEvidenceTarget -Evidence $evidence
       $platformTargets = @(Get-PlatformEvidenceTargets -Evidence $evidence)
       $runtimePlatformSupported = $false
@@ -713,14 +1027,31 @@ function Get-EvidenceRecords {
         platformTargets = @($platformTargets)
         targetCorroborated = ($declaredTargetId -and $platformTargets -contains $declaredTargetId)
         runtimePlatformSupported = $runtimePlatformSupported
-        nextJsMode = Get-NextJsMode -Evidence $evidence
-        serviceManager = Get-ServiceManager -Evidence $evidence
-        reverseProxy = Get-ReverseProxyMode -Evidence $evidence
+        nextJsMode = $nextJsRuntime.mode
+        nextJsRuntimeEvidenceValid = Test-NextJsRuntimeEvidence -Evidence $nextJsRuntime
+        serviceManager = $serviceManager
+        serviceEvidenceValid = Test-ServiceEvidence -Evidence $serviceEvidence -ServiceManager $serviceManager
+        portEvidenceValid = Test-PortEvidence -Evidence $portEvidence
+        healthEvidenceValid = Test-HealthEvidence -Evidence $healthEvidence
+        healthMonitorEvidenceValid = Test-HealthMonitorEvidence -Evidence $healthMonitorEvidence
+        reverseProxy = $reverseProxyEvidence.mode
+        reverseProxyEvidenceValid = Test-ReverseProxyEvidence -Evidence $reverseProxyEvidence
         generatedAtUtc = Get-EvidenceGeneratedAt -Evidence $evidence
+        hostUptimeSeconds = $uptime.hostUptimeSeconds
+        serviceUptimeSeconds = $uptime.serviceUptimeSeconds
+        minimumUptimeHours = $uptime.minimumUptimeHours
+        minimumSatisfied = $uptime.minimumSatisfied
+        serviceStartKnown = $uptime.serviceStartKnown
         verdict = Get-StringValue -Object $evidence -Names @("Verdict", "verdict")
         critical = Get-IntegerValue -Object $evidence -Names @("Critical", "critical")
         warnings = Get-IntegerValue -Object $evidence -Names @("Warnings", "warnings")
         liveEvidenceCollection = Test-LiveEvidenceCollection -Collection $collection
+        workflowDispatchEvidenceName = $collection.workflowDispatchEvidenceName
+        workflowDispatchExpectedTargetId = $collection.workflowDispatchExpectedTargetId
+        workflowDispatchExpectedNextJsMode = $collection.workflowDispatchExpectedNextJsMode
+        workflowDispatchExpectedServiceManager = $collection.workflowDispatchExpectedServiceManager
+        workflowDispatchExpectedReverseProxy = $collection.workflowDispatchExpectedReverseProxy
+        workflowDispatchMinimumUptimeHours = $collection.workflowDispatchMinimumUptimeHours
         parseError = ""
       }
     } catch {
@@ -733,13 +1064,30 @@ function Get-EvidenceRecords {
         targetCorroborated = $false
         runtimePlatformSupported = $false
         nextJsMode = ""
+        nextJsRuntimeEvidenceValid = $false
         serviceManager = ""
+        serviceEvidenceValid = $false
+        portEvidenceValid = $false
+        healthEvidenceValid = $false
+        healthMonitorEvidenceValid = $false
         reverseProxy = ""
+        reverseProxyEvidenceValid = $false
         generatedAtUtc = ""
+        hostUptimeSeconds = $null
+        serviceUptimeSeconds = $null
+        minimumUptimeHours = $null
+        minimumSatisfied = $null
+        serviceStartKnown = $false
         verdict = ""
         critical = $null
         warnings = $null
         liveEvidenceCollection = $false
+        workflowDispatchEvidenceName = ""
+        workflowDispatchExpectedTargetId = ""
+        workflowDispatchExpectedNextJsMode = ""
+        workflowDispatchExpectedServiceManager = ""
+        workflowDispatchExpectedReverseProxy = ""
+        workflowDispatchMinimumUptimeHours = $null
         parseError = $_.Exception.Message
       }
     }
@@ -747,16 +1095,32 @@ function Get-EvidenceRecords {
 }
 
 function Test-RecordHealthy {
-  param([object]$Record)
+  param(
+    [object]$Record,
+    [int]$RequiredMinimumUptimeHours = 0
+  )
 
   if ($Record.parseError) { return $false }
   if (-not $Record.targetId) { return $false }
   if ($Record.targetCorroborated -ne $true) { return $false }
   if ($Record.runtimePlatformSupported -ne $true) { return $false }
+  if ($Record.nextJsRuntimeEvidenceValid -ne $true) { return $false }
+  if ($Record.serviceEvidenceValid -ne $true) { return $false }
+  if ($Record.portEvidenceValid -ne $true) { return $false }
+  if ($Record.healthEvidenceValid -ne $true) { return $false }
+  if ($Record.healthMonitorEvidenceValid -ne $true) { return $false }
+  if ($Record.reverseProxyEvidenceValid -ne $true) { return $false }
   if ($Record.verdict -eq "Critical") { return $false }
   if ($null -eq $Record.critical -or $Record.critical -gt 0) { return $false }
   if (-not $AllowWarnings -and ($null -eq $Record.warnings -or $Record.warnings -gt 0)) { return $false }
   if ($Record.liveEvidenceCollection -ne $true) { return $false }
+  if ($RequiredMinimumUptimeHours -gt 0) {
+    $requiredMinimumUptimeSeconds = [int64]$RequiredMinimumUptimeHours * 3600
+    if ($Record.serviceStartKnown -ne $true) { return $false }
+    if ($null -eq $Record.minimumUptimeHours -or [int]$Record.minimumUptimeHours -lt $RequiredMinimumUptimeHours) { return $false }
+    if ($Record.minimumSatisfied -ne $true) { return $false }
+    if ($null -eq $Record.serviceUptimeSeconds -or [int64]$Record.serviceUptimeSeconds -lt $requiredMinimumUptimeSeconds) { return $false }
+  }
   if ($MaxEvidenceAgeDays -gt 0) {
     if (-not $Record.generatedAtUtc) { return $false }
     try {
@@ -769,6 +1133,86 @@ function Test-RecordHealthy {
     }
   }
   return $true
+}
+
+function Test-RecordWorkflowDispatchMatches {
+  param(
+    [object]$Record,
+    [object]$Entry
+  )
+
+  if ($Entry.workflowDispatchSupported -ne $true) { return $true }
+  $expectedEvidenceBaseName = "$($Entry.targetId)-$($Entry.nextJsMode)-$($Entry.serviceManager)-$($Entry.reverseProxy)"
+  $allowedEvidenceNames = @($expectedEvidenceBaseName, "$expectedEvidenceBaseName-fallback")
+  return (
+    $allowedEvidenceNames -contains [string]$Record.workflowDispatchEvidenceName -and
+    [string]$Record.workflowDispatchExpectedTargetId -eq [string]$Entry.targetId -and
+    [string]$Record.workflowDispatchExpectedNextJsMode -eq [string]$Entry.nextJsMode -and
+    [string]$Record.workflowDispatchExpectedServiceManager -eq [string]$Entry.serviceManager -and
+    [string]$Record.workflowDispatchExpectedReverseProxy -eq [string]$Entry.reverseProxy -and
+    $null -ne $Record.workflowDispatchMinimumUptimeHours -and
+    [int]$Record.workflowDispatchMinimumUptimeHours -ge [int]$Entry.requiredMinimumUptimeHours
+  )
+}
+
+function Get-CoveragePercent {
+  param(
+    [int]$CoveredCount,
+    [int]$ExpectedCount
+  )
+
+  if ($ExpectedCount -le 0) { return $null }
+  return [Math]::Round(([double]$CoveredCount / [double]$ExpectedCount) * 100.0, 2)
+}
+
+function Format-CoveragePercent {
+  param($Value)
+
+  if ($null -eq $Value) { return "n/a" }
+  return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:0.00}%", [double]$Value)
+}
+
+function New-CoverageBreakdownRow {
+  param(
+    [string]$Name,
+    [object[]]$ExpectedRows,
+    [object[]]$CoveredRows,
+    [object[]]$MissingRows
+  )
+
+  $expectedCount = @($ExpectedRows).Count
+  $coveredCount = @($CoveredRows).Count
+  $missingCount = @($MissingRows).Count
+  return [pscustomobject]@{
+    name = $Name
+    expectedCount = $expectedCount
+    coveredCount = $coveredCount
+    missingCount = $missingCount
+    coveragePercent = Get-CoveragePercent -CoveredCount $coveredCount -ExpectedCount $expectedCount
+    coverage = Format-CoveragePercent (Get-CoveragePercent -CoveredCount $coveredCount -ExpectedCount $expectedCount)
+  }
+}
+
+function Get-CoverageBreakdown {
+  param(
+    [object[]]$ExpectedRows,
+    [object[]]$CoveredRows,
+    [object[]]$MissingRows,
+    [string]$PropertyName
+  )
+
+  $names = @(
+    @($ExpectedRows | ForEach-Object { [string]$_.($PropertyName) }) |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Sort-Object -Unique
+  )
+  foreach ($name in $names) {
+    New-CoverageBreakdownRow `
+      -Name $name `
+      -ExpectedRows @($ExpectedRows | Where-Object { [string]$_.($PropertyName) -eq $name }) `
+      -CoveredRows @($CoveredRows | Where-Object { [string]$_.($PropertyName) -eq $name }) `
+      -MissingRows @($MissingRows | Where-Object { [string]$_.($PropertyName) -eq $name })
+  }
 }
 
 function New-ExpectedEntry {
@@ -828,6 +1272,7 @@ function New-ExpectedEntry {
   [pscustomobject]@{
     kind = $Kind
     targetId = $targetId
+    targetCategory = Normalize-Token $category
     nextJsMode = $modeValue
     serviceManager = $serviceManagerValue
     reverseProxy = $reverseProxyValue
@@ -915,6 +1360,11 @@ function Get-ExpectedEntries {
           foreach ($proxy in $concreteProxies) {
             $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings)) | Out-Null
           }
+          if ($IncludeServiceOnly) {
+            foreach ($proxy in $serviceOnlyProxies) {
+              $entries.Add((New-ExpectedEntry -Target $target -Mode $mode -ServiceManager $fallbackManager -ReverseProxy $proxy -Kind "fallback" -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings)) | Out-Null
+            }
+          }
         }
       }
     }
@@ -933,6 +1383,8 @@ function ConvertTo-CoverageMarkdown {
   $lines.Add("| Expected entries | $($Result.summary.expectedCount) |") | Out-Null
   $lines.Add("| Covered entries | $($Result.summary.coveredCount) |") | Out-Null
   $lines.Add("| Missing entries | $($Result.summary.missingCount) |") | Out-Null
+  $lines.Add("| Coverage | $(Format-CoveragePercent $Result.summary.coveragePercent) |") | Out-Null
+  $lines.Add("| Evidence path exists | $($Result.evidencePathExists) |") | Out-Null
   $lines.Add("| Parsed evidence files | $($Result.summary.parsedEvidenceFiles) |") | Out-Null
   $lines.Add("| Healthy evidence files | $($Result.summary.healthyEvidenceFiles) |") | Out-Null
   $lines.Add("| Required minimum uptime hours | $($Result.requiredMinimumUptimeHours) |") | Out-Null
@@ -948,6 +1400,23 @@ function ConvertTo-CoverageMarkdown {
   }
   $lines.Add(("Evidence path: ``{0}``" -f $Result.evidencePath)) | Out-Null
   $lines.Add("") | Out-Null
+  $lines.Add("## Coverage Breakdown") | Out-Null
+  $lines.Add("") | Out-Null
+  $breakdowns = @(
+    [pscustomobject]@{ Title = "By kind"; Rows = @($Result.summary.byKind) },
+    [pscustomobject]@{ Title = "By target category"; Rows = @($Result.summary.byTargetCategory) },
+    [pscustomobject]@{ Title = "By workflow collection"; Rows = @($Result.summary.byWorkflowCollection) }
+  )
+  foreach ($breakdown in $breakdowns) {
+    $lines.Add(("### {0}" -f $breakdown.Title)) | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("| Name | Expected | Covered | Missing | Coverage |") | Out-Null
+    $lines.Add("|---|---:|---:|---:|---:|") | Out-Null
+    foreach ($row in @($breakdown.Rows)) {
+      $lines.Add(('| `{0}` | {1} | {2} | {3} | {4} |' -f $row.name, $row.expectedCount, $row.coveredCount, $row.missingCount, $row.coverage)) | Out-Null
+    }
+    $lines.Add("") | Out-Null
+  }
   $lines.Add("## Missing Entries") | Out-Null
   $lines.Add("") | Out-Null
   if ([int]$Result.summary.missingCount -eq 0) {
@@ -1037,6 +1506,16 @@ function New-SelfTestEvidence {
         synthetic = $false
         mock = $false
         sample = $false
+      }
+    }
+    if ($entry.workflowDispatchSupported -eq $true) {
+      $collection["workflowDispatch"] = [ordered]@{
+        evidenceName = [string]$entry.workflowInputs.evidence_name
+        expectedTargetId = $targetId
+        expectedNextJsMode = $nextJsMode
+        expectedServiceManager = $serviceManager
+        expectedReverseProxy = $reverseProxy
+        minimumUptimeHours = [string]$RequiredMinimumUptimeHours
       }
     }
     $scheduleType = if ($targetIsWindows) {
@@ -1338,14 +1817,19 @@ if (-not [string]::IsNullOrWhiteSpace($BundlePath)) {
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
   throw "EvidencePath or BundlePath is required unless -SelfTest is used."
 }
-if (-not (Test-Path -LiteralPath $EvidencePath -PathType Container)) {
+$evidencePathExists = Test-Path -LiteralPath $EvidencePath -PathType Container
+if (-not $evidencePathExists -and -not $ReportOnly) {
   throw "Evidence path not found: $(Get-DisplayPath -Path $EvidencePath)"
 }
 
 $expectedEntries = @(Get-ExpectedEntries -Targets $targets -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -FailOnWarnings $failOnWarningsDuringCollection)
 Assert-WorkflowInputsAccepted -Entries $expectedEntries -MatrixPath $MatrixPath
-$records = @(Get-EvidenceRecords -Path $EvidencePath)
-$healthyRecords = @($records | Where-Object { Test-RecordHealthy -Record $_ })
+if ($evidencePathExists) {
+  $records = @(Get-EvidenceRecords -Path $EvidencePath)
+} else {
+  $records = @()
+}
+$healthyRecords = @($records | Where-Object { Test-RecordHealthy -Record $_ -RequiredMinimumUptimeHours $requiredMinimumUptimeHours })
 $covered = New-Object System.Collections.Generic.List[object]
 $missing = New-Object System.Collections.Generic.List[object]
 
@@ -1354,13 +1838,15 @@ foreach ($entry in $expectedEntries) {
     $_.targetId -eq $entry.targetId -and
     $_.nextJsMode -eq $entry.nextJsMode -and
     $_.serviceManager -eq $entry.serviceManager -and
-    $_.reverseProxy -eq $entry.reverseProxy
+    $_.reverseProxy -eq $entry.reverseProxy -and
+    (Test-RecordWorkflowDispatchMatches -Record $_ -Entry $entry)
   })
 
   if ($matches.Count -gt 0) {
     $covered.Add([pscustomobject]@{
       kind = $entry.kind
       targetId = $entry.targetId
+      targetCategory = $entry.targetCategory
       nextJsMode = $entry.nextJsMode
       serviceManager = $entry.serviceManager
       reverseProxy = $entry.reverseProxy
@@ -1383,6 +1869,7 @@ foreach ($entry in $expectedEntries) {
     $missing.Add([pscustomobject]@{
       kind = $entry.kind
       targetId = $entry.targetId
+      targetCategory = $entry.targetCategory
       nextJsMode = $entry.nextJsMode
       serviceManager = $entry.serviceManager
       reverseProxy = $entry.reverseProxy
@@ -1406,11 +1893,23 @@ foreach ($entry in $expectedEntries) {
 
 $coveredRows = @($covered | ForEach-Object { $_ })
 $missingRows = @($missing | ForEach-Object { $_ })
+$coveragePercent = Get-CoveragePercent -CoveredCount @($coveredRows).Count -ExpectedCount @($expectedEntries).Count
+$workflowCapableExpectedRows = @($expectedEntries | Where-Object { $_.workflowDispatchSupported -eq $true })
+$workflowCapableCoveredRows = @($coveredRows | Where-Object { $_.workflowDispatchSupported -eq $true })
+$workflowCapableMissingRows = @($missingRows | Where-Object { $_.workflowDispatchSupported -eq $true })
+$localOnlyExpectedRows = @($expectedEntries | Where-Object { $_.localCommandOnly -eq $true })
+$localOnlyCoveredRows = @($coveredRows | Where-Object { $_.localCommandOnly -eq $true })
+$localOnlyMissingRows = @($missingRows | Where-Object { $_.localCommandOnly -eq $true })
+$coverageByWorkflow = @(
+  New-CoverageBreakdownRow -Name "workflow-capable" -ExpectedRows $workflowCapableExpectedRows -CoveredRows $workflowCapableCoveredRows -MissingRows $workflowCapableMissingRows
+  New-CoverageBreakdownRow -Name "local-command-only" -ExpectedRows $localOnlyExpectedRows -CoveredRows $localOnlyCoveredRows -MissingRows $localOnlyMissingRows
+)
 
 $result = [pscustomobject]@{
   schemaVersion = 1
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
   evidencePath = Get-DisplayPath -Path $EvidencePath
+  evidencePathExists = [bool]$evidencePathExists
   bundlePath = Get-DisplayPath -Path $BundlePath
   reportOnly = [bool]$ReportOnly
   workflowFile = $WorkflowFile
@@ -1423,11 +1922,15 @@ $result = [pscustomobject]@{
   selectedTargets = @($targets | ForEach-Object { Normalize-Token ([string]$_.id) })
   requiredMinimumUptimeHours = $requiredMinimumUptimeHours
   summary = [pscustomobject]@{
-    expectedCount = $expectedEntries.Count
-    coveredCount = $coveredRows.Count
-    missingCount = $missingRows.Count
-    parsedEvidenceFiles = $records.Count
-    healthyEvidenceFiles = $healthyRecords.Count
+    expectedCount = @($expectedEntries).Count
+    coveredCount = @($coveredRows).Count
+    missingCount = @($missingRows).Count
+    coveragePercent = $coveragePercent
+    parsedEvidenceFiles = @($records).Count
+    healthyEvidenceFiles = @($healthyRecords).Count
+    byKind = @(Get-CoverageBreakdown -ExpectedRows $expectedEntries -CoveredRows $coveredRows -MissingRows $missingRows -PropertyName "kind")
+    byTargetCategory = @(Get-CoverageBreakdown -ExpectedRows $expectedEntries -CoveredRows $coveredRows -MissingRows $missingRows -PropertyName "targetCategory")
+    byWorkflowCollection = $coverageByWorkflow
   }
   covered = $coveredRows
   missing = $missingRows
@@ -1469,6 +1972,12 @@ if ($SelfTest) {
   if (-not $selfTestReport.Contains("_No missing entries._")) {
     throw "Support evidence coverage self-test failed: Markdown report should show no missing entries."
   }
+  if (-not $selfTestReport.Contains("| Coverage | 100.00% |")) {
+    throw "Support evidence coverage self-test failed: Markdown report did not include complete coverage percentage."
+  }
+  if ($null -eq $result.summary.coveragePercent -or [double]$result.summary.coveragePercent -ne 100.0) {
+    throw "Support evidence coverage self-test failed: JSON summary coveragePercent should be 100 for complete self-test coverage."
+  }
   if ($selfTestReport.Contains($RepoRoot)) {
     throw "Support evidence coverage self-test failed: Markdown report leaked the repository absolute path."
   }
@@ -1503,6 +2012,26 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: target-mismatched evidence should not be treated as healthy coverage."
   }
 
+  $workflowDispatchMismatchEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-dispatch-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $workflowDispatchMismatchEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $workflowDispatchMismatchFile = Join-Path $workflowDispatchMismatchEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $workflowDispatchMismatchEvidence = Get-Content -LiteralPath $workflowDispatchMismatchFile -Raw | ConvertFrom-Json
+  $workflowDispatchMismatchEvidence.evidenceCollection.workflowDispatch.expectedTargetId = "debian"
+  $workflowDispatchMismatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowDispatchMismatchFile -Encoding UTF8
+  $workflowDispatchMismatchJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-dispatch-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $workflowDispatchMismatchEvidencePath -Format Json -OutputPath $workflowDispatchMismatchJsonPath | Out-Null
+  $workflowDispatchMismatchJson = Get-Content -LiteralPath $workflowDispatchMismatchJsonPath -Raw | ConvertFrom-Json
+  $missingWorkflowDispatchRow = @($workflowDispatchMismatchJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingWorkflowDispatchRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: workflow-dispatch-mismatched evidence was counted as covering ubuntu."
+  }
+
   $runtimeFloorEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $runtimeFloorEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $runtimeFloorFile = Join-Path $runtimeFloorEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
@@ -1525,6 +2054,129 @@ if ($SelfTest) {
   }
   if ([int]$runtimeFloorJson.summary.healthyEvidenceFiles -ge [int]$runtimeFloorJson.summary.parsedEvidenceFiles) {
     throw "Support evidence coverage self-test failed: runtime-floor-invalid evidence should not be treated as healthy coverage."
+  }
+
+  $missingNextJsRuntimeEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-nextjs-runtime-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNextJsRuntimeEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $missingNextJsRuntimeFile = Join-Path $missingNextJsRuntimeEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $missingNextJsRuntimeEvidence = Get-Content -LiteralPath $missingNextJsRuntimeFile -Raw | ConvertFrom-Json
+  $missingNextJsRuntimeEvidence.PSObject.Properties.Remove("nextJsRuntime")
+  $missingNextJsRuntimeEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $missingNextJsRuntimeFile -Encoding UTF8
+  $missingNextJsRuntimeJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-nextjs-runtime-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingNextJsRuntimeEvidencePath -Format Json -OutputPath $missingNextJsRuntimeJsonPath | Out-Null
+  $missingNextJsRuntimeJson = Get-Content -LiteralPath $missingNextJsRuntimeJsonPath -Raw | ConvertFrom-Json
+  $missingNextJsRuntimeRow = @($missingNextJsRuntimeJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingNextJsRuntimeRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: missing Next.js runtime evidence was counted as covering ubuntu."
+  }
+  if ([int]$missingNextJsRuntimeJson.summary.healthyEvidenceFiles -ge [int]$missingNextJsRuntimeJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: missing Next.js runtime evidence should not be treated as healthy coverage."
+  }
+
+  $openRcServiceEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-openrc-service-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $openRcServiceEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $openRcServiceFile = Join-Path $openRcServiceEvidencePath "strict-alpine-standalone-openrc-apache.json"
+  if (Test-Path -LiteralPath $openRcServiceFile -PathType Leaf) {
+    $openRcServiceEvidence = Get-Content -LiteralPath $openRcServiceFile -Raw | ConvertFrom-Json
+    $openRcServiceEvidence.serviceDefinition.definitionExists = $false
+    $openRcServiceEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $openRcServiceFile -Encoding UTF8
+    $openRcServiceJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-openrc-service-$([Guid]::NewGuid().ToString('N')).json"
+    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $openRcServiceEvidencePath -Format Json -OutputPath $openRcServiceJsonPath | Out-Null
+    $openRcServiceJson = Get-Content -LiteralPath $openRcServiceJsonPath -Raw | ConvertFrom-Json
+    $missingOpenRcServiceRow = @($openRcServiceJson.missing | Where-Object {
+        $_.kind -eq "strict" -and
+        $_.targetId -eq "alpine" -and
+        $_.nextJsMode -eq "standalone" -and
+        $_.serviceManager -eq "openrc" -and
+        $_.reverseProxy -eq "apache"
+      })
+    if ($missingOpenRcServiceRow.Count -ne 1) {
+      throw "Support evidence coverage self-test failed: invalid OpenRC service evidence was counted as covering alpine/openrc/apache."
+    }
+    if ([int]$openRcServiceJson.summary.healthyEvidenceFiles -ge [int]$openRcServiceJson.summary.parsedEvidenceFiles) {
+      throw "Support evidence coverage self-test failed: invalid OpenRC service evidence should not be treated as healthy coverage."
+    }
+  }
+
+  $systemvApacheEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-systemv-apache-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $systemvApacheEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $systemvApacheFile = Join-Path $systemvApacheEvidencePath "strict-ubuntu-standalone-systemv-apache.json"
+  if (Test-Path -LiteralPath $systemvApacheFile -PathType Leaf) {
+    $systemvApacheEvidence = Get-Content -LiteralPath $systemvApacheFile -Raw | ConvertFrom-Json
+    $systemvApacheEvidence.reverseProxy.config.managedMarkerFound = $false
+    $systemvApacheEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $systemvApacheFile -Encoding UTF8
+    $systemvApacheJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-systemv-apache-$([Guid]::NewGuid().ToString('N')).json"
+    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $systemvApacheEvidencePath -Format Json -OutputPath $systemvApacheJsonPath | Out-Null
+    $systemvApacheJson = Get-Content -LiteralPath $systemvApacheJsonPath -Raw | ConvertFrom-Json
+    $missingSystemvApacheRow = @($systemvApacheJson.missing | Where-Object {
+        $_.kind -eq "strict" -and
+        $_.targetId -eq "ubuntu" -and
+        $_.nextJsMode -eq "standalone" -and
+        $_.serviceManager -eq "systemv" -and
+        $_.reverseProxy -eq "apache"
+      })
+    if ($missingSystemvApacheRow.Count -ne 1) {
+      throw "Support evidence coverage self-test failed: invalid System V Apache evidence was counted as covering ubuntu/systemv/apache."
+    }
+    if ([int]$systemvApacheJson.summary.healthyEvidenceFiles -ge [int]$systemvApacheJson.summary.parsedEvidenceFiles) {
+      throw "Support evidence coverage self-test failed: invalid System V Apache evidence should not be treated as healthy coverage."
+    }
+  }
+
+  $launchdRunnerEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-launchd-runner-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $launchdRunnerEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $launchdRunnerFile = Join-Path $launchdRunnerEvidencePath "strict-macos-standalone-launchd-nginx.json"
+  if (Test-Path -LiteralPath $launchdRunnerFile -PathType Leaf) {
+    $launchdRunnerEvidence = Get-Content -LiteralPath $launchdRunnerFile -Raw | ConvertFrom-Json
+    $launchdRunnerEvidence.serviceDefinition.runnerScriptMatchesConfig = $false
+    $launchdRunnerEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $launchdRunnerFile -Encoding UTF8
+    $launchdRunnerJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-launchd-runner-$([Guid]::NewGuid().ToString('N')).json"
+    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $launchdRunnerEvidencePath -Format Json -OutputPath $launchdRunnerJsonPath | Out-Null
+    $launchdRunnerJson = Get-Content -LiteralPath $launchdRunnerJsonPath -Raw | ConvertFrom-Json
+    $missingLaunchdRunnerRow = @($launchdRunnerJson.missing | Where-Object {
+        $_.kind -eq "strict" -and
+        $_.targetId -eq "macos" -and
+        $_.nextJsMode -eq "standalone" -and
+        $_.serviceManager -eq "launchd" -and
+        $_.reverseProxy -eq "nginx"
+      })
+    if ($missingLaunchdRunnerRow.Count -ne 1) {
+      throw "Support evidence coverage self-test failed: invalid launchd runner evidence was counted as covering macos/launchd/nginx."
+    }
+    if ([int]$launchdRunnerJson.summary.healthyEvidenceFiles -ge [int]$launchdRunnerJson.summary.parsedEvidenceFiles) {
+      throw "Support evidence coverage self-test failed: invalid launchd runner evidence should not be treated as healthy coverage."
+    }
+  }
+
+  $uptimeFloorEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-uptime-floor-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $uptimeFloorEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $uptimeFloorFile = Join-Path $uptimeFloorEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $uptimeFloorEvidence = Get-Content -LiteralPath $uptimeFloorFile -Raw | ConvertFrom-Json
+  $uptimeFloorEvidence.uptime.minimumUptimeHours = "1"
+  $uptimeFloorEvidence.uptime.minimumSatisfied = $false
+  $uptimeFloorEvidence.uptime.serviceUptimeSeconds = 3600
+  $uptimeFloorEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $uptimeFloorFile -Encoding UTF8
+  $uptimeFloorJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-uptime-floor-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $uptimeFloorEvidencePath -Format Json -OutputPath $uptimeFloorJsonPath | Out-Null
+  $uptimeFloorJson = Get-Content -LiteralPath $uptimeFloorJsonPath -Raw | ConvertFrom-Json
+  $missingUptimeFloorRow = @($uptimeFloorJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingUptimeFloorRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: uptime-floor-invalid evidence was counted as covering ubuntu."
+  }
+  if ([int]$uptimeFloorJson.summary.healthyEvidenceFiles -ge [int]$uptimeFloorJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: uptime-floor-invalid evidence should not be treated as healthy coverage."
   }
 
   $missingEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-selftest-$([Guid]::NewGuid().ToString('N'))"
@@ -1561,6 +2213,24 @@ if ($SelfTest) {
   $missingJson = Get-Content -LiteralPath $missingJsonPath -Raw | ConvertFrom-Json
   if ([int]$missingJson.summary.missingCount -le 0) {
     throw "Support evidence coverage self-test failed: missing JSON report did not report missing entries."
+  }
+  if ($missingJson.evidencePathExists -ne $true) {
+    throw "Support evidence coverage self-test failed: existing empty evidence path should be reported as present."
+  }
+  if ($null -eq $missingJson.summary.coveragePercent -or [double]$missingJson.summary.coveragePercent -ne 0.0) {
+    throw "Support evidence coverage self-test failed: empty evidence path should report 0 percent coverage."
+  }
+  $fallbackServiceOnlyMissing = @($missingJson.missing | Where-Object {
+      $_.kind -eq "fallback" -and
+      $_.targetId -eq "windows-10" -and
+      $_.serviceManager -eq "pm2" -and
+      $_.reverseProxy -eq "none"
+    } | Select-Object -First 1)
+  if ($fallbackServiceOnlyMissing.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: missing JSON report did not include fallback service-only PM2 evidence."
+  }
+  if (-not ([string]$fallbackServiceOnlyMissing[0].evidenceFile).EndsWith("pm2-none-fallback.json")) {
+    throw "Support evidence coverage self-test failed: fallback service-only evidence file should use the fallback suffix."
   }
   if ($missingJson.failOnWarningsDuringCollection -ne $true) {
     throw "Support evidence coverage self-test failed: default missing report did not record strict warning collection."
@@ -1622,6 +2292,23 @@ if ($SelfTest) {
   }
   if (-not ([string]$firstUnixMissing.validationCommand).Contains("-ExpectedTargetId ubuntu")) {
     throw "Support evidence coverage self-test failed: Unix validation command is missing target guidance."
+  }
+
+  $missingDirectoryPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-directory-$([Guid]::NewGuid().ToString('N'))"
+  $missingDirectoryJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-directory-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingDirectoryPath -Format Json -OutputPath $missingDirectoryJsonPath | Out-Null
+  $missingDirectoryJson = Get-Content -LiteralPath $missingDirectoryJsonPath -Raw | ConvertFrom-Json
+  if ($missingDirectoryJson.evidencePathExists -ne $false) {
+    throw "Support evidence coverage self-test failed: missing evidence path should be reported as absent."
+  }
+  if ([int]$missingDirectoryJson.summary.coveredCount -ne 0 -or [int]$missingDirectoryJson.summary.parsedEvidenceFiles -ne 0 -or [int]$missingDirectoryJson.summary.healthyEvidenceFiles -ne 0) {
+    throw "Support evidence coverage self-test failed: missing evidence path should report zero covered evidence."
+  }
+  if ([int]$missingDirectoryJson.summary.missingCount -ne [int]$missingDirectoryJson.summary.expectedCount) {
+    throw "Support evidence coverage self-test failed: missing evidence path should report every expected row as missing."
+  }
+  if ($null -eq $missingDirectoryJson.summary.coveragePercent -or [double]$missingDirectoryJson.summary.coveragePercent -ne 0.0) {
+    throw "Support evidence coverage self-test failed: missing evidence path should report 0 percent coverage."
   }
 
   $missingCsvPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).csv"
@@ -1749,6 +2436,9 @@ switch ($Format) {
     Write-Host "Expected: $($result.summary.expectedCount)"
     Write-Host "Covered:  $($result.summary.coveredCount)"
     Write-Host "Missing:  $($result.summary.missingCount)"
+    Write-Host "Coverage: $(Format-CoveragePercent $result.summary.coveragePercent)"
+    Write-Host ""
+    @($result.summary.byKind) | Format-Table name, expectedCount, coveredCount, missingCount, coverage -AutoSize
     if ($result.summary.missingCount -gt 0) {
       @($missing | Select-Object -First 50) | Format-Table kind, targetId, nextJsMode, serviceManager, reverseProxy, nodeRuntimeSupportTier, nodeRuntimeProductionRecommended -AutoSize
       Write-Host ""

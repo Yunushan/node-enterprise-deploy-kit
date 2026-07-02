@@ -89,6 +89,115 @@ function Assert-ArrayContains {
   }
 }
 
+function Write-TestTextFile {
+  param(
+    [string]$Path,
+    [string]$Content
+  )
+
+  $directory = Split-Path -Parent $Path
+  if ($directory) {
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+  }
+  Set-Content -Path $Path -Value $Content -Encoding UTF8
+}
+
+function New-MinimalWindowsNextJsStandaloneApp {
+  param([string]$Path)
+
+  New-Item -ItemType Directory -Force -Path (Join-Path $Path ".next\static") | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $Path "node_modules") | Out-Null
+  Write-TestTextFile -Path (Join-Path $Path "server.js") -Content "console.log('ok');"
+  Write-TestTextFile -Path (Join-Path $Path ".next\BUILD_ID") -Content "windows-nextjs-build"
+  Write-TestTextFile -Path (Join-Path $Path ".next\static\app.js") -Content "console.log('asset');"
+}
+
+function New-FakeNodeExe {
+  param([string]$Path)
+
+  Write-TestTextFile -Path $Path -Content @"
+@echo off
+if "%~1"=="--version" (
+  echo v20.11.1
+  exit /b 0
+)
+exit /b 0
+"@
+}
+
+function New-WindowsPreflightConfig {
+  param(
+    [string]$Path,
+    [string]$AppDirectory,
+    [string]$ServiceDirectory,
+    [string]$LogDirectory,
+    [string]$NodeExe,
+    [string]$ServiceManager = "winsw",
+    [string]$ReverseProxy = "none"
+  )
+
+  $config = [ordered]@{
+    AppName = "ExampleNextSmoke"
+    DisplayName = "Example Next Smoke"
+    Description = "Example Next Smoke"
+    DeploymentMode = "reverse_proxy"
+    AppFramework = "nextjs"
+    NextjsDeploymentMode = "standalone"
+    NextjsRequireStaticAssets = $true
+    NextjsRequirePublicDirectory = $false
+    NextjsRequireServerActionsEncryptionKey = $false
+    NextjsRequireDeploymentId = $false
+    NextjsMinimumNodeVersion = "20.9.0"
+    ServiceManager = $ServiceManager
+    ReverseProxy = $ReverseProxy
+    AppDirectory = $AppDirectory
+    StartCommand = "server.js"
+    NodeExe = $NodeExe
+    NodeArguments = ""
+    Port = 39171
+    BindAddress = "127.0.0.1"
+    HealthUrl = "http://127.0.0.1:39171/health"
+    ServiceDirectory = $ServiceDirectory
+    LogDirectory = $LogDirectory
+    BackupDirectory = (Join-Path $ServiceDirectory "backups")
+    IisSitePath = $AppDirectory
+    IisSiteName = "ExampleNextSmoke"
+    IisAppPoolName = "ExampleNextSmoke-AppPool"
+    PublicHostName = "example.local"
+    PublicPort = 443
+    TlsEnabled = $false
+    IisCertificateThumbprint = ""
+    IisEnableArrProxy = $true
+    IisRequireUrlRewrite = $false
+    IisRequireArrProxy = $false
+    IisSetForwardedHeaders = $true
+    IisHealthProxyPath = "health"
+    IisWebSocketSupport = $true
+    IisProxyTimeoutSeconds = 300
+    ServiceAccount = "NetworkService"
+    ServiceAccountPassword = ""
+    FailureRestartDelaySeconds = 60
+    HealthCheckIntervalMinutes = 1
+    HealthCheckFailureThreshold = 2
+    HealthCheckRestartCooldownMinutes = 5
+    HealthCheckTimeoutSeconds = 10
+    LogRetentionDays = 30
+    BackupRetentionDays = 90
+    DiagnosticRetentionDays = 14
+    PackageExpectedFiles = @("server.js", ".next/BUILD_ID", ".next/static")
+    Environment = [ordered]@{
+      NODE_ENV = "production"
+      PORT = "39171"
+      APP_PORT = "39171"
+      APP_NAME = "ExampleNextSmoke"
+      BIND_ADDRESS = "127.0.0.1"
+      HOST = "127.0.0.1"
+      HOSTNAME = "127.0.0.1"
+    }
+  }
+  $config | ConvertTo-Json -Depth 12 | Set-Content -Path $Path -Encoding UTF8
+}
+
 function Assert-DeployRouting {
   Write-Step "Windows deploy service-manager routing"
 
@@ -121,6 +230,58 @@ function Assert-DeployRouting {
       'Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2.'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Test-DeploymentPreflight.ps1" -ExpectedText $expected
+  }
+}
+
+function Assert-WindowsPm2FallbackPreflight {
+  Write-Step "Windows PM2 fallback preflight"
+
+  $tempRoot = Join-Path $RepoRoot ".tmp\windows-pm2-preflight"
+  $appDirectory = Join-Path $tempRoot "app"
+  $serviceDirectory = Join-Path $tempRoot "svc"
+  $logDirectory = Join-Path $tempRoot "logs"
+  $fakeBin = Join-Path $tempRoot "fake-bin"
+  $fakeNode = Join-Path $fakeBin "node.cmd"
+  $configPath = Join-Path $tempRoot "pm2.config.json"
+  New-Item -ItemType Directory -Force -Path $tempRoot, $serviceDirectory, $logDirectory, $fakeBin | Out-Null
+  New-MinimalWindowsNextJsStandaloneApp -Path $appDirectory
+  New-FakeNodeExe -Path $fakeNode
+  New-WindowsPreflightConfig `
+    -Path $configPath `
+    -AppDirectory $appDirectory `
+    -ServiceDirectory $serviceDirectory `
+    -LogDirectory $logDirectory `
+    -NodeExe $fakeNode `
+    -ServiceManager "pm2" `
+    -ReverseProxy "none"
+
+  $oldPath = $env:PATH
+  try {
+    $env:PATH = $fakeBin
+    $captured = New-Object System.Collections.Generic.List[string]
+    $passed = $true
+    try {
+      & (Resolve-RepoFile "scripts/windows/Test-DeploymentPreflight.ps1") `
+        -ConfigPath $configPath `
+        -SkipReverseProxy `
+        -SkipHealthCheck `
+        -SkipPackageImport *>&1 |
+        ForEach-Object { $captured.Add([string]$_) | Out-Null }
+    } catch {
+      $passed = $false
+      $captured.Add($_.Exception.Message) | Out-Null
+    }
+    $output = @($captured | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    if ($passed) {
+      throw "Windows PM2 preflight unexpectedly passed without pm2 in PATH. Output: $output"
+    }
+    if ($output -notmatch "PM2 selected, but pm2 was not found in PATH") {
+      throw "Windows PM2 preflight did not report missing pm2. Output: $output"
+    }
+  } catch {
+    throw
+  } finally {
+    $env:PATH = $oldPath
   }
 }
 
@@ -525,6 +686,7 @@ function Assert-WindowsExampleConfigContract {
 }
 
 Assert-DeployRouting
+Assert-WindowsPm2FallbackPreflight
 Assert-WindowsReverseProxyRouting
 Assert-WindowsStaticIisRouting
 Assert-WindowsServiceEnvironmentContract

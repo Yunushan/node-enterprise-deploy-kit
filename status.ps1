@@ -345,6 +345,16 @@ function Get-SafeEvidenceCollectionCi {
         Sha = Get-SafeCiValue -Value ([string]$env:GITHUB_SHA) -Pattern '[^A-Fa-f0-9]'
     }
 }
+function Get-SafeWorkflowDispatchEvidence {
+    return [pscustomobject]@{
+        EvidenceName = Get-SafeCiValue -Value ([string]$env:EVIDENCE_NAME) -Pattern '[^A-Za-z0-9._-]'
+        ExpectedTargetId = Get-SafeCiValue -Value ([string]$env:EXPECTED_TARGET_ID) -Pattern '[^A-Za-z0-9._-]'
+        ExpectedNextJsMode = Get-SafeCiValue -Value ([string]$env:EXPECTED_NEXTJS_MODE) -Pattern '[^A-Za-z0-9._-]'
+        ExpectedServiceManager = Get-SafeCiValue -Value ([string]$env:EXPECTED_SERVICE_MANAGER) -Pattern '[^A-Za-z0-9._-]'
+        ExpectedReverseProxy = Get-SafeCiValue -Value ([string]$env:EXPECTED_REVERSE_PROXY) -Pattern '[^A-Za-z0-9._-]'
+        MinimumUptimeHours = Get-SafeCiValue -Value ([string]$env:MINIMUM_UPTIME_HOURS) -Pattern '[^0-9]'
+    }
+}
 function Get-CollectorFileSha256 {
     try {
         $scriptPath = [string]$PSCommandPath
@@ -1566,6 +1576,7 @@ $statusEvidence = [pscustomobject]@{
         Synthetic = $false
         Mock = $false
         Sample = $false
+        WorkflowDispatch = Get-SafeWorkflowDispatchEvidence
         Ci = Get-SafeEvidenceCollectionCi
     }
     SupportTargetId = $supportTargetId

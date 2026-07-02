@@ -7,6 +7,8 @@ param(
   [switch]$RequireBothNextJsModes,
   [switch]$RequireDeclaredServiceManagers,
   [switch]$RequireDeclaredReverseProxies,
+  [switch]$IncludeServiceOnly,
+  [switch]$IncludeFallback,
   [switch]$RequireCollectorSha256,
   [switch]$RequireHostEvidenceWorkflowCollection,
   [int]$RequireMinimumUptimeHours = 0,
@@ -105,6 +107,21 @@ function Get-StringValue {
   return [string]$value
 }
 
+function Get-IntegerValue {
+  param(
+    [object]$Object,
+    [string[]]$Names
+  )
+
+  $value = Get-PropertyValue -Object $Object -Names $Names
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return $null }
+  try {
+    return [int]$value
+  } catch {
+    return $null
+  }
+}
+
 function Get-BooleanValue {
   param(
     [object]$Object,
@@ -175,15 +192,47 @@ function Get-EvidenceCollectionCi {
   }
 }
 
-function Test-HostEvidenceWorkflowCollection {
+function Get-EvidenceWorkflowDispatch {
   param([object]$Evidence)
 
+  $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $dispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
+  [pscustomobject]@{
+    EvidenceName = Normalize-Token (Get-StringValue -Object $dispatch -Names @("EvidenceName", "evidenceName"))
+    ExpectedTargetId = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
+    ExpectedNextJsMode = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
+    ExpectedServiceManager = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
+    ExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $dispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
+    MinimumUptimeHours = Get-IntegerValue -Object $dispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+  }
+}
+
+function Test-HostEvidenceWorkflowCollection {
+  param(
+    [object]$Evidence,
+    [string]$TargetId,
+    [string]$NextJsMode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours
+  )
+
   $ci = Get-EvidenceCollectionCi -Evidence $Evidence
+  $dispatch = Get-EvidenceWorkflowDispatch -Evidence $Evidence
+  $expectedEvidenceBaseName = "$TargetId-$NextJsMode-$ServiceManager-$ReverseProxy"
+  $allowedEvidenceNames = @($expectedEvidenceBaseName, "$expectedEvidenceBaseName-fallback")
   return (
     $ci.IsCi -eq $true -and
     $ci.Provider -eq "github-actions" -and
     $ci.WorkflowName -eq "host-evidence" -and
-    $ci.EventName -eq "workflow_dispatch"
+    $ci.EventName -eq "workflow_dispatch" -and
+    $allowedEvidenceNames -contains [string]$dispatch.EvidenceName -and
+    [string]$dispatch.ExpectedTargetId -eq $TargetId -and
+    [string]$dispatch.ExpectedNextJsMode -eq $NextJsMode -and
+    [string]$dispatch.ExpectedServiceManager -eq $ServiceManager -and
+    [string]$dispatch.ExpectedReverseProxy -eq $ReverseProxy -and
+    $null -ne $dispatch.MinimumUptimeHours -and
+    [int]$dispatch.MinimumUptimeHours -ge $RequiredMinimumUptimeHours
   )
 }
 
@@ -364,14 +413,18 @@ function Get-EvidenceRecords {
   foreach ($file in $files) {
     try {
       $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+      $primaryTarget = Get-PrimaryEvidenceTarget -Evidence $evidence
+      $nextJsMode = Get-NextJsMode -Evidence $evidence
+      $serviceManager = Get-ServiceManager -Evidence $evidence
+      $reverseProxy = Get-ReverseProxyMode -Evidence $evidence
       [pscustomobject]@{
         File = $file.FullName
         Targets = @(Get-EvidenceTargets -Evidence $evidence)
-        PrimaryTarget = Get-PrimaryEvidenceTarget -Evidence $evidence
-        NextJsMode = Get-NextJsMode -Evidence $evidence
-        ServiceManager = Get-ServiceManager -Evidence $evidence
-        ReverseProxy = Get-ReverseProxyMode -Evidence $evidence
-        HostEvidenceWorkflowCollected = Test-HostEvidenceWorkflowCollection -Evidence $evidence
+        PrimaryTarget = $primaryTarget
+        NextJsMode = $nextJsMode
+        ServiceManager = $serviceManager
+        ReverseProxy = $reverseProxy
+        HostEvidenceWorkflowCollected = Test-HostEvidenceWorkflowCollection -Evidence $evidence -TargetId $primaryTarget -NextJsMode $nextJsMode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequireMinimumUptimeHours
       }
     } catch {
       [pscustomobject]@{
@@ -405,6 +458,11 @@ function Set-SelfTestWorkflowCollection {
       }
     }
     if ($localOnly -notcontains $targetId) {
+      $nextJsMode = Get-NextJsMode -Evidence $evidence
+      $serviceManager = Get-ServiceManager -Evidence $evidence
+      $reverseProxy = Get-ReverseProxyMode -Evidence $evidence
+      $evidenceBaseName = "$targetId-$nextJsMode-$serviceManager-$reverseProxy"
+      $evidenceName = if ([System.IO.Path]::GetFileNameWithoutExtension($file.Name).EndsWith("-fallback")) { "$evidenceBaseName-fallback" } else { $evidenceBaseName }
       $ci = [ordered]@{
         isCi = $true
         provider = "github-actions"
@@ -416,6 +474,14 @@ function Set-SelfTestWorkflowCollection {
         sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
       $collection | Add-Member -MemberType NoteProperty -Name "ci" -Value $ci -Force
+      $collection | Add-Member -MemberType NoteProperty -Name "workflowDispatch" -Value ([ordered]@{
+          evidenceName = $evidenceName
+          expectedTargetId = $targetId
+          expectedNextJsMode = $nextJsMode
+          expectedServiceManager = $serviceManager
+          expectedReverseProxy = $reverseProxy
+          minimumUptimeHours = [string]$RequireMinimumUptimeHours
+        }) -Force
     }
     $evidence | ConvertTo-Json -Depth 10 | Set-Content -Path $file.FullName -Encoding UTF8
   }
@@ -577,8 +643,8 @@ function New-ClaimSelfTestEvidence {
   }
 
   $windowsTargets = @(
-    @{ Id = "windows-10"; Caption = "Microsoft Windows 10 Pro"; Build = "19045"; ServiceManagers = @("winsw", "nssm"); ProxyModes = @("iis", "none") },
-    @{ Id = "windows-11"; Caption = "Microsoft Windows 11 Pro"; Build = "22631"; ServiceManagers = @("winsw", "nssm"); ProxyModes = @("iis", "none") },
+    @{ Id = "windows-10"; Caption = "Microsoft Windows 10 Pro"; Build = "19045"; ServiceManagers = @("winsw", "nssm", "pm2"); ProxyModes = @("iis", "none") },
+    @{ Id = "windows-11"; Caption = "Microsoft Windows 11 Pro"; Build = "22631"; ServiceManagers = @("winsw", "nssm", "pm2"); ProxyModes = @("iis", "none") },
     @{ Id = "windows-server-2012"; Caption = "Microsoft Windows Server 2012 Standard"; Build = "9200"; ServiceManagers = @("winsw", "nssm"); ProxyModes = @("iis", "none") },
     @{ Id = "windows-server-2012-r2"; Caption = "Microsoft Windows Server 2012 R2 Standard"; Build = "9600"; ServiceManagers = @("winsw", "nssm"); ProxyModes = @("iis", "none") },
     @{ Id = "windows-server-2016"; Caption = "Microsoft Windows Server 2016 Datacenter"; Build = "14393"; ServiceManagers = @("winsw", "nssm"); ProxyModes = @("iis", "none") },
@@ -608,9 +674,33 @@ function New-ClaimSelfTestEvidence {
     foreach ($target in $windowsTargets) {
       $targetId = [string]$target["Id"]
       foreach ($serviceManager in @(Get-ArrayValue $target["ServiceManagers"])) {
-        foreach ($proxyMode in @(Get-ArrayValue $target["ProxyModes"] | Where-Object { (Normalize-ReverseProxy ([string]$_)) -ne "none" })) {
+        foreach ($proxyMode in @(Get-ArrayValue $target["ProxyModes"])) {
           $serviceManagerValue = Normalize-Token ([string]$serviceManager)
           $proxyModeValue = Normalize-ReverseProxy ([string]$proxyMode)
+          $reverseProxyEvidence = if ($proxyModeValue -eq "none") {
+            [ordered]@{
+              Applicable = $false
+              Mode = "none"
+              Status = "not-applicable"
+            }
+          } else {
+            [ordered]@{
+              Applicable = $true
+              Mode = $proxyModeValue
+              Status = "ok"
+              ProbeUrl = "https://example.local/health"
+              StatusCode = 200
+              Iis = [ordered]@{
+                Applicable = $true
+                ModuleAvailable = $true
+                SiteExists = $true
+                SiteStarted = $true
+                SitePathMatchesConfig = $true
+                BindingMatchesConfig = $true
+                DuplicateBindingConflict = $false
+              }
+            }
+          }
           $data = [ordered]@{
             EvidenceSchemaVersion = 1
             EvidenceCollection = $windowsCollectionEvidence
@@ -665,22 +755,7 @@ function New-ClaimSelfTestEvidence {
               NextStartCommandIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               RuntimeRootName = "example-next-app"
             }
-            ReverseProxy = [ordered]@{
-              Applicable = $true
-              Mode = $proxyModeValue
-              Status = "ok"
-              ProbeUrl = "https://example.local/health"
-              StatusCode = 200
-              Iis = [ordered]@{
-                Applicable = $true
-                ModuleAvailable = $true
-                SiteExists = $true
-                SiteStarted = $true
-                SitePathMatchesConfig = $true
-                BindingMatchesConfig = $true
-                DuplicateBindingConflict = $false
-              }
-            }
+            ReverseProxy = $reverseProxyEvidence
             DeploymentIdentity = [ordered]@{
               Status = "ok"
               AppDirectoryName = "example-next-app"
@@ -701,9 +776,25 @@ function New-ClaimSelfTestEvidence {
     foreach ($target in $unixTargets) {
       $targetId = [string]$target["Id"]
       foreach ($serviceManager in @(Get-ArrayValue $target["ServiceManagers"])) {
-        foreach ($proxyMode in @(Get-ArrayValue $target["ProxyModes"] | Where-Object { (Normalize-ReverseProxy ([string]$_)) -ne "none" })) {
+        foreach ($proxyMode in @(Get-ArrayValue $target["ProxyModes"])) {
           $serviceManagerValue = Normalize-Token ([string]$serviceManager)
           $proxyModeValue = Normalize-ReverseProxy ([string]$proxyMode)
+          $reverseProxyEvidence = if ($proxyModeValue -eq "none") {
+            [ordered]@{
+              applicable = $false
+              mode = "none"
+              status = "not-applicable"
+            }
+          } else {
+            [ordered]@{
+              applicable = $true
+              mode = $proxyModeValue
+              status = "ok"
+              probeUrl = "https://example.local/health"
+              statusCode = 200
+              config = $unixProxyConfig
+            }
+          }
           $monitor = switch ($serviceManagerValue) {
             "systemd" { $systemdMonitor }
             "launchd" { $launchdMonitor }
@@ -805,14 +896,7 @@ function New-ClaimSelfTestEvidence {
               nextStartScriptIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               runtimeRootName = "example-next-app"
             }
-            reverseProxy = [ordered]@{
-              applicable = $true
-              mode = $proxyModeValue
-              status = "ok"
-              probeUrl = "https://example.local/health"
-              statusCode = 200
-              config = $unixProxyConfig
-            }
+            reverseProxy = $reverseProxyEvidence
             deploymentIdentity = [ordered]@{
               status = "ok"
               appDirectoryName = "example-next-app"
@@ -836,6 +920,9 @@ Write-Host ""
 Write-Host "==> Support claim"
 
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath
+if ($RequireMinimumUptimeHours -le 0) {
+  $RequireMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
+}
 
 if ($SelfTest) {
   if (-not [string]::IsNullOrWhiteSpace($SelfTestEvidencePath)) {
@@ -872,6 +959,90 @@ if ($SelfTest) {
     AllowReverseProxyNone = $true
   }
   & $PSCommandPath @workflowSuccessArgs *> $null
+
+  function Invoke-ExpectSelfTestClaimFailure {
+    param(
+      [string]$ExpectedMessage,
+      [scriptblock]$Action
+    )
+
+    $failed = $false
+    try {
+      & $Action *> $null
+    } catch {
+      $failed = $true
+      if (-not $_.Exception.Message.Contains($ExpectedMessage)) {
+        throw "Support claim self-test failed with an unexpected error: $($_.Exception.Message)"
+      }
+    }
+
+    if (-not $failed) {
+      throw "Support claim self-test failed: expected failure containing '$ExpectedMessage'."
+    }
+  }
+
+  $workflowDispatchMismatchPath = Join-Path $RepoRoot ".tmp\support-claim-workflow-dispatch-mismatch-$([Guid]::NewGuid().ToString('N'))"
+  New-ClaimSelfTestEvidence -Path $workflowDispatchMismatchPath
+  Set-SelfTestWorkflowCollection -Path $workflowDispatchMismatchPath -LocalOnlyTargets @("freebsd", "openbsd", "netbsd")
+  $workflowDispatchMismatchFile = Join-Path $workflowDispatchMismatchPath "windows-11-standalone-winsw-iis.json"
+  $workflowDispatchMismatchEvidence = Get-Content -LiteralPath $workflowDispatchMismatchFile -Raw | ConvertFrom-Json
+  $workflowDispatchMismatchEvidence.evidenceCollection.workflowDispatch.expectedTargetId = "windows-10"
+  $workflowDispatchMismatchEvidence | ConvertTo-Json -Depth 10 | Set-Content -Path $workflowDispatchMismatchFile -Encoding UTF8
+  Invoke-ExpectSelfTestClaimFailure -ExpectedMessage "workflow provenance validation failed" -Action {
+    & $PSCommandPath `
+      -EvidencePath $workflowDispatchMismatchPath `
+      -MatrixPath $MatrixPath `
+      -TargetId windows-11 `
+      -RequireHostEvidenceWorkflowCollection `
+      -AllowReverseProxyNone
+  }
+
+  $missingServiceOnlyPath = Join-Path $RepoRoot ".tmp\support-claim-missing-service-only-$([Guid]::NewGuid().ToString('N'))"
+  Copy-Item -LiteralPath $EvidencePath -Destination $missingServiceOnlyPath -Recurse
+  Remove-Item -LiteralPath (Join-Path $missingServiceOnlyPath "ubuntu-standalone-systemd-none.json") -Force
+  Invoke-ExpectSelfTestClaimFailure -ExpectedMessage "Support claim validation failed" -Action {
+    & $PSCommandPath `
+      -EvidencePath $missingServiceOnlyPath `
+      -MatrixPath $MatrixPath `
+      -TargetId "ubuntu" `
+      -RequireBothNextJsModes `
+      -RequireDeclaredServiceManagers `
+      -RequireDeclaredReverseProxies `
+      -IncludeServiceOnly `
+      -AllowReverseProxyNone
+  }
+
+  $missingFallbackPath = Join-Path $RepoRoot ".tmp\support-claim-missing-fallback-$([Guid]::NewGuid().ToString('N'))"
+  Copy-Item -LiteralPath $EvidencePath -Destination $missingFallbackPath -Recurse
+  Remove-Item -LiteralPath (Join-Path $missingFallbackPath "windows-10-standalone-pm2-iis.json") -Force
+  Invoke-ExpectSelfTestClaimFailure -ExpectedMessage "Support claim validation failed" -Action {
+    & $PSCommandPath `
+      -EvidencePath $missingFallbackPath `
+      -MatrixPath $MatrixPath `
+      -TargetId "windows-10" `
+      -RequireBothNextJsModes `
+      -RequireDeclaredServiceManagers `
+      -RequireDeclaredReverseProxies `
+      -IncludeFallback `
+      -AllowReverseProxyNone
+  }
+
+  $missingFallbackServiceOnlyPath = Join-Path $RepoRoot ".tmp\support-claim-missing-fallback-service-only-$([Guid]::NewGuid().ToString('N'))"
+  Copy-Item -LiteralPath $EvidencePath -Destination $missingFallbackServiceOnlyPath -Recurse
+  Remove-Item -LiteralPath (Join-Path $missingFallbackServiceOnlyPath "windows-10-standalone-pm2-none.json") -Force
+  Invoke-ExpectSelfTestClaimFailure -ExpectedMessage "Support claim validation failed" -Action {
+    & $PSCommandPath `
+      -EvidencePath $missingFallbackServiceOnlyPath `
+      -MatrixPath $MatrixPath `
+      -TargetId "windows-10" `
+      -RequireBothNextJsModes `
+      -RequireDeclaredServiceManagers `
+      -RequireDeclaredReverseProxies `
+      -IncludeServiceOnly `
+      -IncludeFallback `
+      -AllowReverseProxyNone
+  }
+
   if ($TargetId.Count -eq 0 -and $Category.Count -eq 0) {
     $TargetId = @(
       "windows-10",
@@ -902,6 +1073,9 @@ if ($SelfTest) {
   $RequireBothNextJsModes = $true
   $RequireDeclaredServiceManagers = $true
   $RequireDeclaredReverseProxies = $true
+  $IncludeServiceOnly = $true
+  $IncludeFallback = $true
+  $AllowReverseProxyNone = $true
   $RequireCollectorSha256 = $true
   if ($RequireMinimumUptimeHours -le 0) {
     $RequireMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
@@ -972,7 +1146,7 @@ if ($RequireMinimumUptimeHours -gt 0) {
 if (-not $AllowWarnings) {
   $hostEvidenceArgs.FailOnWarnings = $true
 }
-if ($AllowReverseProxyNone) {
+if ($AllowReverseProxyNone -or $IncludeServiceOnly) {
   $hostEvidenceArgs.AllowReverseProxyNone = $true
 }
 
@@ -1011,26 +1185,70 @@ if ($RequireBothNextJsModes -or $RequireDeclaredServiceManagers -or $RequireDecl
     } else {
       @("")
     }
-    $expectedServiceManagers = if ($RequireDeclaredServiceManagers) {
+    $declaredServiceManagers = if ($RequireDeclaredServiceManagers) {
       @(Get-ArrayValue $target.serviceManagers | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
     } else {
       @("")
     }
-    $expectedReverseProxies = if ($RequireDeclaredReverseProxies) {
-      @(Get-ArrayValue $target.reverseProxies | ForEach-Object { Normalize-ReverseProxy ([string]$_) } | Where-Object { $_ -and $_ -ne "none" })
+    $fallbackManagers = if ($RequireDeclaredServiceManagers -and $IncludeFallback) {
+      @(Get-ArrayValue (Get-PropertyValue -Object $target -Names @("fallbackManagers")) | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ })
+    } else {
+      @()
+    }
+    $declaredReverseProxies = if ($RequireDeclaredReverseProxies) {
+      @(Get-ArrayValue $target.reverseProxies | ForEach-Object { Normalize-ReverseProxy ([string]$_) } | Where-Object { $_ })
     } else {
       @("")
     }
     $expectedModes = @($expectedModes)
-    $expectedServiceManagers = @($expectedServiceManagers)
-    $expectedReverseProxies = @($expectedReverseProxies)
+    $declaredServiceManagers = @($declaredServiceManagers)
+    $fallbackManagers = @($fallbackManagers)
+    $declaredReverseProxies = @($declaredReverseProxies)
     if ($expectedModes.Count -eq 0) { $expectedModes = @("") }
-    if ($expectedServiceManagers.Count -eq 0) { $expectedServiceManagers = @("") }
-    if ($expectedReverseProxies.Count -eq 0) { $expectedReverseProxies = @("") }
+    if ($declaredServiceManagers.Count -eq 0) { $declaredServiceManagers = @("") }
+    if ($declaredReverseProxies.Count -eq 0) { $declaredReverseProxies = @("") }
+
+    $concreteReverseProxies = @($declaredReverseProxies | Where-Object { $_ -ne "none" })
+    $serviceOnlyReverseProxies = @($declaredReverseProxies | Where-Object { $_ -eq "none" })
+    if (-not $RequireDeclaredReverseProxies) {
+      $concreteReverseProxies = @("")
+      $serviceOnlyReverseProxies = @()
+    }
+    if ($concreteReverseProxies.Count -eq 0 -and -not ($IncludeServiceOnly -and $serviceOnlyReverseProxies.Count -gt 0)) {
+      $concreteReverseProxies = @("")
+    }
+
+    $expectedServiceProxyPairs = New-Object System.Collections.Generic.List[object]
+    foreach ($serviceManager in $declaredServiceManagers) {
+      foreach ($reverseProxy in $concreteReverseProxies) {
+        $expectedServiceProxyPairs.Add([pscustomobject]@{ ServiceManager = $serviceManager; ReverseProxy = $reverseProxy }) | Out-Null
+      }
+      if ($IncludeServiceOnly) {
+        foreach ($reverseProxy in $serviceOnlyReverseProxies) {
+          $expectedServiceProxyPairs.Add([pscustomobject]@{ ServiceManager = $serviceManager; ReverseProxy = $reverseProxy }) | Out-Null
+        }
+      }
+    }
+    if ($IncludeFallback) {
+      foreach ($serviceManager in $fallbackManagers) {
+        foreach ($reverseProxy in $concreteReverseProxies) {
+          $expectedServiceProxyPairs.Add([pscustomobject]@{ ServiceManager = $serviceManager; ReverseProxy = $reverseProxy }) | Out-Null
+        }
+        if ($IncludeServiceOnly) {
+          foreach ($reverseProxy in $serviceOnlyReverseProxies) {
+            $expectedServiceProxyPairs.Add([pscustomobject]@{ ServiceManager = $serviceManager; ReverseProxy = $reverseProxy }) | Out-Null
+          }
+        }
+      }
+    }
+    if ($expectedServiceProxyPairs.Count -eq 0) {
+      $expectedServiceProxyPairs.Add([pscustomobject]@{ ServiceManager = ""; ReverseProxy = "" }) | Out-Null
+    }
 
     foreach ($mode in $expectedModes) {
-      foreach ($serviceManager in $expectedServiceManagers) {
-        foreach ($reverseProxy in $expectedReverseProxies) {
+      foreach ($pair in $expectedServiceProxyPairs) {
+        $serviceManager = [string]$pair.ServiceManager
+        $reverseProxy = [string]$pair.ReverseProxy
           $matched = $false
           foreach ($record in $records) {
             if ($record.PrimaryTarget -ne $targetId) { continue }
@@ -1048,7 +1266,6 @@ if ($RequireBothNextJsModes -or $RequireDeclaredServiceManagers -or $RequireDecl
             $detail = if ($parts.Count -gt 0) { @($parts) -join ", " } else { "selected support dimensions" }
             $issues.Add("$targetId does not have real host evidence for $detail.") | Out-Null
           }
-        }
       }
     }
   }

@@ -51,6 +51,13 @@ function Write-Step {
   Write-Host "==> $Message"
 }
 
+function Format-CoveragePercent {
+  param($Value)
+
+  if ($null -eq $Value) { return "n/a" }
+  return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:0.00}%", [double]$Value)
+}
+
 function Invoke-Step {
   param(
     [string]$Label,
@@ -161,6 +168,10 @@ function Invoke-SelfTest {
   New-OutputDirectory -Path $selfTestRoot
   $coverageJson = Join-Path $selfTestRoot "generated-coverage.json"
 
+  if ((Format-CoveragePercent 100) -ne "100.00%" -or (Format-CoveragePercent 0) -ne "0.00%" -or (Format-CoveragePercent $null) -ne "n/a") {
+    throw "Support evidence release workflow self-test failed: coverage percentage formatter returned unexpected output."
+  }
+
   function Invoke-ExpectStrictReleaseFailure {
     param([scriptblock]$Action)
 
@@ -251,6 +262,31 @@ function Invoke-SelfTest {
   if (-not ([string]$firstReadinessCoverageRow.collectionCommand)) {
     throw "Support evidence release workflow self-test failed: readiness JSON did not preserve row collection commands."
   }
+  if ([string]$result.coveragePercentDisplay -ne "100.00%") {
+    throw "Support evidence release workflow self-test failed: release result did not include formatted coverage percent."
+  }
+
+  $filteredArgs = $scriptArgs.Clone()
+  $filteredArgs.OutputDirectory = Join-Path $selfTestRoot "filtered-release-output"
+  $filteredArgs.BundleName = "selftest-filtered-release-evidence"
+  $filteredArgs.TargetId = [string[]]@("ubuntu")
+  $filteredResult = & $PSCommandPath @filteredArgs
+  if (-not $filteredResult.ready) {
+    throw "Support evidence release workflow self-test failed: filtered release workflow was not ready."
+  }
+  if ([int]$filteredResult.expectedCoverage -le 0 -or [int]$filteredResult.expectedCoverage -ge [int]$result.expectedCoverage) {
+    throw "Support evidence release workflow self-test failed: filtered release workflow did not narrow expected coverage."
+  }
+  $filteredCoverage = Get-Content -LiteralPath (Resolve-DisplayPath -Path ([string]$filteredResult.coverageJson)) -Raw | ConvertFrom-Json
+  $filteredCoverageTargets = @($filteredCoverage.selectedTargets)
+  if ($filteredCoverageTargets.Count -ne 1 -or [string]$filteredCoverageTargets[0] -ne "ubuntu") {
+    throw "Support evidence release workflow self-test failed: filtered coverage report did not stay scoped to ubuntu."
+  }
+  $filteredReadiness = Get-Content -LiteralPath (Resolve-DisplayPath -Path ([string]$filteredResult.readinessJson)) -Raw | ConvertFrom-Json
+  $filteredReadinessTargets = @($filteredReadiness.supportScope.selectedTargets)
+  if ($filteredReadinessTargets.Count -ne 1 -or [string]$filteredReadinessTargets[0] -ne "ubuntu") {
+    throw "Support evidence release workflow self-test failed: filtered readiness report did not stay scoped to ubuntu."
+  }
 
   $strictAllowWarningsArgs = $scriptArgs.Clone()
   $strictAllowWarningsArgs.OutputDirectory = Join-Path $selfTestRoot "strict-allow-warnings-output"
@@ -314,6 +350,7 @@ Invoke-Step "Support evidence coverage" {
   Write-Host "Coverage expected: $($script:coverage.summary.expectedCount)"
   Write-Host "Coverage covered:  $($script:coverage.summary.coveredCount)"
   Write-Host "Coverage missing:  $($script:coverage.summary.missingCount)"
+  Write-Host "Coverage percent:  $(Format-CoveragePercent $script:coverage.summary.coveragePercent)"
 }
 
 if ([int]$coverage.summary.missingCount -gt 0) {
@@ -388,6 +425,8 @@ $result = [pscustomobject]@{
   expectedCoverage = [int]$coverage.summary.expectedCount
   coveredEvidence = [int]$coverage.summary.coveredCount
   missingEvidence = [int]$coverage.summary.missingCount
+  coveragePercent = $coverage.summary.coveragePercent
+  coveragePercentDisplay = Format-CoveragePercent $coverage.summary.coveragePercent
   targetId = @($TargetId)
   category = @($Category)
   productionRecommendedOnly = [bool]$ProductionRecommendedOnly
@@ -401,6 +440,7 @@ if ($PassThru) {
   Write-Host ""
   Write-Host "Release evidence workflow complete."
   Write-Host "Ready: $($result.ready)"
+  Write-Host "Coverage percent: $($result.coveragePercentDisplay)"
   Write-Host "Coverage report: $($result.coverageMarkdown)"
   Write-Host "Bundle: $($result.bundleZip)"
   Write-Host "Readiness: $($result.readinessJson)"

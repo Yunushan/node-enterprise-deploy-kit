@@ -32,7 +32,7 @@ The verifier checks:
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
 - hosted Windows static verification on pinned Windows Server runner images (`windows-2022` and `windows-2025`)
 - support-claim gate self-test for strict Next.js mode, service-manager, and reverse-proxy evidence coverage
-- support evidence plan and workflow dispatch command generation from the machine-readable matrix
+- support evidence collection pack, plan, and workflow dispatch command generation from the machine-readable matrix
 - support evidence bundle generation with per-file SHA256, source-control provenance, CI provenance, support matrix SHA256, and collector provenance manifest
 - support evidence coverage auditing against strict, service-only, and fallback matrix entries
 - full-matrix release support readiness validation from a saved evidence bundle
@@ -68,7 +68,33 @@ To validate the declared support targets:
 .\scripts\dev\Test-SupportMatrix.ps1
 ```
 
-To generate the real-host evidence collection checklist:
+To generate the full real-host evidence operator pack:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceCollectionPack.ps1 `
+  -OutputDirectory .\evidence\collection-pack `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+The pack writes `support-evidence-plan.md`, `support-evidence-plan.json`,
+`host-evidence-dispatch.md`, a guarded `Invoke-HostEvidenceDispatch.ps1`, a
+guarded `Invoke-HostEvidenceArtifactDownload.ps1`,
+`expected-workflow-artifacts.json/csv`, `local-command-only-evidence.json/csv`,
+a pre-release `Test-HostEvidenceCollectionStaging.ps1`, a guarded
+`Invoke-SupportEvidenceRelease.ps1`, and a generated README with the artifact
+download/import/bundle sequence. Review the dispatcher and downloader output
+before running either script with `-Run`. The downloader prints
+`gh run list` and exact `gh run download --name <evidence_name>` commands, then
+downloads into per-evidence folders when run with `-RunId ... -Run`. Use
+the generated staging audit before the release script to fail on missing
+downloaded `status.json` artifacts, local-only evidence files, or evidence whose
+target/mode/service/proxy identity does not match the matrix row. Use
+`-StrictCiRelease` on the generated release script only from a clean, committed
+CI-controlled final signoff path.
+
+To generate only the real-host evidence collection checklist:
 
 ```powershell
 .\scripts\dev\New-SupportEvidencePlan.ps1 `
@@ -118,11 +144,14 @@ containing downloaded `.zip` artifacts:
 
 The importer validates each downloaded `status.json` against the support matrix
 and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
-`workflow_dispatch` provenance by default, derives the target/mode/service/proxy
-key, requires the declared target to be corroborated by platform metadata,
-writes the canonical evidence filename, and refuses changed overwrites unless
-`-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
-local-command evidence.
+`workflow_dispatch` provenance by default, and requires
+`evidenceCollection.workflowDispatch` to match the exact
+target/mode/service/proxy row. It derives the key, requires the declared target
+to be corroborated by platform metadata, writes the canonical evidence filename,
+and refuses changed overwrites unless `-Force` is supplied.
+`-AllowLocalCollection` only bypasses workflow provenance for support matrix
+rows marked `localCommandOnly`; workflow-capable Windows/Linux/macOS rows still
+require controlled `host-evidence` collection.
 
 To audit the evidence folder for missing matrix combinations:
 
@@ -153,7 +182,12 @@ commands fail on warning-only status evidence by default; add `-AllowWarnings`
 when the missing-coverage report should generate warning-tolerant collection
 commands instead. Coverage counts only evidence whose declared
 `supportTargetId` is corroborated by collected OS/platform metadata and, for
-Next.js rows, still proves the required runtime platform floor.
+Next.js rows, still proves the required runtime platform floor. JSON and
+Markdown reports include `summary.coveragePercent` plus breakdowns by evidence
+kind, target category, and workflow collection path so readiness percentages
+come from the collected evidence. With `-ReportOnly`, a missing `EvidencePath`
+is treated as zero collected evidence so the same command can produce a 0%
+baseline before any host evidence has been imported.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
@@ -209,7 +243,9 @@ when available, the collector SHA256 digest, the support matrix SHA256, and safe
 source-control provenance for the repository revision that created the bundle.
 When built in CI, it also records safe workflow/run/ref provenance.
 When source evidence files contain safe collection CI provenance, the manifest
-records and verifies it per file. The bundle verifier rejects
+records and verifies it per file, and each manifest row preserves the exact
+collection workflow dispatch dimensions for row-level release review. The
+bundle verifier rejects
 internally inconsistent CI/source commit SHAs and evidence whose declared
 `supportTargetId` is not corroborated by collected OS/platform metadata, even
 when the manifest hashes match. It also rejects saved Next.js evidence that no
@@ -286,7 +322,8 @@ The workflow accepts only declared matrix values for expected Next.js mode,
 service manager, and reverse proxy, then validates the full combination against
 the exact support matrix target row. The `evidence_name` input must match the
 generated `target-mode-service-proxy` artifact name, with `-fallback` for
-fallback service managers. Use a relative workspace `config_path`,
+fallback service managers, including service-only fallback rows such as
+`target-mode-pm2-none-fallback`. Use a relative workspace `config_path`,
 such as `config/windows/app.config.json` or `config/linux/app.env`; those local
 private config files are git-ignored and preserved by the collection checkout
 with `clean: false`. The workflow rejects absolute paths, traversal, unsafe
@@ -303,6 +340,8 @@ To validate a release support claim against real host evidence:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -IncludeServiceOnly `
+  -IncludeFallback `
   -RequireHostEvidenceWorkflowCollection
 ```
 

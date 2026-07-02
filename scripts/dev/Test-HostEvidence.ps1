@@ -661,6 +661,7 @@ function Get-EvidenceCollectionEvidence {
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
   $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
+  $workflowDispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
@@ -680,7 +681,56 @@ function Get-EvidenceCollectionEvidence {
       RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
       Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
     }
+    WorkflowDispatch = [pscustomobject]@{
+      EvidenceName = Normalize-Target (Get-StringValue -Object $workflowDispatch -Names @("EvidenceName", "evidenceName"))
+      ExpectedTargetId = Normalize-Target (Get-StringValue -Object $workflowDispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
+      ExpectedNextJsMode = Normalize-Target (Get-StringValue -Object $workflowDispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
+      ExpectedServiceManager = Normalize-Target (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
+      ExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
+      MinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+    }
   }
+}
+
+function Get-WorkflowDispatchDimensionIssues {
+  param(
+    [object]$Dispatch,
+    [string]$FileName,
+    [string]$TargetId,
+    [string]$NextJsMode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours
+  )
+
+  $issues = New-Object System.Collections.Generic.List[string]
+  $expectedEvidenceBaseName = "$TargetId-$NextJsMode-$ServiceManager-$ReverseProxy"
+  $allowedEvidenceNames = @($expectedEvidenceBaseName, "$expectedEvidenceBaseName-fallback")
+
+  if ([string]::IsNullOrWhiteSpace([string]$Dispatch.EvidenceName)) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.evidenceName is required for host-evidence workflow provenance.") | Out-Null
+  } elseif ($allowedEvidenceNames -notcontains [string]$Dispatch.EvidenceName) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.evidenceName does not match evidence dimensions.") | Out-Null
+  }
+  if ([string]$Dispatch.ExpectedTargetId -ne $TargetId) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.expectedTargetId does not match supportTargetId '$TargetId'.") | Out-Null
+  }
+  if ([string]$Dispatch.ExpectedNextJsMode -ne $NextJsMode) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.expectedNextJsMode does not match Next.js mode '$NextJsMode'.") | Out-Null
+  }
+  if ([string]$Dispatch.ExpectedServiceManager -ne $ServiceManager) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.expectedServiceManager does not match service manager '$ServiceManager'.") | Out-Null
+  }
+  if ([string]$Dispatch.ExpectedReverseProxy -ne $ReverseProxy) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.expectedReverseProxy does not match reverse proxy '$ReverseProxy'.") | Out-Null
+  }
+  if ($null -eq $Dispatch.MinimumUptimeHours) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.minimumUptimeHours is required for host-evidence workflow provenance.") | Out-Null
+  } elseif ($RequiredMinimumUptimeHours -gt 0 -and [int]$Dispatch.MinimumUptimeHours -lt $RequiredMinimumUptimeHours) {
+    $issues.Add("$FileName evidenceCollection.workflowDispatch.minimumUptimeHours is below the required minimum uptime.") | Out-Null
+  }
+
+  return @($issues | ForEach-Object { $_ })
 }
 
 function Test-SupportedEvidenceCollector {
@@ -1591,6 +1641,11 @@ function Test-EvidenceFile {
     )) {
     $Issues.Add("$displayFile does not prove controlled host-evidence workflow_dispatch collection provenance.") | Out-Null
   }
+  if ($RequireHostEvidenceWorkflowCollection) {
+    foreach ($workflowDispatchIssue in @(Get-WorkflowDispatchDimensionIssues -Dispatch $collectionEvidence.WorkflowDispatch -FileName $displayFile -TargetId $supportTargetId -NextJsMode $nextJsMode -ServiceManager $serviceManager -ReverseProxy $reverseProxyMode -RequiredMinimumUptimeHours $RequireMinimumUptimeHours)) {
+      $Issues.Add($workflowDispatchIssue) | Out-Null
+    }
+  }
   if (Test-PropertyExists -Object $evidence -Names @("ComputerName", "computerName", "HostName", "hostName", "MachineName", "machineName")) {
     $Issues.Add("$displayFile contains a raw host identity field. Use a private evidence folder name or an external release record instead.") | Out-Null
   }
@@ -2095,6 +2150,23 @@ if ($SelfTest) {
     ExpectedReverseProxy = "nginx"
   }
 
+  $wrongLaunchdRunnerEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-launchd-runner-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $wrongLaunchdRunnerEvidencePath
+  $wrongLaunchdRunnerFile = Join-Path $wrongLaunchdRunnerEvidencePath "macos.json"
+  $wrongLaunchdRunnerEvidence = Get-Content -LiteralPath $wrongLaunchdRunnerFile -Raw | ConvertFrom-Json
+  $wrongLaunchdRunnerEvidence.serviceDefinition.runnerScriptMatchesConfig = $false
+  $wrongLaunchdRunnerEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongLaunchdRunnerFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "launchd service plist references the configured runner script" -Parameters @{
+    EvidencePath = $wrongLaunchdRunnerEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "macos"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "launchd"
+    ExpectedReverseProxy = "nginx"
+  }
+
   $wrongSupportTargetEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-support-target-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $wrongSupportTargetEvidencePath
   $wrongSupportTargetFile = Join-Path $wrongSupportTargetEvidencePath "ubuntu.json"
@@ -2229,9 +2301,55 @@ if ($SelfTest) {
       refName = "main"
       sha = ("b" * 40)
     }) -Force
+  $workflowCiEvidence.evidenceCollection | Add-Member -NotePropertyName "workflowDispatch" -NotePropertyValue ([pscustomobject]@{
+      evidenceName = "ubuntu-standalone-systemd-nginx"
+      expectedTargetId = "ubuntu"
+      expectedNextJsMode = "standalone"
+      expectedServiceManager = "systemd"
+      expectedReverseProxy = "nginx"
+      minimumUptimeHours = "72"
+    }) -Force
   $workflowCiEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowCiFile -Encoding UTF8
   Invoke-ExpectHostEvidenceSuccess -Name "expected controlled host-evidence workflow provenance" -Parameters @{
     EvidencePath = $workflowCiFile
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    RequireCiCollection = $true
+    RequireHostEvidenceWorkflowCollection = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+  }
+
+  $badWorkflowDispatchEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-workflow-dispatch-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $badWorkflowDispatchEvidencePath
+  $badWorkflowDispatchFile = Join-Path $badWorkflowDispatchEvidencePath "ubuntu.json"
+  $badWorkflowDispatchEvidence = Get-Content -LiteralPath $badWorkflowDispatchFile -Raw | ConvertFrom-Json
+  $badWorkflowDispatchEvidence.evidenceCollection | Add-Member -NotePropertyName "ci" -NotePropertyValue ([pscustomobject]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = "12345"
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = ("c" * 40)
+    }) -Force
+  $badWorkflowDispatchEvidence.evidenceCollection | Add-Member -NotePropertyName "workflowDispatch" -NotePropertyValue ([pscustomobject]@{
+      evidenceName = "debian-standalone-systemd-nginx"
+      expectedTargetId = "debian"
+      expectedNextJsMode = "standalone"
+      expectedServiceManager = "systemd"
+      expectedReverseProxy = "nginx"
+      minimumUptimeHours = "72"
+    }) -Force
+  $badWorkflowDispatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $badWorkflowDispatchFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "workflowDispatch.expectedTargetId does not match" -Parameters @{
+    EvidencePath = $badWorkflowDispatchFile
     RequireNextJs = $true
     RequireReverseProxy = $true
     RequireDeploymentIdentity = $true

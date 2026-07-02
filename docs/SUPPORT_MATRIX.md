@@ -38,7 +38,31 @@ That check proves the WinSW, NSSM, and PM2 paths keep the same Node/Next.js
 environment contract and that the deployment wrapper routes only to the
 installer matching `ServiceManager`.
 
-To generate a release-specific evidence checklist from the matrix:
+To generate the release-specific evidence operator pack from the matrix:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceCollectionPack.ps1 `
+  -OutputDirectory .\evidence\collection-pack `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+The pack preserves the exact matrix filters in a checklist, workflow dispatch
+commands, a guarded dispatcher, a guarded artifact downloader keyed by expected
+evidence names, JSON/CSV manifests for expected workflow artifacts and
+local-command-only evidence rows, a pre-release staging audit, a guarded
+release-gate script, and a generated README. The downloader prints `gh run list`
+and exact
+`gh run download --name <evidence_name>` commands, then downloads into
+per-evidence folders when run with `-RunId ... -Run`. It is a handoff artifact
+for collecting real host evidence; run the generated staging audit before the
+release script to fail on missing downloaded `status.json` artifacts, missing
+local-command-only host evidence, or evidence whose target/mode/service/proxy
+identity does not match the matrix row. It does not replace downloaded workflow
+artifacts, local-command-only host evidence, or the final readiness gate.
+
+To generate only a release-specific evidence checklist from the matrix:
 
 ```powershell
 .\scripts\dev\New-SupportEvidencePlan.ps1 `
@@ -48,7 +72,9 @@ To generate a release-specific evidence checklist from the matrix:
 
 The generated plan separates strict real-host evidence, service-only
 `ReverseProxy=none` evidence, and fallback-manager evidence so release claims
-can stay precise. It also carries each target's Node runtime support tier so
+can stay precise. Fallback-manager evidence includes service-only fallback rows
+when a target declares both a fallback manager and `ReverseProxy=none`. It also
+carries each target's Node runtime support tier so
 collection plans make experimental and community-package targets visible before
 evidence collection starts. Add `-TargetId`, `-Category`, or
 `-ProductionRecommendedOnly` to scope the collection plan, and add
@@ -67,11 +93,13 @@ containing downloaded `.zip` artifacts:
 ```
 
 The importer validates each downloaded `status.json`, requires controlled
-`host-evidence` / `workflow_dispatch` provenance by default, derives the
-target/mode/service/proxy key from the evidence and matrix, and writes the
-canonical evidence filename. It also requires the declared target to be
-corroborated by platform metadata before import. Use `-AllowLocalCollection`
-only for explicitly local-command evidence.
+`host-evidence` / `workflow_dispatch` provenance by default, requires
+`evidenceCollection.workflowDispatch` to match the exact
+target/mode/service/proxy row, derives the key from the evidence and matrix, and
+writes the canonical evidence filename. It also requires the declared target to
+be corroborated by platform metadata before import. `-AllowLocalCollection` only
+bypasses workflow provenance for rows marked `localCommandOnly`; workflow-capable
+Windows/Linux/macOS rows still require controlled `host-evidence` collection.
 
 To turn collected artifacts into a release-ready evidence package in one
 operator step:
@@ -121,12 +149,13 @@ After evidence is collected and validated, create a private evidence bundle:
 
 The bundle manifest records each evidence file's SHA256, support dimensions,
 Node runtime support tier, live status collector provenance including collector
-SHA256 digest, and explicit non-synthetic/non-mock/non-sample markers so later
-release reviews can prove exactly which files supported the claim. Bundle
-verification also rejects evidence whose declared `supportTargetId` is not
-corroborated by collected OS/platform metadata, even when the manifest hashes
-match. It also rejects saved Next.js evidence that no longer proves the
-required runtime platform floor.
+SHA256 digest, exact collection workflow dispatch dimensions when present, and
+explicit non-synthetic/non-mock/non-sample markers so later release reviews can
+prove exactly which files supported the claim. Bundle verification also rejects
+evidence whose declared `supportTargetId` is not corroborated by collected
+OS/platform metadata, even when the manifest hashes match. It also rejects
+saved Next.js evidence that no longer proves the required runtime platform
+floor.
 
 Verify a saved bundle with:
 
@@ -180,10 +209,13 @@ commands fail on warning-only status evidence by default; add
 warning-tolerant collection commands instead. Workflow-capable rows include
 `-RequireCiCollection` and `-RequireHostEvidenceWorkflowCollection` in the
 single-row validation command; local-command-only rows omit those switches.
-Coverage counts only evidence
-whose declared `supportTargetId` is corroborated by collected OS/platform
-metadata and, for Next.js rows, still proves the required runtime platform
-floor.
+Coverage counts only evidence whose declared `supportTargetId` is corroborated
+by collected OS/platform metadata and, for Next.js rows, still proves the
+required runtime platform floor. Reports also include
+`summary.coveragePercent` plus breakdowns by evidence kind, target category,
+and workflow collection path. With `-ReportOnly`, a missing `EvidencePath` is
+treated as zero collected evidence so the same command can produce a 0%
+baseline before any host evidence has been imported.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
@@ -207,7 +239,8 @@ against generated evidence for every target in the matrix across the declared
 Next.js modes, service managers, and reverse-proxy implementations.
 The verifier also runs `Test-SupportEvidenceCoverage.ps1 -SelfTest`, which
 proves the coverage auditor can recognize complete strict, service-only, and
-fallback evidence sets generated from the matrix.
+fallback evidence sets generated from the matrix, including fallback
+service-only rows when both dimensions are declared.
 It also runs `Test-ReleaseSupportReadiness.ps1 -SelfTest`, which proves a saved
 full-matrix evidence bundle can pass integrity, support-claim, and coverage
 gates before release signoff.
@@ -228,8 +261,8 @@ To test the support-claim validator itself without real host files:
 ```
 
 For the strictest Next.js claim, require evidence for every declared Next.js
-mode, service manager, and reverse-proxy implementation on every selected
-primary target:
+mode, service manager, service-only entry, fallback manager, and reverse-proxy
+implementation on every selected primary target:
 
 ```powershell
 .\scripts\dev\Test-SupportClaim.ps1 `
@@ -239,6 +272,8 @@ primary target:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -IncludeServiceOnly `
+  -IncludeFallback `
   -RequireHostEvidenceWorkflowCollection
 ```
 
@@ -253,14 +288,17 @@ such as Windows, Linux, and macOS; local-only BSD evidence is not rejected just
 because GitHub Actions cannot collect it through the host-evidence workflow.
 
 `-RequireDeclaredReverseProxies` checks concrete reverse-proxy implementations
-such as IIS, Nginx, Apache, HAProxy, and Traefik. The matrix value `none` is a
-service-only or external-load-balancer marker and is not treated as a
-reverse-proxy implementation.
+such as IIS, Nginx, Apache, HAProxy, and Traefik. Add `-IncludeServiceOnly` to
+require explicit `ReverseProxy=none` service-only or external-load-balancer
+evidence; without it, `none` is not treated as a concrete reverse-proxy
+implementation.
 
 Fallback managers such as Windows PM2 are tracked in the matrix for migration
-compatibility, but they are not service-manager coverage for strict
-`real-host-verified` claims because the status evidence gate proves operating
-system service state and boot enablement.
+compatibility. Add `-IncludeFallback` when a release claim must also prove
+those fallback service-manager rows. When `-IncludeFallback` and
+`-IncludeServiceOnly` are both present, fallback `ReverseProxy=none` rows are
+required too; primary strict service coverage still comes from the matrix
+`serviceManagers` list.
 
 ## Required Next.js Modes
 

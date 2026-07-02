@@ -227,6 +227,11 @@ jobs:
           fi
           sudo env \
             CI="${CI:-}" \
+            EVIDENCE_NAME="${EVIDENCE_NAME:-}" \
+            EXPECTED_NEXTJS_MODE="${EXPECTED_NEXTJS_MODE:-}" \
+            EXPECTED_REVERSE_PROXY="${EXPECTED_REVERSE_PROXY:-}" \
+            EXPECTED_SERVICE_MANAGER="${EXPECTED_SERVICE_MANAGER:-}" \
+            EXPECTED_TARGET_ID="${EXPECTED_TARGET_ID:-}" \
             GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" \
             GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-}" \
             GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
@@ -234,6 +239,7 @@ jobs:
             GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
             GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
             GITHUB_SHA="${GITHUB_SHA:-}" \
+            MINIMUM_UPTIME_HOURS="${MINIMUM_UPTIME_HOURS:-}" \
             bash scripts/linux/status-node-app.sh \
             "$CONFIG_PATH" \
             --minimum-uptime-hours "$MINIMUM_UPTIME_HOURS" \

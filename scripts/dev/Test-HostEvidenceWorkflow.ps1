@@ -109,6 +109,7 @@ foreach ($expected in @(
     "runner_labels must be a JSON array containing self-hosted and the expected target label.",
     "runner_labels must include self-hosted for real host evidence collection.",
     "runner_labels must include the expected target label",
+    "runner_labels must not include support target labels other than expected_target_id",
     "runner_labels must not use GitHub-hosted runner labels for real host evidence.",
     '$hostedLabelPatterns = @(',
     '^ubuntu-(latest|\d{2}\.\d{2}.*)$',

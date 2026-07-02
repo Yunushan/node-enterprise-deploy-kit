@@ -78,6 +78,21 @@ function Get-StringValue {
   return [string]$value
 }
 
+function Get-IntegerValue {
+  param(
+    [object]$Object,
+    [string[]]$Names
+  )
+
+  $value = Get-PropertyValue -Object $Object -Names $Names
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return $null }
+  try {
+    return [int]$value
+  } catch {
+    return $null
+  }
+}
+
 function Get-MatrixRequiredMinimumUptimeHours {
   param([object]$Matrix)
 
@@ -252,6 +267,21 @@ function Assert-SupportTargetCorroborated {
   }
 }
 
+function Test-WorkflowDispatchSupported {
+  param([string]$Category)
+  return ((Normalize-Token $Category) -in @("windows-client", "windows-server", "linux", "macos"))
+}
+
+function Test-TargetWorkflowDispatchSupported {
+  param([object]$Target)
+
+  $localCommandOnly = Get-PropertyValue -Object $Target -Names @("localCommandOnly")
+  if ($localCommandOnly -eq $true) {
+    return $false
+  }
+  return (Test-WorkflowDispatchSupported -Category ([string]$Target.category))
+}
+
 function Get-NextJsMode {
   param([object]$Evidence)
 
@@ -310,6 +340,21 @@ function Get-EvidenceCollectionCi {
   }
 }
 
+function Get-EvidenceWorkflowDispatch {
+  param([object]$Evidence)
+
+  $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
+  $dispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
+  [pscustomobject]@{
+    evidenceName = Normalize-Token (Get-StringValue -Object $dispatch -Names @("EvidenceName", "evidenceName"))
+    expectedTargetId = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
+    expectedNextJsMode = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
+    expectedServiceManager = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
+    expectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $dispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
+    minimumUptimeHours = Get-IntegerValue -Object $dispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+  }
+}
+
 function Test-TruthyValue {
   param($Value)
 
@@ -321,10 +366,18 @@ function Test-TruthyValue {
 function Assert-HostEvidenceWorkflowCollection {
   param(
     [object]$Evidence,
-    [string]$SourceFile
+    [object]$Target,
+    [string]$SourceFile,
+    [string]$TargetId,
+    [string]$Mode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours
   )
 
-  if ($AllowLocalCollection) { return }
+  if ($AllowLocalCollection -and -not (Test-TargetWorkflowDispatchSupported -Target $Target)) {
+    return
+  }
 
   $ci = Get-EvidenceCollectionCi -Evidence $Evidence
   $issues = New-Object System.Collections.Generic.List[string]
@@ -349,8 +402,33 @@ function Assert-HostEvidenceWorkflowCollection {
   if ($ci.sha -notmatch '^[a-fA-F0-9]{40}$') {
     $issues.Add("evidenceCollection.ci.sha must be a 40-character git SHA") | Out-Null
   }
+  $dispatch = Get-EvidenceWorkflowDispatch -Evidence $Evidence
+  $expectedEvidenceBaseName = "$TargetId-$Mode-$ServiceManager-$ReverseProxy"
+  $allowedEvidenceNames = @($expectedEvidenceBaseName, "$expectedEvidenceBaseName-fallback")
+  if (-not $dispatch.evidenceName) {
+    $issues.Add("evidenceCollection.workflowDispatch.evidenceName is required") | Out-Null
+  } elseif ($allowedEvidenceNames -notcontains [string]$dispatch.evidenceName) {
+    $issues.Add("evidenceCollection.workflowDispatch.evidenceName must match imported dimensions") | Out-Null
+  }
+  if ($dispatch.expectedTargetId -ne $TargetId) {
+    $issues.Add("evidenceCollection.workflowDispatch.expectedTargetId must match imported target") | Out-Null
+  }
+  if ($dispatch.expectedNextJsMode -ne $Mode) {
+    $issues.Add("evidenceCollection.workflowDispatch.expectedNextJsMode must match imported Next.js mode") | Out-Null
+  }
+  if ($dispatch.expectedServiceManager -ne $ServiceManager) {
+    $issues.Add("evidenceCollection.workflowDispatch.expectedServiceManager must match imported service manager") | Out-Null
+  }
+  if ($dispatch.expectedReverseProxy -ne $ReverseProxy) {
+    $issues.Add("evidenceCollection.workflowDispatch.expectedReverseProxy must match imported reverse proxy") | Out-Null
+  }
+  if ($null -eq $dispatch.minimumUptimeHours) {
+    $issues.Add("evidenceCollection.workflowDispatch.minimumUptimeHours is required") | Out-Null
+  } elseif ([int]$dispatch.minimumUptimeHours -lt $RequiredMinimumUptimeHours) {
+    $issues.Add("evidenceCollection.workflowDispatch.minimumUptimeHours must be at least support matrix requiredMinimumUptimeHours") | Out-Null
+  }
   if ($issues.Count -gt 0) {
-    throw "Imported workflow artifact must prove controlled host-evidence workflow collection: $SourceFile. $($issues -join '; '). Use -AllowLocalCollection only for explicitly local evidence."
+    throw "Imported workflow artifact must prove controlled host-evidence workflow collection: $SourceFile. $($issues -join '; '). -AllowLocalCollection only bypasses this check for support matrix rows marked localCommandOnly."
   }
 }
 
@@ -405,10 +483,13 @@ function Resolve-EvidenceKind {
     throw "Evidence reverse proxy '$ReverseProxy' is not declared for support matrix target '$TargetId'."
   }
   if ($ReverseProxy -eq "none") {
-    if ($serviceManagers -notcontains $ServiceManager) {
-      throw "Service-only evidence for '$TargetId' must use a declared strict service manager."
+    if ($serviceManagers -contains $ServiceManager) {
+      return "service-only"
     }
-    return "service-only"
+    if ($fallbackManagers -contains $ServiceManager) {
+      return "fallback"
+    }
+    throw "Service-only evidence for '$TargetId' must use a declared strict or fallback service manager."
   }
   if ($serviceManagers -contains $ServiceManager) {
     return "strict"
@@ -422,6 +503,7 @@ function Resolve-EvidenceKind {
 function Invoke-HostEvidenceValidation {
   param(
     [string]$SourceFile,
+    [object]$Target,
     [string]$TargetId,
     [string]$Mode,
     [string]$ServiceManager,
@@ -443,13 +525,14 @@ function Invoke-HostEvidenceValidation {
     ExpectedServiceManager = $ServiceManager
     ExpectedReverseProxy = $ReverseProxy
   }
-  if ($ReverseProxy -ne "none") {
-    $validationArgs.RequireReverseProxy = $true
+  $validationArgs.RequireReverseProxy = $true
+  if ($ReverseProxy -eq "none") {
+    $validationArgs.AllowReverseProxyNone = $true
   }
   if (-not $AllowWarnings) {
     $validationArgs.FailOnWarnings = $true
   }
-  if (-not $AllowLocalCollection) {
+  if ((-not $AllowLocalCollection) -or (Test-TargetWorkflowDispatchSupported -Target $Target)) {
     $validationArgs.RequireCiCollection = $true
     $validationArgs.RequireHostEvidenceWorkflowCollection = $true
   }
@@ -486,9 +569,9 @@ function Import-OneEvidenceFile {
     throw "Evidence target '$targetId' is not declared in the support matrix."
   }
   $kind = Resolve-EvidenceKind -Target $target -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy
-  Assert-HostEvidenceWorkflowCollection -Evidence $evidence -SourceFile $SourceFile
+  Assert-HostEvidenceWorkflowCollection -Evidence $evidence -Target $target -SourceFile $SourceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
 
-  Invoke-HostEvidenceValidation -SourceFile $SourceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  Invoke-HostEvidenceValidation -SourceFile $SourceFile -Target $target -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
 
   $destinationFile = Get-CanonicalEvidenceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -Kind $kind
   $sourceHash = Get-Sha256 -Path $SourceFile
@@ -538,6 +621,14 @@ function New-SelfTestEvidence {
       Collector = "status.ps1"
       CollectorVersion = 1
       CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      WorkflowDispatch = [ordered]@{
+        EvidenceName = "windows-server-2022-standalone-winsw-iis"
+        ExpectedTargetId = "windows-server-2022"
+        ExpectedNextJsMode = "standalone"
+        ExpectedServiceManager = "winsw"
+        ExpectedReverseProxy = "iis"
+        MinimumUptimeHours = [string]$RequiredMinimumUptimeHours
+      }
       Ci = [ordered]@{
         IsCi = $true
         Provider = "github-actions"
@@ -680,6 +771,147 @@ function New-SelfTestEvidence {
   $status | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $artifactDirectory "status.json") -Encoding UTF8
 }
 
+function Set-ObjectProperty {
+  param(
+    [object]$Object,
+    [string]$Name,
+    [object]$Value
+  )
+
+  if ($Object.PSObject.Properties[$Name]) {
+    $Object.$Name = $Value
+  } else {
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+  }
+}
+
+function New-LocalCommandOnlySelfTestEvidence {
+  param(
+    [string]$Path,
+    [int]$RequiredMinimumUptimeHours
+  )
+
+  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  $windowsArtifactDirectory = Join-Path $Path "windows-server-2022-standalone-winsw-iis"
+  $windowsStatusPath = Join-Path $windowsArtifactDirectory "status.json"
+  $status = Get-Content -LiteralPath $windowsStatusPath -Raw | ConvertFrom-Json
+  Remove-Item -LiteralPath $windowsArtifactDirectory -Recurse -Force
+
+  $status.EvidenceCollection.Source = "node-enterprise-deploy-kit/status-node-app.sh"
+  $status.EvidenceCollection.Collector = "scripts/linux/status-node-app.sh"
+  if ($status.EvidenceCollection.PSObject.Properties["Ci"]) {
+    $status.EvidenceCollection.PSObject.Properties.Remove("Ci")
+  }
+
+  $status.SupportTargetId = "freebsd"
+  Set-ObjectProperty -Object $status -Name "ServiceName" -Value "example-next-app"
+  Set-ObjectProperty -Object $status -Name "ServiceManager" -Value "bsdrc"
+  Set-ObjectProperty -Object $status -Name "ServiceActiveStatus" -Value "active"
+  Set-ObjectProperty -Object $status -Name "ServiceEnabledStatus" -Value "enabled"
+  $status.Platform.Family = "freebsd"
+  $status.Platform.SupportTargetId = "freebsd"
+  $status.Platform.OsCaption = ""
+  $status.Platform.ServiceManager = "bsdrc"
+  Set-ObjectProperty -Object $status.Platform -Name "KernelName" -Value "FreeBSD"
+  Set-ObjectProperty -Object $status.Platform -Name "OsPrettyName" -Value "FreeBSD"
+  $status.ServiceDefinition = [ordered]@{
+    Checked = $true
+    Manager = "bsdrc"
+    DefinitionSource = "bsdrc-init"
+    DefinitionExists = $true
+    NodeExeMatchesConfig = $true
+    WorkingDirectoryMatchesConfig = $true
+    ArgumentsMatchConfig = $true
+    RunnerScriptMatchesConfig = $false
+  }
+  $status.HealthMonitor = [ordered]@{
+    Status = "ok"
+    Scheduled = $true
+    ScheduleType = "cron"
+    SchedulerChecked = $true
+    SchedulerExists = $true
+    SchedulerActive = $true
+    SchedulerEnabled = $true
+    SchedulerActiveStatus = "cron:active"
+    SchedulerEnabledStatus = "persistent-entry"
+    StateExists = $true
+    ConsecutiveFailures = 0
+    LastSuccessAgeSeconds = 60
+    LastSuccessFresh = $true
+    LogExists = $true
+    LogFailureCount = 0
+    LogRestartCount = 0
+  }
+  $status.NextJsRuntime.Mode = "standalone"
+  $status.ReverseProxy = [ordered]@{
+    Applicable = $true
+    Mode = "nginx"
+    Status = "ok"
+    ProbeUrl = "http://127.0.0.1:80/health"
+    StatusCode = 200
+    ResponseMs = 23
+    Config = [ordered]@{
+      Applicable = $true
+      PathName = "example-next-app.conf"
+      DirectoryName = "conf.d"
+      Exists = $true
+      ManagedMarkerFound = $true
+      ExpectedPort = "80"
+    }
+  }
+
+  $artifactDirectory = Join-Path $Path "freebsd-standalone-bsdrc-nginx"
+  New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+  $status | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $artifactDirectory "status.json") -Encoding UTF8
+}
+
+function New-FallbackServiceOnlySelfTestEvidence {
+  param(
+    [string]$Path,
+    [int]$RequiredMinimumUptimeHours
+  )
+
+  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  $sourceArtifactDirectory = Join-Path $Path "windows-server-2022-standalone-winsw-iis"
+  $sourceStatusPath = Join-Path $sourceArtifactDirectory "status.json"
+  $status = Get-Content -LiteralPath $sourceStatusPath -Raw | ConvertFrom-Json
+  Remove-Item -LiteralPath $sourceArtifactDirectory -Recurse -Force
+
+  $status.SupportTargetId = "windows-10"
+  $status.Platform.SupportTargetId = "windows-10"
+  $status.Platform.OsCaption = "Microsoft Windows 10 Pro"
+  $status.Platform.OsVersion = "10.0.19045"
+  $status.Platform.OsBuildNumber = "19045"
+  $status.Platform.ServiceManager = "pm2"
+  $status.EvidenceCollection.WorkflowDispatch = [ordered]@{
+    EvidenceName = "windows-10-standalone-pm2-none-fallback"
+    ExpectedTargetId = "windows-10"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "pm2"
+    ExpectedReverseProxy = "none"
+    MinimumUptimeHours = [string]$RequiredMinimumUptimeHours
+  }
+  $status.ServiceDefinition = [ordered]@{
+    Checked = $true
+    Manager = "pm2"
+    DefinitionSource = "pm2-process-list"
+    DefinitionExists = $true
+    ServiceWrapperMatchesConfig = $null
+    NodeExeMatchesConfig = $true
+    WorkingDirectoryMatchesConfig = $true
+    ArgumentsMatchConfig = $true
+  }
+  $status.ReverseProxy = [ordered]@{
+    Applicable = $false
+    Mode = "none"
+    Status = "not-applicable"
+  }
+
+  $artifactDirectory = Join-Path $Path "windows-10-standalone-pm2-none-fallback"
+  New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+  $status | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $artifactDirectory "status.json") -Encoding UTF8
+}
+
 function Invoke-SelfTest {
   $selfTestRoot = Join-Path $RepoRoot ".tmp\host-evidence-import-selftest-$([Guid]::NewGuid().ToString('N'))"
   $artifactRoot = Join-Path $selfTestRoot "downloaded-artifacts"
@@ -696,6 +928,18 @@ function Invoke-SelfTest {
   $expectedDestination = Join-Path $importRoot "windows-server-2022\standalone-winsw-iis.json"
   if (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf)) {
     throw "Host evidence import self-test failed: expected destination was not created."
+  }
+
+  $fallbackServiceOnlyArtifactRoot = Join-Path $selfTestRoot "fallback-service-only-artifacts"
+  $fallbackServiceOnlyImportRoot = Join-Path $selfTestRoot "fallback-service-only-evidence"
+  New-FallbackServiceOnlySelfTestEvidence -Path $fallbackServiceOnlyArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $fallbackServiceOnlyResult = @(& $PSCommandPath -ArtifactPath $fallbackServiceOnlyArtifactRoot -EvidencePath $fallbackServiceOnlyImportRoot -MatrixPath $MatrixPath -PassThru)
+  if ($fallbackServiceOnlyResult.Count -ne 1 -or $fallbackServiceOnlyResult[0].kind -ne "fallback") {
+    throw "Host evidence import self-test failed: fallback service-only import should produce one fallback row."
+  }
+  $fallbackServiceOnlyDestination = Join-Path $fallbackServiceOnlyImportRoot "windows-10\standalone-pm2-none-fallback.json"
+  if (-not (Test-Path -LiteralPath $fallbackServiceOnlyDestination -PathType Leaf)) {
+    throw "Host evidence import self-test failed: fallback service-only destination was not created."
   }
 
   $secondResult = @(& $PSCommandPath -ArtifactPath $artifactRoot -EvidencePath $importRoot -MatrixPath $MatrixPath -PassThru)
@@ -738,25 +982,75 @@ function Invoke-SelfTest {
     throw "Host evidence import self-test failed: directory of zip artifacts should import exactly one artifact."
   }
 
-  $localOnlyArtifactRoot = Join-Path $selfTestRoot "local-only-artifacts"
-  $localOnlyImportRoot = Join-Path $selfTestRoot "local-only-evidence"
-  New-SelfTestEvidence -Path $localOnlyArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
-  $localOnlyStatusPath = Join-Path $localOnlyArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
-  $localOnlyStatus = Get-Content -LiteralPath $localOnlyStatusPath -Raw | ConvertFrom-Json
-  $localOnlyStatus.EvidenceCollection.PSObject.Properties.Remove("Ci")
-  $localOnlyStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $localOnlyStatusPath -Encoding UTF8
+  $workflowCapableLocalArtifactRoot = Join-Path $selfTestRoot "workflow-capable-local-artifacts"
+  $workflowCapableLocalImportRoot = Join-Path $selfTestRoot "workflow-capable-local-evidence"
+  New-SelfTestEvidence -Path $workflowCapableLocalArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $workflowCapableLocalStatusPath = Join-Path $workflowCapableLocalArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $workflowCapableLocalStatus = Get-Content -LiteralPath $workflowCapableLocalStatusPath -Raw | ConvertFrom-Json
+  $workflowCapableLocalStatus.EvidenceCollection.PSObject.Properties.Remove("Ci")
+  $workflowCapableLocalStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $workflowCapableLocalStatusPath -Encoding UTF8
   $failedWithoutWorkflowProvenance = $false
   try {
-    & $PSCommandPath -ArtifactPath $localOnlyArtifactRoot -EvidencePath $localOnlyImportRoot -MatrixPath $MatrixPath -PassThru | Out-Null
+    & $PSCommandPath -ArtifactPath $workflowCapableLocalArtifactRoot -EvidencePath $workflowCapableLocalImportRoot -MatrixPath $MatrixPath -PassThru | Out-Null
   } catch {
     $failedWithoutWorkflowProvenance = ($_.Exception.Message -match "must prove controlled host-evidence workflow collection")
   }
   if (-not $failedWithoutWorkflowProvenance) {
     throw "Host evidence import self-test failed: missing workflow provenance should be rejected by default."
   }
+  $failedAllowLocalForWorkflowCapable = $false
+  try {
+    & $PSCommandPath -ArtifactPath $workflowCapableLocalArtifactRoot -EvidencePath $workflowCapableLocalImportRoot -MatrixPath $MatrixPath -AllowLocalCollection -PassThru | Out-Null
+  } catch {
+    $failedAllowLocalForWorkflowCapable = ($_.Exception.Message -match "must prove controlled host-evidence workflow collection")
+  }
+  if (-not $failedAllowLocalForWorkflowCapable) {
+    throw "Host evidence import self-test failed: -AllowLocalCollection should not bypass workflow provenance for workflow-capable evidence."
+  }
+
+  $badWorkflowCiArtifactRoot = Join-Path $selfTestRoot "bad-workflow-ci-artifacts"
+  $badWorkflowCiImportRoot = Join-Path $selfTestRoot "bad-workflow-ci-evidence"
+  New-SelfTestEvidence -Path $badWorkflowCiArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $badWorkflowCiStatusPath = Join-Path $badWorkflowCiArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $badWorkflowCiStatus = Get-Content -LiteralPath $badWorkflowCiStatusPath -Raw | ConvertFrom-Json
+  $badWorkflowCiStatus.EvidenceCollection.Ci.RunId = "not-a-run-id"
+  $badWorkflowCiStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $badWorkflowCiStatusPath -Encoding UTF8
+  $failedBadWorkflowCi = $false
+  try {
+    & $PSCommandPath -ArtifactPath $badWorkflowCiArtifactRoot -EvidencePath $badWorkflowCiImportRoot -MatrixPath $MatrixPath -SkipValidation -PassThru | Out-Null
+  } catch {
+    $failedBadWorkflowCi = ($_.Exception.Message -match "evidenceCollection\.ci\.runId must be numeric")
+  }
+  if (-not $failedBadWorkflowCi) {
+    throw "Host evidence import self-test failed: malformed workflow CI metadata should be rejected even with -SkipValidation."
+  }
+
+  $badWorkflowDispatchArtifactRoot = Join-Path $selfTestRoot "bad-workflow-dispatch-artifacts"
+  $badWorkflowDispatchImportRoot = Join-Path $selfTestRoot "bad-workflow-dispatch-evidence"
+  New-SelfTestEvidence -Path $badWorkflowDispatchArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $badWorkflowDispatchStatusPath = Join-Path $badWorkflowDispatchArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $badWorkflowDispatchStatus = Get-Content -LiteralPath $badWorkflowDispatchStatusPath -Raw | ConvertFrom-Json
+  $badWorkflowDispatchStatus.EvidenceCollection.WorkflowDispatch.ExpectedTargetId = "windows-server-2019"
+  $badWorkflowDispatchStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $badWorkflowDispatchStatusPath -Encoding UTF8
+  $failedBadWorkflowDispatch = $false
+  try {
+    & $PSCommandPath -ArtifactPath $badWorkflowDispatchArtifactRoot -EvidencePath $badWorkflowDispatchImportRoot -MatrixPath $MatrixPath -SkipValidation -PassThru | Out-Null
+  } catch {
+    $failedBadWorkflowDispatch = ($_.Exception.Message -match "workflowDispatch\.expectedTargetId must match imported target")
+  }
+  if (-not $failedBadWorkflowDispatch) {
+    throw "Host evidence import self-test failed: mismatched workflow dispatch metadata should be rejected even with -SkipValidation."
+  }
+
+  $localOnlyArtifactRoot = Join-Path $selfTestRoot "local-only-artifacts"
+  $localOnlyImportRoot = Join-Path $selfTestRoot "local-only-evidence"
+  New-LocalCommandOnlySelfTestEvidence -Path $localOnlyArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $localOnlyResult = @(& $PSCommandPath -ArtifactPath $localOnlyArtifactRoot -EvidencePath $localOnlyImportRoot -MatrixPath $MatrixPath -AllowLocalCollection -PassThru)
   if ($localOnlyResult.Count -ne 1 -or $localOnlyResult[0].status -ne "imported") {
-    throw "Host evidence import self-test failed: -AllowLocalCollection should import explicit local evidence."
+    throw "Host evidence import self-test failed: -AllowLocalCollection should import local-command-only evidence."
+  }
+  if ($localOnlyResult[0].targetId -ne "freebsd" -or $localOnlyResult[0].kind -ne "strict") {
+    throw "Host evidence import self-test failed: local-command-only import should preserve FreeBSD strict evidence dimensions."
   }
 
   $statusPath = Join-Path $artifactRoot "windows-server-2022-standalone-winsw-iis\status.json"

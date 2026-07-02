@@ -77,6 +77,13 @@ function Write-Step {
   Write-Host "==> $Message"
 }
 
+function Format-CoveragePercent {
+  param($Value)
+
+  if ($null -eq $Value) { return "n/a" }
+  return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:0.00}%", [double]$Value)
+}
+
 function Get-RelativePath {
   param(
     [string]$BasePath,
@@ -218,6 +225,21 @@ function Get-StringValue {
   $value = Get-PropertyValue -Object $Object -Names $Names
   if ($null -eq $value) { return "" }
   return [string]$value
+}
+
+function Get-IntegerValue {
+  param(
+    [object]$Object,
+    [string[]]$Names
+  )
+
+  $value = Get-PropertyValue -Object $Object -Names $Names
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return $null }
+  try {
+    return [int]$value
+  } catch {
+    return $null
+  }
 }
 
 function Get-BooleanValue {
@@ -401,6 +423,26 @@ function Set-TestCollectionCiProvenance {
         refName = "main"
         sha = $CommitSha
       })
+    $targetId = [string]$row.supportTargetId
+    $nextJsMode = [string]$row.nextJsMode
+    $serviceManager = [string]$row.serviceManager
+    $reverseProxy = [string]$row.reverseProxy
+    $evidenceBaseName = "$targetId-$nextJsMode-$serviceManager-$reverseProxy"
+    $evidenceName = if ([System.IO.Path]::GetFileNameWithoutExtension($relative).EndsWith("-fallback")) { "$evidenceBaseName-fallback" } else { $evidenceBaseName }
+    $minimumUptimeHoursValue = Get-PropertyValue -Object $row -Names @("requiredMinimumUptimeHours")
+    $minimumUptimeHours = if ($null -ne $minimumUptimeHoursValue -and -not [string]::IsNullOrWhiteSpace([string]$minimumUptimeHoursValue)) {
+      [string]$minimumUptimeHoursValue
+    } else {
+      [string](Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath)
+    }
+    Add-OrSetNoteProperty -Object $collection -Name "workflowDispatch" -Value ([pscustomobject]@{
+        evidenceName = $evidenceName
+        expectedTargetId = $targetId
+        expectedNextJsMode = $nextJsMode
+        expectedServiceManager = $serviceManager
+        expectedReverseProxy = $reverseProxy
+        minimumUptimeHours = $minimumUptimeHours
+      })
     ($evidence | ConvertTo-Json -Depth 12) | Set-Content -Path $evidencePath -Encoding UTF8
 
     $row.sha256 = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -413,6 +455,13 @@ function Set-TestCollectionCiProvenance {
     Add-OrSetNoteProperty -Object $row -Name "collectionCiEventName" -Value $EventName
     Add-OrSetNoteProperty -Object $row -Name "collectionCiRefName" -Value "main"
     Add-OrSetNoteProperty -Object $row -Name "collectionCiSha" -Value $CommitSha
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchEvidenceName" -Value $evidenceName
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedTargetId" -Value $targetId
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedNextJsMode" -Value $nextJsMode
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedServiceManager" -Value $serviceManager
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedReverseProxy" -Value $reverseProxy
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMinimumUptimeHours" -Value $minimumUptimeHours
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMatchesDimensions" -Value $true
   }
   ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $manifestPath -Encoding UTF8
 }
@@ -441,6 +490,11 @@ function Remove-TestCollectionCiProvenanceFromLocalOnlyRows {
         $collection.PSObject.Properties.Remove($ciProperty)
       }
     }
+    foreach ($dispatchProperty in @("WorkflowDispatch", "workflowDispatch")) {
+      if ($collection.PSObject.Properties[$dispatchProperty]) {
+        $collection.PSObject.Properties.Remove($dispatchProperty)
+      }
+    }
     ($evidence | ConvertTo-Json -Depth 12) | Set-Content -Path $evidencePath -Encoding UTF8
 
     $row.sha256 = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -453,6 +507,13 @@ function Remove-TestCollectionCiProvenanceFromLocalOnlyRows {
     Add-OrSetNoteProperty -Object $row -Name "collectionCiEventName" -Value ""
     Add-OrSetNoteProperty -Object $row -Name "collectionCiRefName" -Value ""
     Add-OrSetNoteProperty -Object $row -Name "collectionCiSha" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchEvidenceName" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedTargetId" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedNextJsMode" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedServiceManager" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedReverseProxy" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMinimumUptimeHours" -Value $null
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMatchesDimensions" -Value $null
     $updatedCount += 1
   }
   if ($updatedCount -lt 1) {
@@ -546,6 +607,9 @@ function ConvertTo-ReadinessCoverageRows {
 
 if ($SelfTest) {
   Write-Step "Release support readiness self-test setup"
+  if ((Format-CoveragePercent 100) -ne "100.00%" -or (Format-CoveragePercent 0) -ne "0.00%" -or (Format-CoveragePercent $null) -ne "n/a") {
+    throw "Release support readiness self-test failed: coverage percentage formatter returned unexpected output."
+  }
   $selfTestRoot = Join-Path $RepoRoot ".tmp\release-support-readiness-selftest-$([Guid]::NewGuid().ToString('N'))"
   $coverageJson = Join-Path $selfTestRoot "coverage.json"
   New-Item -ItemType Directory -Force -Path $selfTestRoot | Out-Null
@@ -638,6 +702,9 @@ if ($SelfTest) {
   if ([int]$readinessJson.coverage.missingCount -ne @($readinessJson.coverage.missing).Count) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve missing coverage rows."
   }
+  if ([string]$readinessJson.coverage.coveragePercentDisplay -ne "100.00%") {
+    throw "Release support readiness self-test failed: readiness JSON did not include formatted coverage percent."
+  }
   if ($readinessJson.coverage.failOnWarningsDuringCollection -ne $true) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve strict warning collection policy."
   }
@@ -678,6 +745,9 @@ if ($SelfTest) {
   }
   if ([int]$readinessJson.supportScope.localCommandOnlyEvidenceCount -le 0) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve local-command-only evidence counts."
+  }
+  if ([int]$readinessJson.bundle.collectionWorkflowDispatchMatchCount -le 0 -or [int]$readinessJson.bundle.collectionWorkflowDispatchMismatchCount -ne 0) {
+    throw "Release support readiness self-test failed: readiness JSON did not preserve matching workflow dispatch manifest metadata."
   }
 
   $matrixMismatchRoot = Join-Path $selfTestRoot "matrix-mismatch"
@@ -776,6 +846,20 @@ if ($SelfTest) {
   Set-TestCollectionCiProvenance -BundleRoot $mismatchCollectionWorkflowRoot -CommitSha $mismatchCollectionWorkflowManifest.sourceControl.commitSha -WorkflowName "other-workflow"
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collection evidence must come from the host-evidence workflow" -Action {
     Invoke-SelfTestReadiness -BundlePath $mismatchCollectionWorkflowRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireHostEvidenceWorkflowCollection
+  }
+
+  $mismatchWorkflowDispatchRoot = Join-Path $selfTestRoot "mismatch-workflow-dispatch"
+  New-Item -ItemType Directory -Force -Path $mismatchWorkflowDispatchRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $mismatchWorkflowDispatchRoot -Force
+  $mismatchWorkflowDispatchManifestPath = Join-Path $mismatchWorkflowDispatchRoot "support-evidence-manifest.json"
+  $mismatchWorkflowDispatchManifest = Get-Content -LiteralPath $mismatchWorkflowDispatchManifestPath -Raw | ConvertFrom-Json
+  Set-TestCollectionCiProvenance -BundleRoot $mismatchWorkflowDispatchRoot -CommitSha $mismatchWorkflowDispatchManifest.sourceControl.commitSha
+  $mismatchWorkflowDispatchManifest = Get-Content -LiteralPath $mismatchWorkflowDispatchManifestPath -Raw | ConvertFrom-Json
+  $firstWorkflowManifestRow = @($mismatchWorkflowDispatchManifest.files | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  Add-OrSetNoteProperty -Object $firstWorkflowManifestRow -Name "collectionWorkflowDispatchMatchesDimensions" -Value $false
+  ($mismatchWorkflowDispatchManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $mismatchWorkflowDispatchManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Collection workflow dispatch metadata must match the exact support row" -Action {
+    Invoke-SelfTestReadiness -BundlePath $mismatchWorkflowDispatchRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireHostEvidenceWorkflowCollection
   }
 
   $missingRuntimeVersionsRoot = Join-Path $selfTestRoot "missing-runtime-versions"
@@ -993,6 +1077,8 @@ try {
   $collectionCiSourceMismatchCount = 0
   $hostEvidenceWorkflowCollectionCount = 0
   $hostEvidenceWorkflowMismatchCount = 0
+  $collectionWorkflowDispatchMatchCount = 0
+  $collectionWorkflowDispatchMismatchCount = 0
   $runtimeVersionEvidenceCount = 0
   $runtimeVersionMissingCount = 0
   $runtimeVersionUnsafeCount = 0
@@ -1026,6 +1112,8 @@ try {
     $collectionCiWorkflowName = Get-StringValue -Object $row -Names @("collectionCiWorkflowName")
     $collectionCiEventName = Get-StringValue -Object $row -Names @("collectionCiEventName")
     $collectionCiSha = (Get-StringValue -Object $row -Names @("collectionCiSha")).Trim().ToLowerInvariant()
+    $collectionWorkflowDispatchMatchesDimensions = Get-BooleanValue -Object $row -Names @("collectionWorkflowDispatchMatchesDimensions") -Default $null
+    $collectionWorkflowDispatchMinimumUptimeHours = Get-IntegerValue -Object $row -Names @("collectionWorkflowDispatchMinimumUptimeHours")
     $nodeVersion = Get-StringValue -Object $row -Names @("nodeVersion")
     $minimumNodeVersion = Get-StringValue -Object $row -Names @("minimumNodeVersion")
     $nodeVersionSatisfied = Get-BooleanValue -Object $row -Names @("nodeVersionSatisfied") -Default $null
@@ -1059,6 +1147,11 @@ try {
       } else {
         $hostEvidenceWorkflowMismatchCount += 1
       }
+      if ($collectionWorkflowDispatchMatchesDimensions -eq $true -and $null -ne $collectionWorkflowDispatchMinimumUptimeHours -and ($RequireMinimumUptimeHours -le 0 -or [int]$collectionWorkflowDispatchMinimumUptimeHours -ge $RequireMinimumUptimeHours)) {
+        $collectionWorkflowDispatchMatchCount += 1
+      } else {
+        $collectionWorkflowDispatchMismatchCount += 1
+      }
     }
     if ([string]::IsNullOrWhiteSpace($nodeVersion) -or [string]::IsNullOrWhiteSpace($minimumNodeVersion) -or [string]::IsNullOrWhiteSpace($nextVersion) -or $nodeVersionSatisfied -ne $true) {
       $runtimeVersionMissingCount += 1
@@ -1086,6 +1179,9 @@ try {
   }
   if ($RequireHostEvidenceWorkflowCollection -and $hostEvidenceWorkflowMismatchCount -gt 0) {
     throw "Collection evidence must come from the host-evidence workflow for workflow-capable evidence with -RequireHostEvidenceWorkflowCollection. Mismatched collection workflow provenance on $hostEvidenceWorkflowMismatchCount workflow-capable evidence file(s)."
+  }
+  if ($RequireHostEvidenceWorkflowCollection -and $collectionWorkflowDispatchMismatchCount -gt 0) {
+    throw "Collection workflow dispatch metadata must match the exact support row for workflow-capable evidence with -RequireHostEvidenceWorkflowCollection. Mismatched or missing workflow dispatch dimensions on $collectionWorkflowDispatchMismatchCount workflow-capable evidence file(s)."
   }
   if ($RequireRuntimeVersions -and ($runtimeVersionMissingCount -gt 0 -or $runtimeVersionUnsafeCount -gt 0)) {
     throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js, minimum Node.js, compatible Node.js, or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
@@ -1197,6 +1293,8 @@ try {
       expectedCount = [int]$coverage.summary.expectedCount
       coveredCount = [int]$coverage.summary.coveredCount
       missingCount = [int]$coverage.summary.missingCount
+      coveragePercent = $coverage.summary.coveragePercent
+      coveragePercentDisplay = Format-CoveragePercent $coverage.summary.coveragePercent
       covered = @(ConvertTo-ReadinessCoverageRows -Rows @($coverage.covered))
       missing = @(ConvertTo-ReadinessCoverageRows -Rows @($coverage.missing))
     }
@@ -1208,6 +1306,8 @@ try {
       collectionCiSourceMismatchCount = $collectionCiSourceMismatchCount
       hostEvidenceWorkflowCollectionCount = $hostEvidenceWorkflowCollectionCount
       hostEvidenceWorkflowMismatchCount = $hostEvidenceWorkflowMismatchCount
+      collectionWorkflowDispatchMatchCount = $collectionWorkflowDispatchMatchCount
+      collectionWorkflowDispatchMismatchCount = $collectionWorkflowDispatchMismatchCount
       runtimeVersionEvidenceCount = $runtimeVersionEvidenceCount
       runtimeVersionMissingCount = $runtimeVersionMissingCount
       runtimeVersionUnsafeCount = $runtimeVersionUnsafeCount
@@ -1260,6 +1360,7 @@ try {
       Write-Host "Coverage expected: $($result.coverage.expectedCount)"
       Write-Host "Coverage covered:  $($result.coverage.coveredCount)"
       Write-Host "Coverage missing:  $($result.coverage.missingCount)"
+      Write-Host "Coverage percent:  $($result.coverage.coveragePercentDisplay)"
       Write-Host "Production runtime evidence:     $($result.bundle.productionRecommendedRuntimeEvidenceCount)"
       Write-Host "Non-production runtime evidence: $($result.bundle.nonProductionRecommendedRuntimeEvidenceCount)"
       Write-Host "Targets: $(@($result.bundle.targets) -join ', ')"

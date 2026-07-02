@@ -157,6 +157,7 @@ $requiredFiles = @(
   "scripts/dev/Test-ReleasePackage.ps1",
   "scripts/dev/Test-HostEvidence.ps1",
   "scripts/dev/New-SupportEvidencePlan.ps1",
+  "scripts/dev/New-SupportEvidenceCollectionPack.ps1",
   "scripts/dev/Import-HostEvidenceArtifacts.ps1",
   "scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1",
   "scripts/dev/New-SupportEvidenceBundle.ps1",

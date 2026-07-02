@@ -229,6 +229,14 @@ function Invoke-HostEvidenceWorkflowInputValidation {
   if ($normalizedLabels -notcontains $expectedTarget) {
     throw "runner_labels must include the expected target label '$expectedTarget' for real host evidence collection."
   }
+
+  $matrixTargetIds = @(Get-NormalizedArray ($matrix.targets | ForEach-Object { $_.id }))
+  $conflictingTargetLabels = @($normalizedLabels |
+    Where-Object { $matrixTargetIds -contains $_ -and $_ -ne $expectedTarget } |
+    Sort-Object -Unique)
+  if ($conflictingTargetLabels.Count -gt 0) {
+    throw "runner_labels must not include support target labels other than expected_target_id '$expectedTarget': $($conflictingTargetLabels -join ', ')."
+  }
 }
 
 function Invoke-ExpectValidationFailure {
@@ -297,6 +305,11 @@ function Invoke-SelfTest {
   $fallback.EvidenceName = "windows-10-standalone-pm2-iis-fallback"
   Invoke-HostEvidenceWorkflowInputValidation @fallback
 
+  $fallbackServiceOnly = $fallback.Clone()
+  $fallbackServiceOnly.ExpectedReverseProxy = "none"
+  $fallbackServiceOnly.EvidenceName = "windows-10-standalone-pm2-none-fallback"
+  Invoke-HostEvidenceWorkflowInputValidation @fallbackServiceOnly
+
   Invoke-ExpectValidationFailure -Name "hosted ubuntu label" -ExpectedMessage "runner_labels must not use GitHub-hosted runner labels" -Action {
     $case = $unix.Clone()
     $case.RunnerLabels = '["self-hosted","ubuntu-24.04","ubuntu"]'
@@ -331,6 +344,11 @@ function Invoke-SelfTest {
   Invoke-ExpectValidationFailure -Name "missing target label" -ExpectedMessage "runner_labels must include the expected target label" -Action {
     $case = $base.Clone()
     $case.RunnerLabels = '["self-hosted","windows"]'
+    Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "conflicting target label" -ExpectedMessage "runner_labels must not include support target labels other than expected_target_id" -Action {
+    $case = $unix.Clone()
+    $case.RunnerLabels = '["self-hosted","ubuntu","debian"]'
     Invoke-HostEvidenceWorkflowInputValidation @case
   }
   Invoke-ExpectValidationFailure -Name "platform mismatch" -ExpectedMessage "platform must be 'windows'" -Action {

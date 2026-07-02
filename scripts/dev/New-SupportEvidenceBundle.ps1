@@ -290,6 +290,7 @@ function Get-EvidenceCollectionEvidence {
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
   $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
+  $workflowDispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
@@ -309,7 +310,37 @@ function Get-EvidenceCollectionEvidence {
       RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
       Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
     }
+    WorkflowDispatch = [pscustomobject]@{
+      EvidenceName = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("EvidenceName", "evidenceName"))
+      ExpectedTargetId = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
+      ExpectedNextJsMode = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
+      ExpectedServiceManager = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
+      ExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
+      MinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+    }
   }
+}
+
+function Test-WorkflowDispatchMatchesEvidence {
+  param(
+    [object]$Dispatch,
+    [string]$TargetId,
+    [string]$Mode,
+    [string]$ServiceManager,
+    [string]$ReverseProxy,
+    [int]$RequiredMinimumUptimeHours
+  )
+
+  $expectedEvidenceBaseName = "$TargetId-$Mode-$ServiceManager-$ReverseProxy"
+  $allowedEvidenceNames = @($expectedEvidenceBaseName, "$expectedEvidenceBaseName-fallback")
+  if ($allowedEvidenceNames -notcontains [string]$Dispatch.EvidenceName) { return $false }
+  if ([string]$Dispatch.ExpectedTargetId -ne $TargetId) { return $false }
+  if ([string]$Dispatch.ExpectedNextJsMode -ne $Mode) { return $false }
+  if ([string]$Dispatch.ExpectedServiceManager -ne $ServiceManager) { return $false }
+  if ([string]$Dispatch.ExpectedReverseProxy -ne $ReverseProxy) { return $false }
+  if ($null -eq $Dispatch.MinimumUptimeHours) { return $false }
+  if ($RequiredMinimumUptimeHours -gt 0 -and [int]$Dispatch.MinimumUptimeHours -lt $RequiredMinimumUptimeHours) { return $false }
+  return $true
 }
 
 function Get-RelativePath {
@@ -467,6 +498,14 @@ function New-SelfTestEvidence {
     Collector = "status.ps1"
     CollectorVersion = 1
     CollectorSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    WorkflowDispatch = [ordered]@{
+      EvidenceName = "windows-11-standalone-winsw-iis"
+      ExpectedTargetId = "windows-11"
+      ExpectedNextJsMode = "standalone"
+      ExpectedServiceManager = "winsw"
+      ExpectedReverseProxy = "iis"
+      MinimumUptimeHours = "72"
+    }
     Ci = [ordered]@{
       IsCi = $true
       Provider = "github-actions"
@@ -487,6 +526,14 @@ function New-SelfTestEvidence {
     collector = "scripts/linux/status-node-app.sh"
     collectorVersion = 1
     collectorSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    workflowDispatch = [ordered]@{
+      evidenceName = "ubuntu-standalone-systemd-nginx"
+      expectedTargetId = "ubuntu"
+      expectedNextJsMode = "standalone"
+      expectedServiceManager = "systemd"
+      expectedReverseProxy = "nginx"
+      minimumUptimeHours = "72"
+    }
     ci = [ordered]@{
       isCi = $true
       provider = "github-actions"
@@ -844,6 +891,8 @@ if ($ValidateSupportClaim) {
   if ($RequireBothNextJsModes) { $claimArgs.RequireBothNextJsModes = $true }
   if ($RequireDeclaredServiceManagers) { $claimArgs.RequireDeclaredServiceManagers = $true }
   if ($RequireDeclaredReverseProxies) { $claimArgs.RequireDeclaredReverseProxies = $true }
+  if ($IncludeServiceOnly) { $claimArgs.IncludeServiceOnly = $true }
+  if ($IncludeFallback) { $claimArgs.IncludeFallback = $true }
   if ($RequireCollectorSha256) { $claimArgs.RequireCollectorSha256 = $true }
   if ($RequireHostEvidenceWorkflowCollection) { $claimArgs.RequireHostEvidenceWorkflowCollection = $true }
   if ($RequireMinimumUptimeHours -gt 0) { $claimArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
@@ -927,6 +976,13 @@ foreach ($file in $files) {
   $collectionCiEventName = ""
   $collectionCiRefName = ""
   $collectionCiSha = ""
+  $collectionWorkflowDispatchEvidenceName = ""
+  $collectionWorkflowDispatchExpectedTargetId = ""
+  $collectionWorkflowDispatchExpectedNextJsMode = ""
+  $collectionWorkflowDispatchExpectedServiceManager = ""
+  $collectionWorkflowDispatchExpectedReverseProxy = ""
+  $collectionWorkflowDispatchMinimumUptimeHours = $null
+  $collectionWorkflowDispatchMatchesDimensions = $null
   try {
     $evidence = Get-Content -LiteralPath $bundleFile -Raw | ConvertFrom-Json
     $target = Get-SupportTargetId -Evidence $evidence
@@ -975,6 +1031,13 @@ foreach ($file in $files) {
     $collectionCiEventName = $collection.Ci.EventName
     $collectionCiRefName = $collection.Ci.RefName
     $collectionCiSha = $collection.Ci.Sha
+    $collectionWorkflowDispatchEvidenceName = $collection.WorkflowDispatch.EvidenceName
+    $collectionWorkflowDispatchExpectedTargetId = $collection.WorkflowDispatch.ExpectedTargetId
+    $collectionWorkflowDispatchExpectedNextJsMode = $collection.WorkflowDispatch.ExpectedNextJsMode
+    $collectionWorkflowDispatchExpectedServiceManager = $collection.WorkflowDispatch.ExpectedServiceManager
+    $collectionWorkflowDispatchExpectedReverseProxy = $collection.WorkflowDispatch.ExpectedReverseProxy
+    $collectionWorkflowDispatchMinimumUptimeHours = $collection.WorkflowDispatch.MinimumUptimeHours
+    $collectionWorkflowDispatchMatchesDimensions = Test-WorkflowDispatchMatchesEvidence -Dispatch $collection.WorkflowDispatch -TargetId $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequireMinimumUptimeHours
   } catch {
     $parseError = $_.Exception.Message
   }
@@ -1021,6 +1084,13 @@ foreach ($file in $files) {
     collectionCiEventName = $collectionCiEventName
     collectionCiRefName = $collectionCiRefName
     collectionCiSha = $collectionCiSha
+    collectionWorkflowDispatchEvidenceName = $collectionWorkflowDispatchEvidenceName
+    collectionWorkflowDispatchExpectedTargetId = $collectionWorkflowDispatchExpectedTargetId
+    collectionWorkflowDispatchExpectedNextJsMode = $collectionWorkflowDispatchExpectedNextJsMode
+    collectionWorkflowDispatchExpectedServiceManager = $collectionWorkflowDispatchExpectedServiceManager
+    collectionWorkflowDispatchExpectedReverseProxy = $collectionWorkflowDispatchExpectedReverseProxy
+    collectionWorkflowDispatchMinimumUptimeHours = $collectionWorkflowDispatchMinimumUptimeHours
+    collectionWorkflowDispatchMatchesDimensions = $collectionWorkflowDispatchMatchesDimensions
     parseError = $parseError
   }) | Out-Null
 }
@@ -1106,6 +1176,24 @@ if ($SelfTest) {
   foreach ($expectedTarget in @("windows-11", "ubuntu")) {
     if ($selfTestTargets -notcontains $expectedTarget) {
       throw "Support evidence bundle self-test did not include selected target '$expectedTarget'."
+    }
+  }
+  foreach ($row in @($manifestCheck.files)) {
+    foreach ($requiredWorkflowDispatchProperty in @(
+        "collectionWorkflowDispatchEvidenceName",
+        "collectionWorkflowDispatchExpectedTargetId",
+        "collectionWorkflowDispatchExpectedNextJsMode",
+        "collectionWorkflowDispatchExpectedServiceManager",
+        "collectionWorkflowDispatchExpectedReverseProxy",
+        "collectionWorkflowDispatchMinimumUptimeHours",
+        "collectionWorkflowDispatchMatchesDimensions"
+      )) {
+      if (-not $row.PSObject.Properties[$requiredWorkflowDispatchProperty]) {
+        throw "Support evidence bundle self-test manifest row is missing $requiredWorkflowDispatchProperty."
+      }
+    }
+    if ($row.workflowDispatchSupported -eq $true -and $row.collectionWorkflowDispatchMatchesDimensions -ne $true) {
+      throw "Support evidence bundle self-test manifest row did not preserve matching workflow dispatch metadata."
     }
   }
 }

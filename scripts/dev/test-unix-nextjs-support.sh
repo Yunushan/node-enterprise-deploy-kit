@@ -166,10 +166,22 @@ test_health_scheduler_preflight_requirements() {
   write_env "$launchd_root/app.env" "$launchd_root" 39215 "standalone" "server.js" "launchd"
   expect_failure "launchd health scheduler preflight" "Healthcheck scheduler requires launchctl" run_preflight_with_path "$fake_bin" "$launchd_root/app.env"
 
+  local systemv_root="$TEST_ROOT/preflight-health-systemv"
+  mkdir -p "$systemv_root"
+  new_standalone_layout "$systemv_root/app"
+  write_env "$systemv_root/app.env" "$systemv_root" 39216 "standalone" "server.js" "systemv"
+  expect_failure "systemv health scheduler preflight" "Healthcheck scheduler requires crontab" run_preflight_with_path "$fake_bin" "$systemv_root/app.env"
+
+  local openrc_root="$TEST_ROOT/preflight-health-openrc"
+  mkdir -p "$openrc_root"
+  new_standalone_layout "$openrc_root/app"
+  write_env "$openrc_root/app.env" "$openrc_root" 39217 "standalone" "server.js" "openrc"
+  expect_failure "openrc health scheduler preflight" "Healthcheck scheduler requires crontab" run_preflight_with_path "$fake_bin" "$openrc_root/app.env"
+
   local bsdrc_root="$TEST_ROOT/preflight-health-bsdrc"
   mkdir -p "$bsdrc_root"
   new_standalone_layout "$bsdrc_root/app"
-  write_env "$bsdrc_root/app.env" "$bsdrc_root" 39216 "standalone" "server.js" "bsdrc"
+  write_env "$bsdrc_root/app.env" "$bsdrc_root" 39218 "standalone" "server.js" "bsdrc"
   expect_failure "bsdrc health scheduler preflight" "Healthcheck scheduler requires crontab" run_preflight_with_path "$fake_bin" "$bsdrc_root/app.env"
 }
 

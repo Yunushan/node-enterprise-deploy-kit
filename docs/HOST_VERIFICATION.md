@@ -81,10 +81,11 @@ names, or secrets in workflow inputs.
 
 The workflow validates `runner_labels` and expected collection dimensions before
 collection. Labels must be a JSON array containing `self-hosted` and the exact
-`expected_target_id` label. GitHub-hosted labels such as `ubuntu-latest`,
-`ubuntu-24.04`, `windows-latest`, `windows-2022`, `windows-2025`,
-`macos-latest`, and `macos-15` are rejected because they cannot prove real-host
-support.
+`expected_target_id` label. Do not include any other support-matrix target ID
+as a runner label in the same dispatch; one workflow run should prove one exact
+target row. GitHub-hosted labels such as `ubuntu-latest`, `ubuntu-24.04`,
+`windows-latest`, `windows-2022`, `windows-2025`, `macos-latest`, and
+`macos-15` are rejected because they cannot prove real-host support.
 
 The local config files `config/windows/app.config.json` and
 `config/linux/app.env` are ignored by git. On self-hosted runners, create the
@@ -106,7 +107,8 @@ proxies to the support-matrix vocabulary, validates the exact target row in
 `config/support-matrix.example.json`, and rejects platform/category mismatches
 before evidence collection starts. The `evidence_name` input must match the
 generated `target-mode-service-proxy` artifact name, with `-fallback` for
-fallback service managers.
+fallback service managers, including service-only fallback rows such as
+`target-mode-pm2-none-fallback`.
 
 The workflow is `workflow_dispatch` only. It is for release evidence collection
 from real hosts, not for replacing the normal push/PR CI checks. BSD evidence
@@ -135,8 +137,35 @@ Use [Support Matrix](SUPPORT_MATRIX.md) for exact target IDs such as
 `windows-10`, `windows-11`, `windows-server-2022`, `ubuntu`, `rhel`, `alpine`,
 and `macos`.
 
-Before collecting release evidence, generate the checklist from the current
-support matrix:
+Before collecting release evidence, generate a collection pack from the current
+support matrix. It writes the checklist, reviewable workflow dispatch commands,
+a guarded dispatcher, a guarded artifact downloader keyed by expected evidence
+names, JSON/CSV manifests for expected workflow artifacts and local-command-only
+rows, a pre-release staging audit, a guarded release-gate script, and a README
+that keeps the download/import/bundle sequence together:
+
+```powershell
+.\scripts\dev\New-SupportEvidenceCollectionPack.ps1 `
+  -OutputDirectory .\evidence\collection-pack `
+  -BundleName node-enterprise-deploy-kit-1.0.0-evidence `
+  -IncludeServiceOnly `
+  -IncludeFallback
+```
+
+Review `.\evidence\collection-pack\README.md`,
+`expected-workflow-artifacts.csv`, and `local-command-only-evidence.csv`, run
+the generated dispatcher and artifact downloader without `-Run` first, and use
+`-StrictCiRelease` on the generated release script only from a clean, committed
+CI-controlled final signoff path. The downloader prints `gh run list` and exact
+`gh run download --name <evidence_name>` commands, then downloads into
+per-evidence folders when run with `-RunId ... -Run`. The pack still requires
+real downloaded workflow artifacts and local-command-only evidence before
+release readiness can pass. Run the generated
+`Test-HostEvidenceCollectionStaging.ps1` before the release script to fail on
+missing downloaded `status.json` artifacts, local-only evidence files, or
+evidence whose target/mode/service/proxy identity does not match the matrix row.
+
+To generate only the checklist from the current support matrix:
 
 ```powershell
 .\scripts\dev\New-SupportEvidencePlan.ps1 `
@@ -190,11 +219,14 @@ containing downloaded `.zip` artifacts:
 
 The importer validates each downloaded `status.json` against the support matrix
 and `Test-HostEvidence.ps1`, requires controlled `host-evidence` /
-`workflow_dispatch` provenance by default, derives the target/mode/service/proxy
-key, requires the declared target to be corroborated by platform metadata,
-writes the canonical evidence filename, and refuses changed overwrites unless
-`-Force` is supplied. Use `-AllowLocalCollection` only for explicitly
-local-command evidence.
+`workflow_dispatch` provenance by default, and requires the saved
+`evidenceCollection.workflowDispatch` target/mode/service/proxy fields to match
+the imported matrix row. It derives the target/mode/service/proxy key, requires
+the declared target to be corroborated by platform metadata, writes the
+canonical evidence filename, and refuses changed overwrites unless `-Force` is
+supplied. `-AllowLocalCollection` only bypasses workflow provenance for support
+matrix rows marked `localCommandOnly`; workflow-capable Windows/Linux/macOS rows
+still require controlled `host-evidence` collection.
 
 After collecting evidence, audit the folder against the full matrix to see
 which expected host/service/proxy combinations are still missing:
@@ -228,7 +260,12 @@ commands fail on warning-only status evidence by default; add `-AllowWarnings`
 when the missing-coverage report should generate warning-tolerant collection
 commands instead. Coverage counts only evidence whose declared
 `supportTargetId` is corroborated by collected OS/platform metadata and, for
-Next.js rows, still proves the required runtime platform floor.
+Next.js rows, still proves the required runtime platform floor. JSON and
+Markdown reports include `summary.coveragePercent` plus breakdowns by evidence
+kind, target category, and workflow collection path so readiness percentages
+come from the collected evidence. With `-ReportOnly`, a missing `EvidencePath`
+is treated as zero collected evidence so the same command can produce a 0%
+baseline before any host evidence has been imported.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
@@ -296,7 +333,9 @@ name, run ID, run attempt, event name, ref name, and commit SHA. If both CI SHA
 and source-control commit SHA are present, they must match. Each manifest row
 also records safe collection CI provenance when it exists in the source evidence
 file, so workflow-collected evidence keeps its collection run identity after
-bundling.
+bundling. Each manifest row also records the collection workflow dispatch
+evidence name, expected target, Next.js mode, service manager, reverse proxy,
+minimum uptime, and whether those values match the archived support row.
 Bundle switches that require target-aware support-claim logic, such as
 `-RequireHostEvidenceWorkflowCollection`, must be used with
 `-ValidateSupportClaim`.
@@ -368,6 +407,8 @@ required evidence aliases from the support matrix:
   -RequireBothNextJsModes `
   -RequireDeclaredServiceManagers `
   -RequireDeclaredReverseProxies `
+  -IncludeServiceOnly `
+  -IncludeFallback `
   -RequireHostEvidenceWorkflowCollection
 ```
 

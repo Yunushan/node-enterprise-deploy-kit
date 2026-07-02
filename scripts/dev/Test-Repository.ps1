@@ -362,6 +362,10 @@ function Test-SupportEvidencePlanSelfTest {
   & (Join-Path $ScriptDir "New-SupportEvidencePlan.ps1") -SelfTest
 }
 
+function Test-SupportEvidenceCollectionPackSelfTest {
+  & (Join-Path $ScriptDir "New-SupportEvidenceCollectionPack.ps1") -SelfTest
+}
+
 function Test-SupportEvidenceBundleSelfTest {
   & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") -SelfTest
   & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") `
@@ -416,6 +420,7 @@ Test-WindowsServiceManagers
 Test-HostEvidenceWorkflow
 Test-SupportClaimSelfTest
 Test-SupportEvidencePlanSelfTest
+Test-SupportEvidenceCollectionPackSelfTest
 Test-SupportEvidenceBundleSelfTest
 Test-SupportEvidenceBundleVerifierSelfTest
 Test-SupportEvidenceCoverageSelfTest
