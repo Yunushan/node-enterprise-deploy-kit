@@ -131,6 +131,8 @@ $requiredFiles = @(
   "docs/ANSIBLE.md",
   "docs/assets/logo.svg",
   ".github/workflows/host-evidence.yml",
+  ".github/workflows/support-evidence-bundle.yml",
+  ".github/workflows/release-evidence.yml",
   "config/support-matrix.example.json",
   "config/linux/app.env.next-start.example",
   "config/linux/app.env.macos.example",
@@ -160,6 +162,11 @@ $requiredFiles = @(
   "scripts/dev/New-SupportEvidenceCollectionPack.ps1",
   "scripts/dev/Import-HostEvidenceArtifacts.ps1",
   "scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1",
+  "scripts/dev/Test-SupportEvidenceBundleWorkflow.ps1",
+  "scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1",
+  "scripts/dev/New-ReleaseReadinessSummary.ps1",
+  "scripts/dev/Resolve-ReleaseEvidenceBundle.ps1",
+  "scripts/dev/Write-ReleaseReadinessStepSummary.ps1",
   "scripts/dev/New-SupportEvidenceBundle.ps1",
   "scripts/dev/Test-SupportEvidenceBundle.ps1",
   "scripts/dev/Test-SupportClaim.ps1",
@@ -169,6 +176,8 @@ $requiredFiles = @(
   "scripts/dev/Test-WindowsServiceManagers.ps1",
   "scripts/dev/Test-HostEvidenceWorkflow.ps1",
   "scripts/dev/Test-HostEvidenceWorkflowInputs.ps1",
+  "scripts/dev/Test-ReleaseEvidenceWorkflow.ps1",
+  "scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1",
   "scripts/dev/Test-NextJsSupport.ps1",
   "scripts/dev/Test-ReactSupport.ps1",
   "scripts/dev/Test-StaticIisSupport.ps1",
@@ -185,12 +194,66 @@ foreach ($required in $requiredFiles) {
   }
 }
 
-$requiredDocSnippets = @(
-  @{ Path = "README.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
-  @{ Path = "docs/HOST_VERIFICATION.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
-  @{ Path = "docs/RELEASE.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") },
-  @{ Path = "docs/SUPPORT_MATRIX.md"; Snippets = @("supportScope.kind", "supportScope.proofLevel", "filtered or production-runtime-only result is not a full-matrix release claim") }
+$releaseReadinessSnippets = @(
+  "supportScope.kind",
+  "supportScope.proofLevel",
+  "bundleSupportScope",
+  "releaseClaim.kind",
+  "releaseClaim.finalFullMatrixReleaseClaim",
+  "-RequireFinalFullMatrixReleaseClaim",
+  "release-evidence.yml",
+  "support-evidence-bundle.yml",
+  "release-readiness-summary.json",
+  "Test-SupportEvidenceBundleWorkflowInputs.ps1",
+  "New-ReleaseReadinessSummary.ps1",
+  "Resolve-ReleaseEvidenceBundle.ps1",
+  "Write-ReleaseReadinessStepSummary.ps1",
+  "Test-ReleaseEvidenceWorkflowInputs.ps1",
+  "sourceControl.commitSha",
+  "bundleCi.workflowName",
+  "redacted",
+  "does not re-upload",
+  "workflow-dispatch commands",
+  "stated review scope",
+  "one-command handoff",
+  "-PassThru",
+  "full-matrix release claim"
 )
+$requiredDocSnippets = @(
+  @{ Path = "README.md"; Snippets = $releaseReadinessSnippets },
+  @{ Path = "docs/HOST_VERIFICATION.md"; Snippets = $releaseReadinessSnippets },
+  @{ Path = "docs/RELEASE.md"; Snippets = $releaseReadinessSnippets },
+  @{ Path = "docs/SUPPORT_MATRIX.md"; Snippets = $releaseReadinessSnippets }
+)
+
+$supportClaimCaveatExpectations = @(
+  @{
+    Path = "README.md"
+    Snippets = @(
+      "not a vendor support guarantee",
+      "real-host evidence for the exact targets being claimed",
+      "releaseClaim.finalFullMatrixReleaseClaim"
+    )
+  },
+  @{
+    Path = "README.tr.md"
+    Snippets = @(
+      "vendor destek garantisi degildir",
+      "gercek host kaniti",
+      "final tam matris release iddiasi"
+    )
+  },
+  @{
+    Path = "docs/SUPPORT_MATRIX.md"
+    Snippets = @(
+      "Do not call a platform fully supported for a release until it reaches",
+      "real-host-verified",
+      "final full-matrix release claim"
+    )
+  }
+)
+
+$requiredDocSnippets += $supportClaimCaveatExpectations
 
 foreach ($expectation in $requiredDocSnippets) {
   $docPath = Join-Path $RepoRoot (($expectation.Path) -replace '/', '\')

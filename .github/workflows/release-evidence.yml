@@ -1,0 +1,105 @@
+name: release-evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions run ID that uploaded the release evidence bundle artifact
+        required: true
+      bundle_artifact_name:
+        description: Artifact name containing the release evidence .zip bundle
+        required: true
+        default: support-evidence
+      bundle_file:
+        description: Optional .zip filename inside the downloaded artifact; first .zip is used when empty
+        required: false
+        default: ''
+      include_service_only:
+        description: Include ReverseProxy=none evidence rows in the full-matrix release gate
+        required: true
+        type: boolean
+        default: true
+      include_fallback:
+        description: Include fallback service-manager evidence rows in the full-matrix release gate
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  final-full-matrix-release-gate:
+    name: final full-matrix release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate release evidence inputs
+        shell: pwsh
+        env:
+          BUNDLE_ARTIFACT_NAME: ${{ inputs.bundle_artifact_name }}
+          BUNDLE_FILE: ${{ inputs.bundle_file }}
+          INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
+          INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: ./scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1
+
+      - name: Download release evidence bundle artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.bundle_artifact_name }}
+          path: release-evidence-input
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate final full-matrix release evidence
+        shell: pwsh
+        env:
+          BUNDLE_FILE: ${{ inputs.bundle_file }}
+          INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
+          INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifactRoot = Join-Path (Get-Location) "release-evidence-input"
+          $bundlePath = [string](& ./scripts/dev/Resolve-ReleaseEvidenceBundle.ps1 `
+            -ArtifactRoot $artifactRoot `
+            -BundleFile $env:BUNDLE_FILE `
+            -Quiet)
+          if ([string]::IsNullOrWhiteSpace($bundlePath)) {
+            throw "Release evidence bundle resolver did not return a bundle path."
+          }
+
+          $readinessArgs = @(
+            "-BundlePath", $bundlePath,
+            "-StrictCiRelease",
+            "-RequireFinalFullMatrixReleaseClaim",
+            "-Format", "Json",
+            "-OutputPath", "release-readiness.json"
+          )
+          if ($env:INCLUDE_SERVICE_ONLY -eq "true") {
+            $readinessArgs += "-IncludeServiceOnly"
+          }
+          if ($env:INCLUDE_FALLBACK -eq "true") {
+            $readinessArgs += "-IncludeFallback"
+          }
+
+          & ./scripts/dev/Test-ReleaseSupportReadiness.ps1 @readinessArgs
+
+          & ./scripts/dev/New-ReleaseReadinessSummary.ps1 `
+            -InputPath "release-readiness.json" `
+            -OutputPath "release-readiness-summary.json" `
+            -RequireFinalFullMatrixReleaseClaim
+
+          & ./scripts/dev/Write-ReleaseReadinessStepSummary.ps1 `
+            -InputPath "release-readiness-summary.json" `
+            -OutputPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload release readiness summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness
+          path: release-readiness-summary.json
+          if-no-files-found: error

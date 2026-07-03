@@ -19,6 +19,7 @@ param(
   [switch]$RequireCollectorSha256,
   [int]$RequireMinimumUptimeHours = 0,
   [switch]$StrictCiRelease,
+  [switch]$RequireFinalFullMatrixReleaseClaim,
   [ValidateSet("Table", "Json")]
   [string]$Format = "Table",
   [string]$OutputPath = "",
@@ -55,6 +56,10 @@ function Get-MatrixRequiredMinimumUptimeHours {
 
 if ($StrictCiRelease -and $AllowWarnings) {
   throw "-StrictCiRelease cannot be combined with -AllowWarnings; final release evidence must be warning-clean."
+}
+
+if ($RequireFinalFullMatrixReleaseClaim -and -not $StrictCiRelease) {
+  throw "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease; final full-matrix signoff must use strict CI release checks."
 }
 
 if ($StrictCiRelease) {
@@ -367,6 +372,21 @@ function Get-ProofLevel {
   return "basic-real-host-evidence"
 }
 
+function Get-ReleaseClaimKind {
+  param(
+    [string]$ScopeKind,
+    [bool]$StrictCiRelease
+  )
+
+  $prefix = if ($StrictCiRelease) { "strict-ci" } else { "provisional" }
+  switch ($ScopeKind) {
+    "full-matrix" { return "$prefix-full-matrix" }
+    "production-recommended" { return "$prefix-production-runtime" }
+    "filtered" { return "$prefix-filtered" }
+    default { return "$prefix-$ScopeKind" }
+  }
+}
+
 function Test-SafeRuntimeVersionValue {
   param([string]$Value)
 
@@ -635,6 +655,7 @@ if ($SelfTest) {
       [switch]$RequireCollectorSha256,
       [int]$RequireMinimumUptimeHours = 0,
       [switch]$StrictCiRelease,
+      [switch]$RequireFinalFullMatrixReleaseClaim,
       [switch]$AllowWarnings
     )
 
@@ -659,6 +680,7 @@ if ($SelfTest) {
     if ($RequireCollectorSha256) { $readinessArgs.RequireCollectorSha256 = $true }
     if ($RequireMinimumUptimeHours -gt 0) { $readinessArgs.RequireMinimumUptimeHours = $RequireMinimumUptimeHours }
     if ($StrictCiRelease) { $readinessArgs.StrictCiRelease = $true }
+    if ($RequireFinalFullMatrixReleaseClaim) { $readinessArgs.RequireFinalFullMatrixReleaseClaim = $true }
     if ($AllowWarnings) { $readinessArgs.AllowWarnings = $true }
 
     & $PSCommandPath @readinessArgs | Out-Null
@@ -745,6 +767,33 @@ if ($SelfTest) {
   }
   if ([int]$readinessJson.supportScope.localCommandOnlyEvidenceCount -le 0) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve local-command-only evidence counts."
+  }
+  if (-not $readinessJson.PSObject.Properties["releaseClaim"]) {
+    throw "Release support readiness self-test failed: readiness JSON is missing releaseClaim metadata."
+  }
+  if ([string]$readinessJson.releaseClaim.kind -ne "provisional-filtered") {
+    throw "Release support readiness self-test failed: provisional release claim kind is incorrect."
+  }
+  if ($readinessJson.releaseClaim.finalFullMatrixReleaseClaim -ne $false) {
+    throw "Release support readiness self-test failed: filtered provisional evidence must not be a final full-matrix release claim."
+  }
+  if (-not $readinessJson.PSObject.Properties["sourceControl"] -or -not ([string]$readinessJson.sourceControl.commitSha)) {
+    throw "Release support readiness self-test failed: readiness JSON is missing sourceControl provenance."
+  }
+  if (-not $readinessJson.PSObject.Properties["bundleCi"]) {
+    throw "Release support readiness self-test failed: readiness JSON is missing bundleCi provenance."
+  }
+  if (-not $readinessJson.PSObject.Properties["bundleSupportScope"]) {
+    throw "Release support readiness self-test failed: readiness JSON is missing bundleSupportScope metadata."
+  }
+  if ([string]$readinessJson.bundleSupportScope.kind -ne "filtered") {
+    throw "Release support readiness self-test failed: bundleSupportScope.kind should preserve the saved bundle scope."
+  }
+  if ([string]$readinessJson.bundleSupportScope.proofLevel -ne "basic-real-host-evidence") {
+    throw "Release support readiness self-test failed: bundleSupportScope.proofLevel should preserve the saved bundle proof level."
+  }
+  if ([int]$readinessJson.bundleSupportScope.selectedTargetCount -ne @($selfTestTargetIds).Count) {
+    throw "Release support readiness self-test failed: bundleSupportScope selected target count is incorrect."
   }
   if ([int]$readinessJson.bundle.collectionWorkflowDispatchMatchCount -le 0 -or [int]$readinessJson.bundle.collectionWorkflowDispatchMismatchCount -ne 0) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve matching workflow dispatch manifest metadata."
@@ -953,6 +1002,9 @@ if ($SelfTest) {
   Invoke-ExpectReadinessFailure -ExpectedMessage "-StrictCiRelease cannot be combined with -AllowWarnings" -Action {
     Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -StrictCiRelease -AllowWarnings
   }
+  Invoke-ExpectReadinessFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease" -Action {
+    Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireFinalFullMatrixReleaseClaim
+  }
 
   $strictMissingCiRoot = Join-Path $selfTestRoot "strict-missing-ci"
   New-Item -ItemType Directory -Force -Path $strictMissingCiRoot | Out-Null
@@ -981,13 +1033,26 @@ if ($SelfTest) {
   $strictCompleteManifest = Get-Content -LiteralPath $strictCompleteManifestPath -Raw | ConvertFrom-Json
   Set-TestCollectionCiProvenance -BundleRoot $strictCompleteRoot -CommitSha $strictCompleteManifest.sourceControl.commitSha
   Remove-TestCollectionCiProvenanceFromLocalOnlyRows -BundleRoot $strictCompleteRoot
+  $strictCompleteReadinessJsonPath = Join-Path $selfTestRoot "strict-complete-readiness.json"
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Final full-matrix release claim was required" -Action {
+    Invoke-SelfTestReadiness -BundlePath $strictCompleteRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease -RequireFinalFullMatrixReleaseClaim
+  }
   & $PSCommandPath `
     -MatrixPath $MatrixPath `
     -TargetId $selfTestTargetIds `
     -BundlePath $strictCompleteRoot `
     -IncludeServiceOnly `
     -IncludeFallback `
-    -StrictCiRelease | Out-Null
+    -StrictCiRelease `
+    -Format Json `
+    -OutputPath $strictCompleteReadinessJsonPath | Out-Null
+  $strictCompleteReadiness = Get-Content -LiteralPath $strictCompleteReadinessJsonPath -Raw | ConvertFrom-Json
+  if ([string]$strictCompleteReadiness.releaseClaim.kind -ne "strict-ci-filtered") {
+    throw "Release support readiness self-test failed: strict release claim kind is incorrect."
+  }
+  if ($strictCompleteReadiness.releaseClaim.finalFullMatrixReleaseClaim -ne $false) {
+    throw "Release support readiness self-test failed: filtered strict evidence must not be a final full-matrix release claim."
+  }
   Write-Host "Release support readiness self-test OK"
   return
 }
@@ -1238,6 +1303,8 @@ try {
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") @coverageArgs | Out-Null
   $coverage = Get-Content -LiteralPath $coverageJson -Raw | ConvertFrom-Json
   Remove-Item -LiteralPath $coverageJson -Force -ErrorAction SilentlyContinue
+  $releaseClaimKind = Get-ReleaseClaimKind -ScopeKind $supportScopeKind -StrictCiRelease ([bool]$StrictCiRelease)
+  $finalFullMatrixReleaseClaim = [bool]($supportScopeKind -eq "full-matrix" -and $StrictCiRelease -and -not $AllowWarnings)
 
   $result = [pscustomobject]@{
     schemaVersion = 1
@@ -1262,11 +1329,23 @@ try {
     requireRuntimeVersions = [bool]$RequireRuntimeVersions
     requireCollectorSha256 = [bool]$RequireCollectorSha256
     requireMinimumUptimeHours = $RequireMinimumUptimeHours
+    requireFinalFullMatrixReleaseClaim = [bool]$RequireFinalFullMatrixReleaseClaim
     strictSupportClaim = [pscustomobject]@{
       requireBothNextJsModes = $true
       requireDeclaredServiceManagers = $true
       requireDeclaredReverseProxies = $true
     }
+    bundleCi = $manifest.ci
+    releaseClaim = [pscustomobject]@{
+      kind = $releaseClaimKind
+      finalFullMatrixReleaseClaim = $finalFullMatrixReleaseClaim
+      strictCiRelease = [bool]$StrictCiRelease
+      scope = $supportScopeKind
+      proofLevel = $proofLevel
+      warningCleanRequired = [bool](-not $AllowWarnings)
+      note = if ($StrictCiRelease) { "Ready only for the stated strict CI release scope." } else { "Provisional review; rerun with -StrictCiRelease for final release signoff." }
+    }
+    bundleSupportScope = $manifest.supportScope
     supportScope = [pscustomobject]@{
       kind = $supportScopeKind
       proofLevel = $proofLevel
@@ -1333,6 +1412,10 @@ try {
     currentCommitSha = $currentCommitSha
   }
 
+  if ($RequireFinalFullMatrixReleaseClaim -and -not $result.releaseClaim.finalFullMatrixReleaseClaim) {
+    throw "Final full-matrix release claim was required, but readiness produced '$($result.releaseClaim.kind)' with supportScope '$($result.supportScope.kind)'. Rerun without filters, without -AllowWarnings, and with -StrictCiRelease after collecting complete real-host evidence."
+  }
+
   if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
       $OutputPath = Join-Path (Get-Location) $OutputPath
@@ -1353,9 +1436,12 @@ try {
         ($result | ConvertTo-Json -Depth 8) | Set-Content -Path $OutputPath -Encoding UTF8
       }
       Write-Host "Ready: $($result.ready)"
-      Write-Host "Scope: $($result.supportScope.kind)"
-      Write-Host "Proof level: $($result.supportScope.proofLevel)"
-      Write-Host "Selected targets: $($result.supportScope.selectedTargetCount) of $($result.supportScope.matrixTargetCount)"
+      Write-Host "Release claim: $($result.releaseClaim.kind)"
+      Write-Host "Review scope: $($result.supportScope.kind)"
+      Write-Host "Review proof level: $($result.supportScope.proofLevel)"
+      Write-Host "Review selected targets: $($result.supportScope.selectedTargetCount) of $($result.supportScope.matrixTargetCount)"
+      Write-Host "Bundle scope: $($result.bundleSupportScope.kind)"
+      Write-Host "Bundle proof level: $($result.bundleSupportScope.proofLevel)"
       Write-Host "Bundle evidence files: $($result.bundle.evidenceFileCount)"
       Write-Host "Coverage expected: $($result.coverage.expectedCount)"
       Write-Host "Coverage covered:  $($result.coverage.coveredCount)"

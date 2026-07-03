@@ -354,6 +354,18 @@ function Test-HostEvidenceWorkflow {
   & (Join-Path $ScriptDir "Test-HostEvidenceWorkflow.ps1")
 }
 
+function Test-ReleaseEvidenceWorkflow {
+  & (Join-Path $ScriptDir "Test-ReleaseEvidenceWorkflow.ps1")
+}
+
+function Test-SupportEvidenceBundleWorkflow {
+  & (Join-Path $ScriptDir "Test-SupportEvidenceBundleWorkflow.ps1")
+}
+
+function Test-ReleaseReadinessSummarySelfTest {
+  & (Join-Path $ScriptDir "New-ReleaseReadinessSummary.ps1") -SelfTest
+}
+
 function Test-SupportClaimSelfTest {
   & (Join-Path $ScriptDir "Test-SupportClaim.ps1") -SelfTest
 }
@@ -418,6 +430,9 @@ Test-HostEvidenceSelfTest
 Test-SupportMatrix
 Test-WindowsServiceManagers
 Test-HostEvidenceWorkflow
+Test-SupportEvidenceBundleWorkflow
+Test-ReleaseEvidenceWorkflow
+Test-ReleaseReadinessSummarySelfTest
 Test-SupportClaimSelfTest
 Test-SupportEvidencePlanSelfTest
 Test-SupportEvidenceCollectionPackSelfTest

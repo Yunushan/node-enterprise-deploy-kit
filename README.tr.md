@@ -89,10 +89,49 @@ Belirli bir işletim sistemi ailesi için destek iddiasında bulunmadan önce
 uygulayın.
 
 Release readiness çıktısındaki `Ready: True` tek başına "tüm matris kanıtlandı"
-anlamına gelmez. `supportScope.kind`, `supportScope.proofLevel`, seçili hedef
-sayısı ve local-command-only evidence sayıları hangi kapsamın kanıtlandığını
-gösterir; filtrelenmiş veya yalnızca üretim-runtime kapsamındaki sonuçlar tam
-matris iddiası değildir.
+anlamına gelmez. `supportScope.kind`, `supportScope.proofLevel`,
+`releaseClaim.kind`, seçili hedef sayısı ve local-command-only evidence
+sayıları aktif readiness inceleme kapsamını gösterir; `bundleSupportScope` ise
+kaydedilmiş bundle'ın orijinal kapsamını korur.
+`releaseClaim.finalFullMatrixReleaseClaim` değeri `true` değilse sonuç final
+tam matris release iddiası değildir; filtrelenmiş, provisional veya yalnızca
+üretim-runtime kapsamındaki sonuçlar tam matris iddiası olarak kullanılmamalıdır.
+Final tam matris release kapısında komutun hata vermesini istiyorsanız
+`-StrictCiRelease` ile birlikte `-RequireFinalFullMatrixReleaseClaim` kullanın;
+bu switch `-StrictCiRelease` gerektirir.
+CI tarafında aynı final kapıyı zorlamak için önce private evidence workspace'i
+okuyabilen self-hosted runner uzerinde
+`.github/workflows/support-evidence-bundle.yml` workflow'unu çalıştırın. Bu
+workflow dispatch input'larını
+`scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1` ile doğrular, strict
+release workflow'u çalıştırır ve varsayılan olarak yalnızca private bundle zip
+dosyasını `support-evidence` artifact'ı olarak yükler. Self-hosted runner'da
+canonical `evidence/` zaten hazirsa `artifact_path` bos bırakılmalıdır; workflow
+download edilmiş `host-evidence` artifact'larını bundling oncesi import edecekse
+bu input set edilmelidir. Sonra bu source run ID ve
+artifact adıyla `.github/workflows/release-evidence.yml` workflow'unu
+çalıştırın; verifier workflow dispatch input'larını
+`scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1` ile doğrular, evidence zip
+dosyasını `scripts/dev/Resolve-ReleaseEvidenceBundle.ps1` ile bulur, strict
+readiness kontrolünü çalıştırır, private evidence bundle'ı yeniden yüklemez,
+detaylı `release-readiness.json` dosyasını yalnızca job workspace içinde tutar
+ve artifact olarak sadece redacted
+`release-readiness-summary.json` çıktısını yükler. Summary artifact ve workflow
+summary, raw host evidence paylaşmadan final iddianın hangi kaynak revizyonu ve
+bundle üreten CI run'ı ile eşleştiğini göstermek için sadece
+`sourceControl.commitSha` ve `bundleCi.workflowName` gibi güvenli provenance
+alanlarını içerir. Raw coverage satırlarını, collection komutlarını,
+workflow-dispatch komutlarını ve bundle path'lerini özellikle yazmaz.
+Redacted summary, `scripts/dev/New-ReleaseReadinessSummary.ps1` tarafından
+üretilir; self-test aggregate proof/provenance alanlarının korunduğunu ve
+detaylı evidence satırları ile makineye özel path'lerin dışarıda kaldığını
+doğrular.
+`scripts/dev/Write-ReleaseReadinessStepSummary.ps1`, GitHub step summary
+çıktısını sadece bu redacted summary dosyasından yazar; reviewer'a görünen
+Markdown detaylı readiness JSON dosyasını okumaz.
+Bundle resolver self-test tek zip varsayılan yolunu, explicit bundle filename
+kullanımını, eksik bundle'ı, birden fazla bundle durumunu ve güvensiz filename
+reddini doğrular.
 
 ## Windows Server Kurulumu
 
@@ -337,6 +376,11 @@ sudo bash scripts/linux/install-healthcheck-scheduler.sh config/linux/app.env
 ```
 
 ## Desteklenen Platformlar
+
+Bu proje bir dagitim kitidir; vendor destek garantisi degildir. Bir hedefi
+belirli bir release icin tam desteklenmis saymadan once o release artifact'i
+icin gercek host kaniti toplanmali, final tam matris release iddiasi icin de
+release readiness kapisi gecmelidir.
 
 Guncel Next.js surumleri Node.js `20.9.0` veya uzerini gerektirir. Bu nedenle
 uretim onerisi, hedef isletim sisteminin Node.js runtime destek katmanina da

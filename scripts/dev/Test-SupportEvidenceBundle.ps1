@@ -733,6 +733,57 @@ function Test-Bundle {
       throw "Support matrix not found: $matrixPath"
     }
     $matrixTargetsById = Get-MatrixTargetsById -Path $matrixPath
+    $matrixTargetIds = @($matrixTargetsById.Keys | Sort-Object)
+    $supportScope = Get-PropertyValue -Object $manifest -Names @("supportScope")
+    if ($null -eq $supportScope) {
+      throw "support-evidence-manifest.json supportScope is required."
+    }
+    $manifestSelectedTargets = @($manifest.selectedTargets | ForEach-Object { Normalize-Token ([string]$_) } | Where-Object { $_ } | Sort-Object)
+    $scopeSelectedTargets = @($supportScope.selectedTargets | ForEach-Object { Normalize-Token ([string]$_) } | Where-Object { $_ } | Sort-Object)
+    Assert-ArrayEqual -Actual $scopeSelectedTargets -Expected $manifestSelectedTargets -Name "supportScope.selectedTargets"
+    if ([int]$supportScope.selectedTargetCount -ne $manifestSelectedTargets.Count) {
+      throw "supportScope.selectedTargetCount does not match selectedTargets."
+    }
+    if ([int]$supportScope.matrixTargetCount -ne $matrixTargetIds.Count) {
+      throw "supportScope.matrixTargetCount does not match the support matrix."
+    }
+    $scopeKind = Get-StringValue -Object $supportScope -Names @("kind")
+    $hasManifestTargetFilter = @($manifest.targetIds | ForEach-Object { Normalize-Token ([string]$_) } | Where-Object { $_ }).Count -gt 0
+    $hasManifestCategoryFilter = @($manifest.categories | ForEach-Object { Normalize-Token ([string]$_) } | Where-Object { $_ }).Count -gt 0
+    $expectedScopeKind = "unfiltered"
+    if (Get-BooleanValue -Object $manifest -Names @("productionRecommendedOnly") -Default $false) {
+      $expectedScopeKind = "production-recommended"
+    } elseif ($hasManifestTargetFilter -or $hasManifestCategoryFilter) {
+      $expectedScopeKind = "filtered"
+    } elseif (Get-BooleanValue -Object $manifest -Names @("coverageCompleteRequired") -Default $false) {
+      $missingFromSelection = @($matrixTargetIds | Where-Object { $manifestSelectedTargets -notcontains $_ })
+      $extraInSelection = @($manifestSelectedTargets | Where-Object { $matrixTargetIds -notcontains $_ })
+      if ($missingFromSelection.Count -eq 0 -and $extraInSelection.Count -eq 0) {
+        $expectedScopeKind = "full-matrix"
+      } else {
+        $expectedScopeKind = "filtered"
+      }
+    }
+    if ($scopeKind -ne $expectedScopeKind) {
+      throw "supportScope.kind must be '$expectedScopeKind', got '$scopeKind'."
+    }
+    if ((Get-BooleanValue -Object $supportScope -Names @("fullMatrix") -Default $false) -ne ($expectedScopeKind -eq "full-matrix")) {
+      throw "supportScope.fullMatrix does not match supportScope.kind."
+    }
+    $expectedTargetFiltersApplied = ($hasManifestTargetFilter -or $hasManifestCategoryFilter)
+    if ((Get-BooleanValue -Object $supportScope -Names @("targetFiltersApplied") -Default $false) -ne $expectedTargetFiltersApplied) {
+      throw "supportScope.targetFiltersApplied does not match manifest target/category filters."
+    }
+    if ((Get-BooleanValue -Object $supportScope -Names @("productionRecommendedOnly") -Default $false) -ne (Get-BooleanValue -Object $manifest -Names @("productionRecommendedOnly") -Default $false)) {
+      throw "supportScope.productionRecommendedOnly does not match manifest productionRecommendedOnly."
+    }
+    if ((Get-BooleanValue -Object $supportScope -Names @("supportClaimValidated") -Default $false) -ne $supportClaimValidated) {
+      throw "supportScope.supportClaimValidated does not match manifest supportClaimValidated."
+    }
+    $expectedProofLevel = if ($requireCollectorSha256 -or $requireHostEvidenceWorkflowCollection -or $requireMinimumUptimeHours -gt 0) { "hardened-real-host-evidence" } else { "basic-real-host-evidence" }
+    if ((Get-StringValue -Object $supportScope -Names @("proofLevel")) -ne $expectedProofLevel) {
+      throw "supportScope.proofLevel must be '$expectedProofLevel'."
+    }
 
     $listedPaths = New-Object System.Collections.Generic.HashSet[string]
     foreach ($row in $manifestRows) {
@@ -999,6 +1050,17 @@ function Test-Bundle {
     Assert-ArrayEqual -Actual @($manifest.summary.serviceManagers) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "serviceManager") -Name "serviceManagers"
     Assert-ArrayEqual -Actual @($manifest.summary.reverseProxies) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "reverseProxy") -Name "reverseProxies"
     Assert-ArrayEqual -Actual @($manifest.summary.collectors) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "collector") -Name "collectors"
+    $expectedWorkflowCapableEvidenceCount = @($manifestRows | Where-Object { (Get-BooleanValue -Object $_ -Names @("workflowDispatchSupported") -Default $false) -eq $true }).Count
+    $expectedLocalCommandOnlyEvidenceCount = @($manifestRows | Where-Object { (Get-BooleanValue -Object $_ -Names @("localCommandOnly") -Default $false) -eq $true }).Count
+    if ([int]$supportScope.workflowCapableEvidenceCount -ne $expectedWorkflowCapableEvidenceCount) {
+      throw "supportScope.workflowCapableEvidenceCount does not match manifest rows."
+    }
+    if ([int]$supportScope.localCommandOnlyEvidenceCount -ne $expectedLocalCommandOnlyEvidenceCount) {
+      throw "supportScope.localCommandOnlyEvidenceCount does not match manifest rows."
+    }
+    if ([int]$supportScope.requiredMinimumUptimeHours -ne $requireMinimumUptimeHours) {
+      throw "supportScope.requiredMinimumUptimeHours does not match manifest requireMinimumUptimeHours."
+    }
   }
   finally {
     if ($resolved.Cleanup -and (Test-Path -LiteralPath $resolved.Root)) {
@@ -1230,6 +1292,7 @@ if ($SelfTest) {
   $requiredCollectorManifestPath = Join-Path $requiredCollectorRoot "support-evidence-manifest.json"
   $requiredCollectorManifest = Get-Content -LiteralPath $requiredCollectorManifestPath -Raw | ConvertFrom-Json
   $requiredCollectorManifest | Add-Member -NotePropertyName "requireCollectorSha256" -NotePropertyValue $true -Force
+  $requiredCollectorManifest.supportScope.proofLevel = "hardened-real-host-evidence"
   foreach ($row in @($requiredCollectorManifest.files)) {
     if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
       $row.sha256 = (Get-FileHash -LiteralPath $requiredCollectorFile -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -1252,6 +1315,8 @@ if ($SelfTest) {
   $requiredWorkflowManifest = Get-Content -LiteralPath $requiredWorkflowManifestPath -Raw | ConvertFrom-Json
   $requiredWorkflowManifest.supportClaimValidated = $true
   $requiredWorkflowManifest | Add-Member -NotePropertyName "requireHostEvidenceWorkflowCollection" -NotePropertyValue $true -Force
+  $requiredWorkflowManifest.supportScope.proofLevel = "hardened-real-host-evidence"
+  $requiredWorkflowManifest.supportScope.supportClaimValidated = $true
   foreach ($row in @($requiredWorkflowManifest.files)) {
     if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
       $row.sha256 = (Get-FileHash -LiteralPath $requiredWorkflowFile -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -1273,6 +1338,8 @@ if ($SelfTest) {
   $requiredUptimeManifestPath = Join-Path $requiredUptimeRoot "support-evidence-manifest.json"
   $requiredUptimeManifest = Get-Content -LiteralPath $requiredUptimeManifestPath -Raw | ConvertFrom-Json
   $requiredUptimeManifest | Add-Member -NotePropertyName "requireMinimumUptimeHours" -NotePropertyValue 72 -Force
+  $requiredUptimeManifest.supportScope.proofLevel = "hardened-real-host-evidence"
+  $requiredUptimeManifest.supportScope.requiredMinimumUptimeHours = 72
   foreach ($row in @($requiredUptimeManifest.files)) {
     if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
       $row.sha256 = (Get-FileHash -LiteralPath $requiredUptimeFile -Algorithm SHA256).Hash.ToLowerInvariant()

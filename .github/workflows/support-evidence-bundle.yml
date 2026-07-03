@@ -1,0 +1,178 @@
+name: support-evidence-bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'JSON array of self-hosted runner labels that can read the private evidence workspace, for example ["self-hosted","release-evidence-builder"]'
+        required: true
+        default: '["self-hosted"]'
+      evidence_path:
+        description: Relative path containing canonical evidence files on the self-hosted runner workspace
+        required: true
+        default: evidence
+      artifact_path:
+        description: Optional relative path containing downloaded host-evidence artifacts to import before bundling
+        required: false
+        default: ''
+      output_directory:
+        description: Relative path for generated release evidence output on the runner workspace
+        required: true
+        default: release-evidence
+      bundle_name:
+        description: Simple bundle file stem; .zip is added by the release workflow
+        required: true
+        default: support-evidence
+      bundle_artifact_name:
+        description: GitHub Actions artifact name to upload for the release-evidence verifier workflow
+        required: true
+        default: support-evidence
+      include_service_only:
+        description: Include ReverseProxy=none evidence rows in the bundle and readiness gate
+        required: true
+        type: boolean
+        default: true
+      include_fallback:
+        description: Include fallback service-manager evidence rows in the bundle and readiness gate
+        required: true
+        type: boolean
+        default: true
+      strict_ci_release:
+        description: Require clean committed CI/source provenance, controlled host-evidence collection, collector hashes, runtime versions, and uptime evidence
+        required: true
+        type: boolean
+        default: true
+      require_final_full_matrix_release_claim:
+        description: Fail unless readiness proves releaseClaim.finalFullMatrixReleaseClaim=true
+        required: true
+        type: boolean
+        default: true
+      allow_local_collection:
+        description: Allow importing local-command-only evidence rows during artifact import
+        required: true
+        type: boolean
+        default: false
+      force:
+        description: Allow the importer to overwrite changed canonical evidence files
+        required: true
+        type: boolean
+        default: false
+      upload_retention_days:
+        description: Private bundle artifact retention days
+        required: true
+        default: "7"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-dispatch:
+    name: validate dispatch inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate support evidence bundle inputs
+        shell: pwsh
+        env:
+          ALLOW_LOCAL_COLLECTION: ${{ inputs.allow_local_collection }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          BUNDLE_ARTIFACT_NAME: ${{ inputs.bundle_artifact_name }}
+          BUNDLE_NAME: ${{ inputs.bundle_name }}
+          EVIDENCE_PATH: ${{ inputs.evidence_path }}
+          FORCE: ${{ inputs.force }}
+          INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
+          INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+          REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+          STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+          UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
+        run: ./scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1
+
+  bundle:
+    name: create private support evidence bundle
+    needs: validate-dispatch
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository without deleting private evidence workspace
+        uses: actions/checkout@v7
+        with:
+          clean: false
+
+      - name: Validate support evidence bundle inputs on runner
+        shell: pwsh
+        env:
+          ALLOW_LOCAL_COLLECTION: ${{ inputs.allow_local_collection }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          BUNDLE_ARTIFACT_NAME: ${{ inputs.bundle_artifact_name }}
+          BUNDLE_NAME: ${{ inputs.bundle_name }}
+          EVIDENCE_PATH: ${{ inputs.evidence_path }}
+          FORCE: ${{ inputs.force }}
+          INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
+          INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+          REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+          STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+          UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
+        run: ./scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1
+
+      - name: Create private support evidence bundle
+        shell: pwsh
+        env:
+          ALLOW_LOCAL_COLLECTION: ${{ inputs.allow_local_collection }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          BUNDLE_NAME: ${{ inputs.bundle_name }}
+          EVIDENCE_PATH: ${{ inputs.evidence_path }}
+          FORCE: ${{ inputs.force }}
+          INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
+          INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+          REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
+          STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseArgs = @(
+            "-EvidencePath", $env:EVIDENCE_PATH,
+            "-OutputDirectory", $env:OUTPUT_DIRECTORY,
+            "-BundleName", $env:BUNDLE_NAME
+          )
+          if (-not [string]::IsNullOrWhiteSpace($env:ARTIFACT_PATH)) {
+            $releaseArgs += @("-ArtifactPath", $env:ARTIFACT_PATH)
+          }
+          if ($env:INCLUDE_SERVICE_ONLY -eq "true") {
+            $releaseArgs += "-IncludeServiceOnly"
+          }
+          if ($env:INCLUDE_FALLBACK -eq "true") {
+            $releaseArgs += "-IncludeFallback"
+          }
+          if ($env:STRICT_CI_RELEASE -eq "true") {
+            $releaseArgs += "-StrictCiRelease"
+          }
+          if ($env:REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM -eq "true") {
+            $releaseArgs += "-RequireFinalFullMatrixReleaseClaim"
+          }
+          if ($env:ALLOW_LOCAL_COLLECTION -eq "true") {
+            $releaseArgs += "-AllowLocalCollection"
+          }
+          if ($env:FORCE -eq "true") {
+            $releaseArgs += "-Force"
+          }
+
+          & ./scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1 @releaseArgs
+
+          $bundlePath = Join-Path $env:OUTPUT_DIRECTORY "$($env:BUNDLE_NAME).zip"
+          if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+            throw "Expected support evidence bundle was not created."
+          }
+
+      - name: Upload private support evidence bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.bundle_artifact_name }}
+          path: ${{ inputs.output_directory }}/${{ inputs.bundle_name }}.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs.upload_retention_days }}

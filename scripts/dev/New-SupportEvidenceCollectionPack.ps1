@@ -172,6 +172,7 @@ function New-ReleaseCommandScript {
   $lines.Add("param(") | Out-Null
   $lines.Add("  [switch]`$Run,") | Out-Null
   $lines.Add("  [switch]`$StrictCiRelease,") | Out-Null
+  $lines.Add("  [switch]`$RequireFinalFullMatrixReleaseClaim,") | Out-Null
   $lines.Add("  [switch]`$AllowLocalCollection,") | Out-Null
   $lines.Add("  [switch]`$Force") | Out-Null
   $lines.Add(")") | Out-Null
@@ -203,6 +204,7 @@ function New-ReleaseCommandScript {
     $lines.Add("`$arguments += '-IncludeFallback'") | Out-Null
   }
   $lines.Add("if (`$StrictCiRelease) { `$arguments += '-StrictCiRelease' }") | Out-Null
+  $lines.Add("if (`$RequireFinalFullMatrixReleaseClaim) { `$arguments += '-RequireFinalFullMatrixReleaseClaim' }") | Out-Null
   $lines.Add("if (`$AllowLocalCollection) { `$arguments += '-AllowLocalCollection' }") | Out-Null
   $lines.Add("if (`$Force) { `$arguments += '-Force' }") | Out-Null
   $lines.Add("") | Out-Null
@@ -712,7 +714,7 @@ function New-Readme {
   $lines.Add("& $(Quote-PowerShellArgument $ReleaseScript) -Run") | Out-Null
   $lines.Add($fence) | Out-Null
   $lines.Add("") | Out-Null
-  $lines.Add(("Use {0}-StrictCiRelease{0} on the generated release script only from a clean, committed CI-controlled final signoff path." -f $tick)) | Out-Null
+  $lines.Add(("Use {0}-StrictCiRelease{0} on the generated release script only from a clean, committed CI-controlled final signoff path. Add {0}-RequireFinalFullMatrixReleaseClaim{0} with {0}-StrictCiRelease{0} when a release must fail unless readiness proves a final full-matrix claim." -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("## Output Targets") | Out-Null
   $lines.Add("") | Out-Null
@@ -804,6 +806,9 @@ function Invoke-SelfTest {
   if (-not $releaseScriptText.Contains("-IncludeServiceOnly") -or -not $releaseScriptText.Contains("-IncludeFallback")) {
     throw "Support evidence collection pack self-test failed: release script did not preserve evidence scope switches."
   }
+  if (-not $releaseScriptText.Contains("RequireFinalFullMatrixReleaseClaim")) {
+    throw "Support evidence collection pack self-test failed: release script did not expose the final full-matrix claim gate."
+  }
   $tokens = $null
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($result.releaseScript, [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -813,7 +818,7 @@ function Invoke-SelfTest {
   }
 
   $readmeText = Get-Content -LiteralPath $result.readme -Raw
-  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "local-command-only", "release-readiness")) {
+  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "RequireFinalFullMatrixReleaseClaim", "local-command-only", "release-readiness")) {
     if (-not $readmeText.Contains($expected)) {
       throw "Support evidence collection pack self-test failed: README is missing '$expected'."
     }

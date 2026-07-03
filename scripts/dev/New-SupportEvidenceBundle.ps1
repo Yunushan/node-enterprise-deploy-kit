@@ -213,6 +213,53 @@ function Select-MatrixTargets {
   return $selected
 }
 
+function Get-SupportScopeKind {
+  param(
+    [string[]]$SelectedTargetIds,
+    [string[]]$AllTargetIds,
+    [string[]]$TargetId,
+    [string[]]$Category,
+    [bool]$ProductionRecommendedOnly,
+    [bool]$RequireCoverageComplete
+  )
+
+  if ($ProductionRecommendedOnly) {
+    return "production-recommended"
+  }
+
+  $hasTargetFilter = @($TargetId | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0
+  $hasCategoryFilter = @($Category | ForEach-Object { Normalize-Token $_ } | Where-Object { $_ }).Count -gt 0
+  if ($hasTargetFilter -or $hasCategoryFilter) {
+    return "filtered"
+  }
+
+  if (-not $RequireCoverageComplete) {
+    return "unfiltered"
+  }
+
+  $missingFromSelection = @($AllTargetIds | Where-Object { $SelectedTargetIds -notcontains $_ })
+  $extraInSelection = @($SelectedTargetIds | Where-Object { $AllTargetIds -notcontains $_ })
+  if ($missingFromSelection.Count -eq 0 -and $extraInSelection.Count -eq 0) {
+    return "full-matrix"
+  }
+
+  return "filtered"
+}
+
+function Get-BundleProofLevel {
+  param(
+    [bool]$RequireCollectorSha256,
+    [bool]$RequireHostEvidenceWorkflowCollection,
+    [int]$RequireMinimumUptimeHours
+  )
+
+  if ($RequireCollectorSha256 -or $RequireHostEvidenceWorkflowCollection -or $RequireMinimumUptimeHours -gt 0) {
+    return "hardened-real-host-evidence"
+  }
+
+  return "basic-real-host-evidence"
+}
+
 function Get-SupportTargetId {
   param([object]$Evidence)
 
@@ -862,9 +909,22 @@ if ($claimOnlyRequirements.Count -gt 0 -and -not $ValidateSupportClaim) {
 
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
 
+$allMatrixTargets = @(Select-MatrixTargets -Path $MatrixPath -TargetId @() -Category @() -ProductionRecommendedOnly $false)
+$allMatrixTargetIds = @($allMatrixTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
 $selectedTargets = @(Select-MatrixTargets -Path $MatrixPath -TargetId $TargetId -Category $Category -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly))
 $selectedTargetIds = @($selectedTargets | ForEach-Object { Normalize-Token ([string]$_.id) })
 $hasTargetFilter = ($TargetId.Count -gt 0 -or $Category.Count -gt 0 -or [bool]$ProductionRecommendedOnly)
+$supportScopeKind = Get-SupportScopeKind `
+  -SelectedTargetIds $selectedTargetIds `
+  -AllTargetIds $allMatrixTargetIds `
+  -TargetId $TargetId `
+  -Category $Category `
+  -ProductionRecommendedOnly ([bool]$ProductionRecommendedOnly) `
+  -RequireCoverageComplete ([bool]$RequireCoverageComplete)
+$bundleProofLevel = Get-BundleProofLevel `
+  -RequireCollectorSha256 ([bool]$RequireCollectorSha256) `
+  -RequireHostEvidenceWorkflowCollection ([bool]$RequireHostEvidenceWorkflowCollection) `
+  -RequireMinimumUptimeHours $RequireMinimumUptimeHours
 
 $hostEvidenceArgs = @{
   EvidencePath = $EvidencePath
@@ -1101,6 +1161,8 @@ $summaryNextJsModes = @(Get-UniqueManifestValues -Rows $manifestRows -PropertyNa
 $summaryServiceManagers = @(Get-UniqueManifestValues -Rows $manifestRows -PropertyName "serviceManager")
 $summaryReverseProxies = @(Get-UniqueManifestValues -Rows $manifestRows -PropertyName "reverseProxy")
 $summaryCollectors = @(Get-UniqueManifestValues -Rows $manifestRows -PropertyName "collector")
+$workflowCapableEvidenceCount = @($manifestRows | Where-Object { $_.workflowDispatchSupported -eq $true }).Count
+$localCommandOnlyEvidenceCount = @($manifestRows | Where-Object { $_.localCommandOnly -eq $true }).Count
 
 $manifest = [ordered]@{
   schemaVersion = 1
@@ -1122,6 +1184,25 @@ $manifest = [ordered]@{
   categories = @($Category)
   productionRecommendedOnly = [bool]$ProductionRecommendedOnly
   selectedTargets = $selectedTargetIds
+  supportScope = [ordered]@{
+    kind = $supportScopeKind
+    proofLevel = $bundleProofLevel
+    fullMatrix = [bool]($supportScopeKind -eq "full-matrix")
+    targetFiltersApplied = [bool]($TargetId.Count -gt 0 -or $Category.Count -gt 0)
+    productionRecommendedOnly = [bool]$ProductionRecommendedOnly
+    selectedTargetCount = $selectedTargetIds.Count
+    matrixTargetCount = $allMatrixTargetIds.Count
+    selectedTargets = $selectedTargetIds
+    includeServiceOnly = [bool]$IncludeServiceOnly
+    includeFallback = [bool]$IncludeFallback
+    supportClaimValidated = [bool]$ValidateSupportClaim
+    requireBothNextJsModes = [bool]$RequireBothNextJsModes
+    requireDeclaredServiceManagers = [bool]$RequireDeclaredServiceManagers
+    requireDeclaredReverseProxies = [bool]$RequireDeclaredReverseProxies
+    workflowCapableEvidenceCount = $workflowCapableEvidenceCount
+    localCommandOnlyEvidenceCount = $localCommandOnlyEvidenceCount
+    requiredMinimumUptimeHours = $RequireMinimumUptimeHours
+  }
   summary = [ordered]@{
     evidenceFileCount = $manifestFiles.Count
     targets = $summaryTargets
@@ -1177,6 +1258,24 @@ if ($SelfTest) {
     if ($selfTestTargets -notcontains $expectedTarget) {
       throw "Support evidence bundle self-test did not include selected target '$expectedTarget'."
     }
+  }
+  if (-not $manifestCheck.PSObject.Properties["supportScope"]) {
+    throw "Support evidence bundle self-test manifest is missing supportScope metadata."
+  }
+  if ([string]$manifestCheck.supportScope.kind -ne "filtered") {
+    throw "Support evidence bundle self-test supportScope.kind should be filtered."
+  }
+  if ([int]$manifestCheck.supportScope.selectedTargetCount -ne 2) {
+    throw "Support evidence bundle self-test supportScope selectedTargetCount is incorrect."
+  }
+  if ([int]$manifestCheck.supportScope.matrixTargetCount -le [int]$manifestCheck.supportScope.selectedTargetCount) {
+    throw "Support evidence bundle self-test supportScope did not preserve matrix target count."
+  }
+  if ([int]$manifestCheck.supportScope.workflowCapableEvidenceCount -ne 2) {
+    throw "Support evidence bundle self-test supportScope workflowCapableEvidenceCount is incorrect."
+  }
+  if ([int]$manifestCheck.supportScope.localCommandOnlyEvidenceCount -ne 0) {
+    throw "Support evidence bundle self-test supportScope localCommandOnlyEvidenceCount is incorrect."
   }
   foreach ($row in @($manifestCheck.files)) {
     foreach ($requiredWorkflowDispatchProperty in @(

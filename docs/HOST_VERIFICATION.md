@@ -281,7 +281,10 @@ bundle, and writes release readiness JSON. The generated
 `release-readiness.json` preserves the covered and missing coverage rows with
 their local collection, local-command-only flag, workflow dispatch, and
 single-row validation commands so the final handoff can reproduce every claimed
-support tuple:
+support tuple. The wrapper output and `-PassThru` result also surface the
+readiness review `supportScope` and the saved bundle's `bundleSupportScope`, so
+the one-command handoff states whether the result is full-matrix, filtered, or
+production-runtime-only:
 
 ```powershell
 .\scripts\dev\Invoke-SupportEvidenceReleaseWorkflow.ps1 `
@@ -295,7 +298,44 @@ support tuple:
 
 Use `-StrictCiRelease` only for final CI-controlled release signoff from a
 clean committed revision. Strict release signoff refuses `-AllowWarnings`;
-final support evidence must be warning-clean.
+final support evidence must be warning-clean. Add
+`-RequireFinalFullMatrixReleaseClaim` when the release command must fail unless
+the readiness JSON proves `releaseClaim.finalFullMatrixReleaseClaim: true`;
+that switch requires `-StrictCiRelease`.
+
+For a CI-enforced final gate, first dispatch
+`.github/workflows/support-evidence-bundle.yml` on a self-hosted runner that can
+read the private evidence workspace. It validates inputs with
+`scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1`, runs the strict
+release workflow, and uploads only the private bundle zip as the
+`support-evidence` artifact by default. Leave `artifact_path` empty when the
+self-hosted runner already has canonical `evidence/`; set it only when the
+workflow should import downloaded `host-evidence` artifacts before bundling.
+Then dispatch
+`.github/workflows/release-evidence.yml` with that source run ID and artifact
+name. The verifier workflow validates dispatch inputs with
+`scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1`, downloads that artifact,
+locates the evidence zip with `scripts/dev/Resolve-ReleaseEvidenceBundle.ps1`,
+and runs `Test-ReleaseSupportReadiness.ps1` with
+`-StrictCiRelease -RequireFinalFullMatrixReleaseClaim`, keeps the detailed
+`release-readiness.json` only inside the job workspace, does not re-upload the
+private evidence bundle, and uploads only the redacted
+`release-readiness-summary.json` result. The summary artifact and workflow
+summary include only safe provenance fields such as `sourceControl.commitSha`
+and `bundleCi.workflowName`, so reviewers can match the final claim to the
+source revision and bundle-producing CI run without exposing raw host evidence.
+They intentionally avoid raw coverage rows, collection commands,
+workflow-dispatch commands, and bundle paths.
+The redacted summary is produced by
+`scripts/dev/New-ReleaseReadinessSummary.ps1`; its self-test verifies that the
+summary preserves aggregate proof/provenance while excluding detailed evidence
+rows and machine-specific paths.
+`scripts/dev/Write-ReleaseReadinessStepSummary.ps1` writes the GitHub step
+summary from that redacted summary only, so reviewer-facing Markdown does not
+read the detailed readiness JSON.
+The bundle resolver self-test verifies the single-zip default path, explicit
+bundle filenames, missing bundles, multiple bundles, and unsafe filename
+rejections.
 
 Create a private evidence bundle for the release record after validation:
 
@@ -336,6 +376,10 @@ file, so workflow-collected evidence keeps its collection run identity after
 bundling. Each manifest row also records the collection workflow dispatch
 evidence name, expected target, Next.js mode, service manager, reverse proxy,
 minimum uptime, and whether those values match the archived support row.
+The manifest also records top-level `supportScope` metadata, including scope
+kind, proof level, selected-vs-matrix target counts, workflow-capable evidence
+counts, and local-command-only evidence counts; the bundle verifier recalculates
+those values from the manifest rows and current support matrix.
 Bundle switches that require target-aware support-claim logic, such as
 `-RequireHostEvidenceWorkflowCollection`, must be used with
 `-ValidateSupportClaim`.
@@ -355,13 +399,18 @@ support claim:
   -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip `
   -IncludeServiceOnly `
   -IncludeFallback `
-  -StrictCiRelease
+  -StrictCiRelease `
+  -RequireFinalFullMatrixReleaseClaim
 ```
 
 Readiness output includes `supportScope.kind`, `supportScope.proofLevel`,
-selected target counts, workflow-capable evidence counts, and local-command-only
-evidence counts. Treat `Ready: True` as valid only for that stated scope: a
-filtered or production-runtime-only result is not a full-matrix release claim.
+selected target counts, workflow-capable evidence counts, local-command-only
+evidence counts, and `releaseClaim.kind` for the active readiness review. It
+also preserves the saved bundle's original `bundleSupportScope`. Treat
+`Ready: True` as valid only for the stated review scope:
+`releaseClaim.finalFullMatrixReleaseClaim` must be `true` before using the
+result as a final full-matrix release claim. A filtered, provisional, or
+production-runtime-only result is not a full-matrix release claim.
 
 The verifier recalculates every evidence file hash, checks manifest byte sizes,
 proves manifest fields still match the JSON content, verifies live collector

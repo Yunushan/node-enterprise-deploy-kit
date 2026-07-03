@@ -15,6 +15,7 @@ param(
   [switch]$AllowLocalCollection,
   [switch]$Force,
   [switch]$StrictCiRelease,
+  [switch]$RequireFinalFullMatrixReleaseClaim,
   [switch]$PassThru,
   [switch]$SelfTest
 )
@@ -43,6 +44,10 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
 
 if ($StrictCiRelease -and $AllowWarnings) {
   throw "-StrictCiRelease cannot be combined with -AllowWarnings; final release evidence must be warning-clean."
+}
+
+if ($RequireFinalFullMatrixReleaseClaim -and -not $StrictCiRelease) {
+  throw "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease; final full-matrix signoff must use strict CI release checks."
 }
 
 function Write-Step {
@@ -265,6 +270,21 @@ function Invoke-SelfTest {
   if ([string]$result.coveragePercentDisplay -ne "100.00%") {
     throw "Support evidence release workflow self-test failed: release result did not include formatted coverage percent."
   }
+  if (-not $result.PSObject.Properties["supportScope"] -or [string]$result.supportScope.kind -ne "full-matrix") {
+    throw "Support evidence release workflow self-test failed: release result did not preserve readiness supportScope."
+  }
+  if (-not $result.PSObject.Properties["bundleSupportScope"] -or [string]$result.bundleSupportScope.kind -ne "full-matrix") {
+    throw "Support evidence release workflow self-test failed: release result did not preserve bundleSupportScope."
+  }
+  if ([string]$result.supportScope.proofLevel -ne "basic-real-host-evidence") {
+    throw "Support evidence release workflow self-test failed: release result did not preserve readiness proof level."
+  }
+  if (-not $result.PSObject.Properties["releaseClaim"] -or [string]$result.releaseClaim.kind -ne "provisional-full-matrix") {
+    throw "Support evidence release workflow self-test failed: release result did not preserve readiness releaseClaim metadata."
+  }
+  if ($result.releaseClaim.finalFullMatrixReleaseClaim -ne $false) {
+    throw "Support evidence release workflow self-test failed: provisional release workflow must not report a final full-matrix release claim."
+  }
 
   $filteredArgs = $scriptArgs.Clone()
   $filteredArgs.OutputDirectory = Join-Path $selfTestRoot "filtered-release-output"
@@ -287,6 +307,16 @@ function Invoke-SelfTest {
   if ($filteredReadinessTargets.Count -ne 1 -or [string]$filteredReadinessTargets[0] -ne "ubuntu") {
     throw "Support evidence release workflow self-test failed: filtered readiness report did not stay scoped to ubuntu."
   }
+  $filteredResultTargets = @($filteredResult.supportScope.selectedTargets)
+  if ($filteredResultTargets.Count -ne 1 -or [string]$filteredResultTargets[0] -ne "ubuntu") {
+    throw "Support evidence release workflow self-test failed: filtered release result did not preserve scoped readiness targets."
+  }
+  if ([string]$filteredResult.bundleSupportScope.kind -ne "filtered") {
+    throw "Support evidence release workflow self-test failed: filtered release result did not preserve the saved bundle scope."
+  }
+  if ([string]$filteredResult.releaseClaim.kind -ne "provisional-filtered") {
+    throw "Support evidence release workflow self-test failed: filtered release result did not preserve the release claim scope."
+  }
 
   $strictAllowWarningsArgs = $scriptArgs.Clone()
   $strictAllowWarningsArgs.OutputDirectory = Join-Path $selfTestRoot "strict-allow-warnings-output"
@@ -296,6 +326,14 @@ function Invoke-SelfTest {
   $strictAllowWarningsArgs.AllowWarnings = $true
   Invoke-ExpectReleaseWorkflowFailure -ExpectedMessage "-StrictCiRelease cannot be combined with -AllowWarnings" -Action {
     & $PSCommandPath @strictAllowWarningsArgs | Out-Null
+  }
+
+  $requireFinalArgs = $scriptArgs.Clone()
+  $requireFinalArgs.OutputDirectory = Join-Path $selfTestRoot "require-final-output"
+  $requireFinalArgs.BundleName = "selftest-require-final-evidence"
+  $requireFinalArgs.RequireFinalFullMatrixReleaseClaim = $true
+  Invoke-ExpectReleaseWorkflowFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease" -Action {
+    & $PSCommandPath @requireFinalArgs | Out-Null
   }
 
   $strictFailureArgs = $scriptArgs.Clone()
@@ -410,6 +448,7 @@ Invoke-Step "Release support readiness" {
   if ($IncludeFallback) { $readinessArgs.IncludeFallback = $true }
   if ($AllowWarnings) { $readinessArgs.AllowWarnings = $true }
   if ($StrictCiRelease) { $readinessArgs.StrictCiRelease = $true }
+  if ($RequireFinalFullMatrixReleaseClaim) { $readinessArgs.RequireFinalFullMatrixReleaseClaim = $true }
   & (Join-Path $ScriptDir "Test-ReleaseSupportReadiness.ps1") @readinessArgs | Out-Null
 }
 
@@ -432,6 +471,10 @@ $result = [pscustomobject]@{
   productionRecommendedOnly = [bool]$ProductionRecommendedOnly
   requireProductionRecommendedRuntime = [bool]$RequireProductionRecommendedRuntime
   strictCiRelease = [bool]$StrictCiRelease
+  requireFinalFullMatrixReleaseClaim = [bool]$RequireFinalFullMatrixReleaseClaim
+  releaseClaim = $readiness.releaseClaim
+  supportScope = $readiness.supportScope
+  bundleSupportScope = $readiness.bundleSupportScope
 }
 
 if ($PassThru) {
@@ -441,6 +484,12 @@ if ($PassThru) {
   Write-Host "Release evidence workflow complete."
   Write-Host "Ready: $($result.ready)"
   Write-Host "Coverage percent: $($result.coveragePercentDisplay)"
+  Write-Host "Release claim: $($result.releaseClaim.kind)"
+  Write-Host "Review scope: $($result.supportScope.kind)"
+  Write-Host "Review proof level: $($result.supportScope.proofLevel)"
+  Write-Host "Review selected targets: $($result.supportScope.selectedTargetCount) of $($result.supportScope.matrixTargetCount)"
+  Write-Host "Bundle scope: $($result.bundleSupportScope.kind)"
+  Write-Host "Bundle proof level: $($result.bundleSupportScope.proofLevel)"
   Write-Host "Coverage report: $($result.coverageMarkdown)"
   Write-Host "Bundle: $($result.bundleZip)"
   Write-Host "Readiness: $($result.readinessJson)"
