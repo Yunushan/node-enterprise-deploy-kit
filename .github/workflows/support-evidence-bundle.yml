@@ -24,9 +24,14 @@ on:
         required: true
         default: support-evidence
       bundle_artifact_name:
-        description: GitHub Actions artifact name to upload for the release-evidence verifier workflow
+        description: GitHub Actions artifact name for the private bundle zip when upload_private_bundle is enabled
         required: true
         default: support-evidence
+      upload_private_bundle:
+        description: Upload the full private evidence bundle zip as a GitHub Actions artifact; keep false for public or broadly readable repos
+        required: true
+        type: boolean
+        default: false
       include_service_only:
         description: Include ReverseProxy=none evidence rows in the bundle and readiness gate
         required: true
@@ -58,7 +63,7 @@ on:
         type: boolean
         default: false
       upload_retention_days:
-        description: Private bundle artifact retention days
+        description: Uploaded artifact retention days
         required: true
         default: "7"
 
@@ -88,6 +93,7 @@ jobs:
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
           STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+          UPLOAD_PRIVATE_BUNDLE: ${{ inputs.upload_private_bundle }}
           UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
         run: ./scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1
 
@@ -117,6 +123,7 @@ jobs:
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
           STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+          UPLOAD_PRIVATE_BUNDLE: ${{ inputs.upload_private_bundle }}
           UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
         run: ./scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1
 
@@ -133,6 +140,7 @@ jobs:
           OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
+          UPLOAD_PRIVATE_BUNDLE: ${{ inputs.upload_private_bundle }}
         run: |
           $ErrorActionPreference = "Stop"
           $releaseArgs = @(
@@ -169,7 +177,41 @@ jobs:
             throw "Expected support evidence bundle was not created."
           }
 
+          $readinessPath = Join-Path $env:OUTPUT_DIRECTORY "release-readiness.json"
+          if (-not (Test-Path -LiteralPath $readinessPath -PathType Leaf)) {
+            throw "Expected release readiness JSON was not created."
+          }
+
+          $summaryPath = Join-Path $env:OUTPUT_DIRECTORY "release-readiness-summary.json"
+          if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+            throw "Expected redacted release readiness summary JSON was not created."
+          }
+          if ($env:REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM -eq "true") {
+            & ./scripts/dev/Write-ReleaseReadinessStepSummary.ps1 `
+              -InputPath $summaryPath `
+              -OutputPath $env:GITHUB_STEP_SUMMARY
+          } else {
+            "Release readiness summary generated; final full-matrix step summary omitted because require_final_full_matrix_release_claim=false." |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+          }
+          if ($env:UPLOAD_PRIVATE_BUNDLE -eq "true") {
+            "Private support evidence bundle upload is enabled for a separate release-evidence verifier run." |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+          } else {
+            "Private support evidence bundle upload is disabled; this self-hosted run is the final CI gate and release-evidence.yml cannot download a bundle from it." |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+          }
+
+      - name: Upload redacted release readiness summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness
+          path: ${{ inputs.output_directory }}/release-readiness-summary.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.upload_retention_days }}
+
       - name: Upload private support evidence bundle
+        if: ${{ inputs.upload_private_bundle }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.bundle_artifact_name }}

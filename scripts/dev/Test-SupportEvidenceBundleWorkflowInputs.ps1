@@ -5,6 +5,7 @@ param(
   [string]$OutputDirectory = $env:OUTPUT_DIRECTORY,
   [string]$BundleName = $env:BUNDLE_NAME,
   [string]$BundleArtifactName = $env:BUNDLE_ARTIFACT_NAME,
+  [string]$UploadPrivateBundle = $env:UPLOAD_PRIVATE_BUNDLE,
   [string]$IncludeServiceOnly = $env:INCLUDE_SERVICE_ONLY,
   [string]$IncludeFallback = $env:INCLUDE_FALLBACK,
   [string]$StrictCiRelease = $env:STRICT_CI_RELEASE,
@@ -139,6 +140,7 @@ function Invoke-SupportEvidenceBundleWorkflowInputValidation {
     [string]$OutputDirectory,
     [string]$BundleName,
     [string]$BundleArtifactName,
+    [string]$UploadPrivateBundle,
     [string]$IncludeServiceOnly,
     [string]$IncludeFallback,
     [string]$StrictCiRelease,
@@ -155,6 +157,7 @@ function Invoke-SupportEvidenceBundleWorkflowInputValidation {
   Assert-SafeSimpleName -Value $BundleName -DisplayName "bundle_name" -RejectZipExtension
   Assert-SafeSimpleName -Value $BundleArtifactName -DisplayName "bundle_artifact_name"
 
+  Assert-WorkflowBoolean -Value $UploadPrivateBundle -DisplayName "upload_private_bundle"
   Assert-WorkflowBoolean -Value $IncludeServiceOnly -DisplayName "include_service_only"
   Assert-WorkflowBoolean -Value $IncludeFallback -DisplayName "include_fallback"
   Assert-WorkflowBoolean -Value $StrictCiRelease -DisplayName "strict_ci_release"
@@ -207,6 +210,7 @@ function Invoke-SelfTest {
     OutputDirectory = "release-evidence"
     BundleName = "support-evidence"
     BundleArtifactName = "support-evidence"
+    UploadPrivateBundle = "false"
     IncludeServiceOnly = "true"
     IncludeFallback = "true"
     StrictCiRelease = "true"
@@ -261,6 +265,11 @@ function Invoke-SelfTest {
     $case.BundleArtifactName = "support evidence"
     Invoke-SupportEvidenceBundleWorkflowInputValidation @case
   }
+  Invoke-ExpectValidationFailure -Name "bad private upload boolean" -ExpectedMessage "upload_private_bundle must be true or false" -Action {
+    $case = $base.Clone()
+    $case.UploadPrivateBundle = "yes"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
   Invoke-ExpectValidationFailure -Name "bad boolean" -ExpectedMessage "include_fallback must be true or false" -Action {
     $case = $base.Clone()
     $case.IncludeFallback = "yes"
@@ -292,6 +301,7 @@ Invoke-SupportEvidenceBundleWorkflowInputValidation `
   -OutputDirectory $OutputDirectory `
   -BundleName $BundleName `
   -BundleArtifactName $BundleArtifactName `
+  -UploadPrivateBundle $UploadPrivateBundle `
   -IncludeServiceOnly $IncludeServiceOnly `
   -IncludeFallback $IncludeFallback `
   -StrictCiRelease $StrictCiRelease `

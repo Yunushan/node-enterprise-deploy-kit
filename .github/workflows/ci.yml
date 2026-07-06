@@ -7,6 +7,7 @@ on:
 jobs:
   basic-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install CI tooling
@@ -22,14 +23,37 @@ jobs:
           ansible-galaxy collection list ansible.windows
       - name: Repository verification
         shell: pwsh
-        run: ./scripts/dev/Test-Repository.ps1
+        run: ./scripts/dev/Test-Repository.ps1 -SkipReleaseEvidenceSelfTests
       - name: ShellCheck
         shell: bash
         run: bash scripts/dev/lint-shellcheck.sh
 
+  release-evidence-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Release evidence self-tests
+        shell: pwsh
+        run: |
+          ./scripts/dev/New-SupportEvidenceCollectionPack.ps1 -SelfTest
+          ./scripts/dev/New-SupportEvidenceBundle.ps1 -SelfTest
+          ./scripts/dev/New-SupportEvidenceBundle.ps1 `
+            -SelfTest `
+            -ValidateSupportClaim `
+            -RequireCollectorSha256 `
+            -RequireMinimumUptimeHours 72 `
+            -RequireHostEvidenceWorkflowCollection
+          ./scripts/dev/Test-SupportEvidenceBundle.ps1 -SelfTest
+          ./scripts/dev/Test-SupportEvidenceCoverage.ps1 -SelfTest
+          ./scripts/dev/Import-HostEvidenceArtifacts.ps1 -SelfTest
+          ./scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1 -SelfTest
+          ./scripts/dev/Test-ReleaseSupportReadiness.ps1 -SelfTest
+
   windows-checks:
     name: windows-checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -40,10 +64,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Windows repository verification
         shell: pwsh
-        run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax
+        run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax -SkipReleaseEvidenceSelfTests
 
   linux-family-static-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +97,7 @@ jobs:
   linux-container-smoke:
     name: linux-container-smoke (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -96,6 +122,7 @@ jobs:
 
   macos-checks:
     runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: macOS Unix/Next.js verification

@@ -64,6 +64,10 @@ Temel hedefler:
 ```
 
 Bu komut örnek konfigürasyonları, Markdown bağlantılarını, Ansible template ayraçlarını, render edilen token dosyalarını, Ansible syntax kontrolünü ve gizli bilgi taramasını çalıştırır.
+Normal push/PR CI, Windows ve Ubuntu repo kontrollerini hızlı tutmak için
+`Test-Repository.ps1 -SkipReleaseEvidenceSelfTests` kullanır. Ağır support
+evidence bundle, coverage, import, release workflow ve release readiness
+self-testleri ayrı `release-evidence-checks` job'ında bir kez çalışır.
 
 Markdown bağlantılarını tek başına kontrol etmek için:
 
@@ -93,9 +97,15 @@ anlamına gelmez. `supportScope.kind`, `supportScope.proofLevel`,
 `releaseClaim.kind`, seçili hedef sayısı ve local-command-only evidence
 sayıları aktif readiness inceleme kapsamını gösterir; `bundleSupportScope` ise
 kaydedilmiş bundle'ın orijinal kapsamını korur.
-`releaseClaim.finalFullMatrixReleaseClaim` değeri `true` değilse sonuç final
-tam matris release iddiası değildir; filtrelenmiş, provisional veya yalnızca
-üretim-runtime kapsamındaki sonuçlar tam matris iddiası olarak kullanılmamalıdır.
+`releaseClaim.requirements` final iddianin guvenli kontrol listesini saklar:
+tam matris kapsami, strict CI release modu, warning-clean evidence, eksiksiz
+coverage, workflow applicability metadata, runtime support metadata,
+provenance zorunluluklari, collector SHA256, runtime version zorunlulugu ve
+minimum uptime.
+`releaseClaim.finalFullMatrixReleaseClaim`
+değeri `true` değilse sonuç final tam matris release iddiası değildir;
+filtrelenmiş, provisional, yalnızca üretim-runtime kapsamındaki veya coverage'i
+eksik sonuçlar tam matris iddiası olarak kullanılmamalıdır.
 Final tam matris release kapısında komutun hata vermesini istiyorsanız
 `-StrictCiRelease` ile birlikte `-RequireFinalFullMatrixReleaseClaim` kullanın;
 bu switch `-StrictCiRelease` gerektirir.
@@ -104,11 +114,18 @@ okuyabilen self-hosted runner uzerinde
 `.github/workflows/support-evidence-bundle.yml` workflow'unu çalıştırın. Bu
 workflow dispatch input'larını
 `scripts/dev/Test-SupportEvidenceBundleWorkflowInputs.ps1` ile doğrular, strict
-release workflow'u çalıştırır ve varsayılan olarak yalnızca private bundle zip
-dosyasını `support-evidence` artifact'ı olarak yükler. Self-hosted runner'da
-canonical `evidence/` zaten hazirsa `artifact_path` bos bırakılmalıdır; workflow
-download edilmiş `host-evidence` artifact'larını bundling oncesi import edecekse
-bu input set edilmelidir. Sonra bu source run ID ve
+release workflow'u çalıştırır, reviewer'a görünen GitHub step summary çıktısını
+yazar ve varsayılan olarak yalnızca redacted
+`release-readiness-summary.json` artifact'ını yükler. Private bundle zip dosyası
+ancak `upload_private_bundle` explicit olarak `true` yapılırsa yüklenir; public
+veya geniş erişimli repository'lerde bu input `false` kalmalıdır. Self-hosted
+runner'da canonical `evidence/` zaten hazirsa `artifact_path` bos
+bırakılmalıdır; workflow download edilmiş `host-evidence` artifact'larını
+bundling oncesi import edecekse bu input set edilmelidir. Varsayılan
+`upload_private_bundle=false` iken bu self-hosted run final CI gate kabul
+edilir ve `release-evidence.yml` bu run'dan bundle indiremez. Ayrı
+GitHub-hosted verifier run gerekiyorsa `upload_private_bundle`
+etkinleştirildikten sonra bu source run ID ve
 artifact adıyla `.github/workflows/release-evidence.yml` workflow'unu
 çalıştırın; verifier workflow dispatch input'larını
 `scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1` ile doğrular, evidence zip
@@ -119,7 +136,11 @@ ve artifact olarak sadece redacted
 `release-readiness-summary.json` çıktısını yükler. Summary artifact ve workflow
 summary, raw host evidence paylaşmadan final iddianın hangi kaynak revizyonu ve
 bundle üreten CI run'ı ile eşleştiğini göstermek için sadece
-`sourceControl.commitSha` ve `bundleCi.workflowName` gibi güvenli provenance
+`releaseClaim.requirements`, `supportScope.workflowCapableEvidenceCount`,
+`supportScope.localCommandOnlyEvidenceCount`,
+`coverage.productionRecommendedRuntimeEvidenceCount`,
+`coverage.runtimeSupportTiers`, `sourceControl.commitSha` ve
+`bundleCi.workflowName` gibi guvenli claim/provenance ve aggregate count
 alanlarını içerir. Raw coverage satırlarını, collection komutlarını,
 workflow-dispatch komutlarını ve bundle path'lerini özellikle yazmaz.
 Redacted summary, `scripts/dev/New-ReleaseReadinessSummary.ps1` tarafından

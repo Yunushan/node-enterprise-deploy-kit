@@ -1,6 +1,7 @@
 param(
   [switch]$SkipShellSyntax,
-  [switch]$SkipGitDiffCheck
+  [switch]$SkipGitDiffCheck,
+  [switch]$SkipReleaseEvidenceSelfTests
 )
 
 Set-StrictMode -Version Latest
@@ -324,6 +325,17 @@ function Test-GeneratedPrivateOutputNotTracked {
     if ($LASTEXITCODE -ne 0) {
       throw "git ls-files failed while checking generated/private output tracking."
     }
+
+    $ignoreProbePaths = @($blockedRoots | ForEach-Object { "$_/private-output.probe" })
+    $missingIgnoreRules = New-Object System.Collections.Generic.List[string]
+    foreach ($probePath in $ignoreProbePaths) {
+      & $git.Source check-ignore -q -- $probePath
+      if ($LASTEXITCODE -eq 1) {
+        $missingIgnoreRules.Add($probePath) | Out-Null
+      } elseif ($LASTEXITCODE -ne 0) {
+        throw "git check-ignore failed while checking generated/private output ignore rules."
+      }
+    }
   }
   finally {
     Pop-Location
@@ -333,6 +345,12 @@ function Test-GeneratedPrivateOutputNotTracked {
     Write-Host "Generated/private output paths are tracked by git:"
     $tracked | ForEach-Object { Write-Host "  $_" }
     throw "Generated/private output tracking check failed."
+  }
+
+  if ($missingIgnoreRules.Count -gt 0) {
+    Write-Host "Generated/private output paths are not git-ignored:"
+    $missingIgnoreRules | ForEach-Object { Write-Host "  $_" }
+    throw "Generated/private output ignore check failed."
   }
 
   Write-Host "Generated/private output tracking OK"
@@ -408,6 +426,21 @@ function Test-ReleaseSupportReadinessSelfTest {
   & (Join-Path $ScriptDir "Test-ReleaseSupportReadiness.ps1") -SelfTest
 }
 
+function Test-HeavyReleaseEvidenceSelfTests {
+  if ($SkipReleaseEvidenceSelfTests) {
+    Write-Host "Skipping heavy release evidence self-tests."
+    return
+  }
+
+  Test-SupportEvidenceCollectionPackSelfTest
+  Test-SupportEvidenceBundleSelfTest
+  Test-SupportEvidenceBundleVerifierSelfTest
+  Test-SupportEvidenceCoverageSelfTest
+  Test-HostEvidenceArtifactImportSelfTest
+  Test-SupportEvidenceReleaseWorkflowSelfTest
+  Test-ReleaseSupportReadinessSelfTest
+}
+
 function Test-DocsConsistency {
   & (Join-Path $ScriptDir "Test-DocsConsistency.ps1")
 }
@@ -435,13 +468,7 @@ Test-ReleaseEvidenceWorkflow
 Test-ReleaseReadinessSummarySelfTest
 Test-SupportClaimSelfTest
 Test-SupportEvidencePlanSelfTest
-Test-SupportEvidenceCollectionPackSelfTest
-Test-SupportEvidenceBundleSelfTest
-Test-SupportEvidenceBundleVerifierSelfTest
-Test-SupportEvidenceCoverageSelfTest
-Test-HostEvidenceArtifactImportSelfTest
-Test-SupportEvidenceReleaseWorkflowSelfTest
-Test-ReleaseSupportReadinessSelfTest
+Test-HeavyReleaseEvidenceSelfTests
 Test-DocsConsistency
 Test-NoObviousSecrets
 Test-GitDiffCheck

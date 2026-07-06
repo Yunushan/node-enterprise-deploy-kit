@@ -709,6 +709,24 @@ if ($SelfTest) {
     -AllowReverseProxyNone | Out-Null
 
   $BundlePath = Join-Path $bundleOutput "selftest-release-support-readiness.zip"
+  $strictOnlyEvidencePath = Join-Path $selfTestRoot "strict-only-evidence"
+  New-Item -ItemType Directory -Force -Path $strictOnlyEvidencePath | Out-Null
+  Get-ChildItem -LiteralPath $evidencePath -Filter "*.json" -File |
+    Where-Object { $_.Name -notlike "service-only-*" -and $_.Name -notlike "fallback-*" } |
+    Copy-Item -Destination $strictOnlyEvidencePath
+  $strictOnlyBundleOutput = Join-Path $selfTestRoot "strict-only-bundles"
+  & (Join-Path $ScriptDir "New-SupportEvidenceBundle.ps1") `
+    -EvidencePath $strictOnlyEvidencePath `
+    -MatrixPath $MatrixPath `
+    -TargetId $selfTestTargetIds `
+    -OutputDirectory $strictOnlyBundleOutput `
+    -BundleName "selftest-release-support-readiness-strict-only" `
+    -ValidateSupportClaim `
+    -RequireBothNextJsModes `
+    -RequireDeclaredServiceManagers `
+    -RequireDeclaredReverseProxies `
+    -RequireCoverageComplete | Out-Null
+  $strictOnlyBundlePath = Join-Path $strictOnlyBundleOutput "selftest-release-support-readiness-strict-only.zip"
   $MaxEvidenceAgeDays = 30
   $selfTestRequiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Path $MatrixPath
 
@@ -777,6 +795,18 @@ if ($SelfTest) {
   if ($readinessJson.releaseClaim.finalFullMatrixReleaseClaim -ne $false) {
     throw "Release support readiness self-test failed: filtered provisional evidence must not be a final full-matrix release claim."
   }
+  if (-not $readinessJson.releaseClaim.PSObject.Properties["requirements"]) {
+    throw "Release support readiness self-test failed: releaseClaim requirements are missing."
+  }
+  if ($readinessJson.releaseClaim.requirements.coverageComplete -ne $true -or $readinessJson.releaseClaim.requirements.fullMatrixScope -ne $false) {
+    throw "Release support readiness self-test failed: releaseClaim requirements do not explain filtered readiness."
+  }
+  if ($readinessJson.releaseClaim.requirements.workflowApplicabilityKnown -ne $true) {
+    throw "Release support readiness self-test failed: releaseClaim requirements did not record workflow applicability."
+  }
+  if ($readinessJson.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $true) {
+    throw "Release support readiness self-test failed: releaseClaim requirements did not record runtime support metadata."
+  }
   if (-not $readinessJson.PSObject.Properties["sourceControl"] -or -not ([string]$readinessJson.sourceControl.commitSha)) {
     throw "Release support readiness self-test failed: readiness JSON is missing sourceControl provenance."
   }
@@ -797,6 +827,9 @@ if ($SelfTest) {
   }
   if ([int]$readinessJson.bundle.collectionWorkflowDispatchMatchCount -le 0 -or [int]$readinessJson.bundle.collectionWorkflowDispatchMismatchCount -ne 0) {
     throw "Release support readiness self-test failed: readiness JSON did not preserve matching workflow dispatch manifest metadata."
+  }
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Support evidence coverage" -Action {
+    Invoke-SelfTestReadiness -BundlePath $strictOnlyBundlePath -IncludeServiceOnly -IncludeFallback
   }
 
   $matrixMismatchRoot = Join-Path $selfTestRoot "matrix-mismatch"
@@ -940,6 +973,19 @@ if ($SelfTest) {
   }
   Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireRuntimeVersions
 
+  $missingRuntimeSupportMetadataRoot = Join-Path $selfTestRoot "missing-runtime-support-metadata"
+  New-Item -ItemType Directory -Force -Path $missingRuntimeSupportMetadataRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $missingRuntimeSupportMetadataRoot -Force
+  $missingRuntimeSupportMetadataManifestPath = Join-Path $missingRuntimeSupportMetadataRoot "support-evidence-manifest.json"
+  $missingRuntimeSupportMetadataManifest = Get-Content -LiteralPath $missingRuntimeSupportMetadataManifestPath -Raw | ConvertFrom-Json
+  $missingRuntimeSupportMetadataRow = @($missingRuntimeSupportMetadataManifest.files | Select-Object -First 1)[0]
+  Add-OrSetNoteProperty -Object $missingRuntimeSupportMetadataRow -Name "nodeRuntimeSupportTier" -Value ""
+  Add-OrSetNoteProperty -Object $missingRuntimeSupportMetadataRow -Name "nodeRuntimeProductionRecommended" -Value $null
+  ($missingRuntimeSupportMetadataManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $missingRuntimeSupportMetadataManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "nodeRuntimeSupportTier manifest mismatch" -Action {
+    Invoke-SelfTestReadiness -BundlePath $missingRuntimeSupportMetadataRoot -IncludeServiceOnly -IncludeFallback -StrictCiRelease
+  }
+
   $missingCollectorDigestRoot = Join-Path $selfTestRoot "missing-collector-digest"
   New-Item -ItemType Directory -Force -Path $missingCollectorDigestRoot | Out-Null
   Expand-Archive -LiteralPath $BundlePath -DestinationPath $missingCollectorDigestRoot -Force
@@ -1052,6 +1098,23 @@ if ($SelfTest) {
   }
   if ($strictCompleteReadiness.releaseClaim.finalFullMatrixReleaseClaim -ne $false) {
     throw "Release support readiness self-test failed: filtered strict evidence must not be a final full-matrix release claim."
+  }
+  if ($strictCompleteReadiness.releaseClaim.requirements.fullMatrixScope -ne $false -or
+    $strictCompleteReadiness.releaseClaim.requirements.strictCiRelease -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.warningClean -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.coverageComplete -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.workflowApplicabilityKnown -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.sourceCleanRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.currentCommitRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.ciProvenanceRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.collectionCiProvenanceRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.collectionSourceCommitRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.hostEvidenceWorkflowCollectionRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.runtimeVersionsRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.collectorSha256Required -ne $true -or
+    [int]$strictCompleteReadiness.releaseClaim.requirements.minimumUptimeHoursRequired -lt $selfTestRequiredMinimumUptimeHours) {
+    throw "Release support readiness self-test failed: strict filtered readiness did not preserve the expected releaseClaim requirements."
   }
   Write-Host "Release support readiness self-test OK"
   return
@@ -1251,6 +1314,9 @@ try {
   if ($RequireRuntimeVersions -and ($runtimeVersionMissingCount -gt 0 -or $runtimeVersionUnsafeCount -gt 0)) {
     throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js, minimum Node.js, compatible Node.js, or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
   }
+  if ($StrictCiRelease -and $runtimeSupportMetadataMissingCount -gt 0) {
+    throw "Runtime support metadata is required for -StrictCiRelease. Missing runtime support metadata on $runtimeSupportMetadataMissingCount evidence file(s)."
+  }
   if ($RequireCollectorSha256 -and ($collectorSha256MissingCount -gt 0 -or $collectorSha256UnsafeCount -gt 0)) {
     throw "Collector SHA256 evidence is required for -RequireCollectorSha256. Missing collector SHA256 on $collectorSha256MissingCount evidence file(s); unsafe collector SHA256 on $collectorSha256UnsafeCount evidence file(s)."
   }
@@ -1303,8 +1369,44 @@ try {
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") @coverageArgs | Out-Null
   $coverage = Get-Content -LiteralPath $coverageJson -Raw | ConvertFrom-Json
   Remove-Item -LiteralPath $coverageJson -Force -ErrorAction SilentlyContinue
+  if ([int]$coverage.summary.missingCount -gt 0) {
+    throw "Support evidence coverage is incomplete for release readiness. Missing evidence rows: $($coverage.summary.missingCount). Review coverage before using this bundle for a release claim."
+  }
   $releaseClaimKind = Get-ReleaseClaimKind -ScopeKind $supportScopeKind -StrictCiRelease ([bool]$StrictCiRelease)
-  $finalFullMatrixReleaseClaim = [bool]($supportScopeKind -eq "full-matrix" -and $StrictCiRelease -and -not $AllowWarnings)
+  $releaseClaimRequirements = [pscustomobject]@{
+    fullMatrixScope = [bool]($supportScopeKind -eq "full-matrix")
+    strictCiRelease = [bool]$StrictCiRelease
+    warningClean = [bool](-not $AllowWarnings)
+    coverageComplete = [bool]([int]$coverage.summary.missingCount -eq 0)
+    workflowApplicabilityKnown = [bool]($workflowApplicabilityMissingCount -eq 0)
+    runtimeSupportMetadataKnown = [bool]($runtimeSupportMetadataMissingCount -eq 0)
+    sourceCleanRequired = [bool]$RequireCleanSource
+    currentCommitRequired = [bool]$RequireCurrentCommit
+    ciProvenanceRequired = [bool]$RequireCiProvenance
+    collectionCiProvenanceRequired = [bool]$RequireCollectionCiProvenance
+    collectionSourceCommitRequired = [bool]$RequireCollectionSourceCommit
+    hostEvidenceWorkflowCollectionRequired = [bool]$RequireHostEvidenceWorkflowCollection
+    runtimeVersionsRequired = [bool]$RequireRuntimeVersions
+    collectorSha256Required = [bool]$RequireCollectorSha256
+    minimumUptimeHoursRequired = [int]$RequireMinimumUptimeHours
+  }
+  $finalFullMatrixReleaseClaim = [bool](
+    $releaseClaimRequirements.fullMatrixScope -and
+    $releaseClaimRequirements.strictCiRelease -and
+    $releaseClaimRequirements.warningClean -and
+    $releaseClaimRequirements.coverageComplete -and
+    $releaseClaimRequirements.workflowApplicabilityKnown -and
+    $releaseClaimRequirements.runtimeSupportMetadataKnown -and
+    $releaseClaimRequirements.sourceCleanRequired -and
+    $releaseClaimRequirements.currentCommitRequired -and
+    $releaseClaimRequirements.ciProvenanceRequired -and
+    $releaseClaimRequirements.collectionCiProvenanceRequired -and
+    $releaseClaimRequirements.collectionSourceCommitRequired -and
+    $releaseClaimRequirements.hostEvidenceWorkflowCollectionRequired -and
+    $releaseClaimRequirements.runtimeVersionsRequired -and
+    $releaseClaimRequirements.collectorSha256Required -and
+    ([int]$releaseClaimRequirements.minimumUptimeHoursRequired -gt 0)
+  )
 
   $result = [pscustomobject]@{
     schemaVersion = 1
@@ -1343,6 +1445,7 @@ try {
       scope = $supportScopeKind
       proofLevel = $proofLevel
       warningCleanRequired = [bool](-not $AllowWarnings)
+      requirements = $releaseClaimRequirements
       note = if ($StrictCiRelease) { "Ready only for the stated strict CI release scope." } else { "Provisional review; rerun with -StrictCiRelease for final release signoff." }
     }
     bundleSupportScope = $manifest.supportScope

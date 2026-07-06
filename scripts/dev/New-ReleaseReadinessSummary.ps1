@@ -11,6 +11,70 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
+function Get-OptionalPropertyValue {
+  param(
+    $Object,
+    [Parameter(Mandatory = $true)][string]$Name,
+    $DefaultValue = $null
+  )
+
+  if ($null -eq $Object) {
+    return $DefaultValue
+  }
+
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return $DefaultValue
+  }
+
+  return $property.Value
+}
+
+function Get-OptionalStringArray {
+  param(
+    $Object,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $value = Get-OptionalPropertyValue -Object $Object -Name $Name -DefaultValue @()
+  if ($null -eq $value) {
+    return @()
+  }
+
+  $items = @()
+  foreach ($item in @($value)) {
+    $text = [string]$item
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      $items += $text
+    }
+  }
+
+  return @($items | Sort-Object -Unique)
+}
+
+function Get-ReleaseClaimRequirementsSummary {
+  param([Parameter(Mandatory = $true)]$ReleaseClaim)
+
+  $requirements = Get-OptionalPropertyValue -Object $ReleaseClaim -Name "requirements"
+  return [ordered]@{
+    fullMatrixScope = [bool](Get-OptionalPropertyValue -Object $requirements -Name "fullMatrixScope" -DefaultValue $false)
+    strictCiRelease = [bool](Get-OptionalPropertyValue -Object $requirements -Name "strictCiRelease" -DefaultValue $false)
+    warningClean = [bool](Get-OptionalPropertyValue -Object $requirements -Name "warningClean" -DefaultValue $false)
+    coverageComplete = [bool](Get-OptionalPropertyValue -Object $requirements -Name "coverageComplete" -DefaultValue $false)
+    workflowApplicabilityKnown = [bool](Get-OptionalPropertyValue -Object $requirements -Name "workflowApplicabilityKnown" -DefaultValue $false)
+    runtimeSupportMetadataKnown = [bool](Get-OptionalPropertyValue -Object $requirements -Name "runtimeSupportMetadataKnown" -DefaultValue $false)
+    sourceCleanRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "sourceCleanRequired" -DefaultValue $false)
+    currentCommitRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "currentCommitRequired" -DefaultValue $false)
+    ciProvenanceRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "ciProvenanceRequired" -DefaultValue $false)
+    collectionCiProvenanceRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "collectionCiProvenanceRequired" -DefaultValue $false)
+    collectionSourceCommitRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "collectionSourceCommitRequired" -DefaultValue $false)
+    hostEvidenceWorkflowCollectionRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "hostEvidenceWorkflowCollectionRequired" -DefaultValue $false)
+    runtimeVersionsRequired = [bool](Get-OptionalPropertyValue -Object $requirements -Name "runtimeVersionsRequired" -DefaultValue $false)
+    collectorSha256Required = [bool](Get-OptionalPropertyValue -Object $requirements -Name "collectorSha256Required" -DefaultValue $false)
+    minimumUptimeHoursRequired = [int](Get-OptionalPropertyValue -Object $requirements -Name "minimumUptimeHoursRequired" -DefaultValue 0)
+  }
+}
+
 function ConvertTo-ReleaseReadinessSummary {
   param(
     [Parameter(Mandatory = $true)]$Readiness,
@@ -32,6 +96,7 @@ function ConvertTo-ReleaseReadinessSummary {
       kind = [string]$Readiness.releaseClaim.kind
       strictCiRelease = [bool]$Readiness.releaseClaim.strictCiRelease
       scope = [string]$Readiness.releaseClaim.scope
+      requirements = Get-ReleaseClaimRequirementsSummary -ReleaseClaim $Readiness.releaseClaim
       note = [string]$Readiness.releaseClaim.note
     }
     supportScope = [ordered]@{
@@ -58,6 +123,7 @@ function ConvertTo-ReleaseReadinessSummary {
       coveragePercentDisplay = [string]$Readiness.coverage.coveragePercentDisplay
       productionRecommendedRuntimeEvidenceCount = [int]$Readiness.bundle.productionRecommendedRuntimeEvidenceCount
       nonProductionRecommendedRuntimeEvidenceCount = [int]$Readiness.bundle.nonProductionRecommendedRuntimeEvidenceCount
+      runtimeSupportTiers = [object[]]@(Get-OptionalStringArray -Object $Readiness.bundle -Name "runtimeSupportTiers")
     }
     sourceControl = [ordered]@{
       commitSha = [string]$Readiness.sourceControl.commitSha
@@ -110,6 +176,23 @@ function Invoke-SelfTest {
       kind = "strict-ci-full-matrix"
       strictCiRelease = $true
       scope = "full-matrix"
+      requirements = [ordered]@{
+        fullMatrixScope = $true
+        strictCiRelease = $true
+        warningClean = $true
+        coverageComplete = $true
+        workflowApplicabilityKnown = $true
+        runtimeSupportMetadataKnown = $true
+        sourceCleanRequired = $true
+        currentCommitRequired = $true
+        ciProvenanceRequired = $true
+        collectionCiProvenanceRequired = $true
+        collectionSourceCommitRequired = $true
+        hostEvidenceWorkflowCollectionRequired = $true
+        runtimeVersionsRequired = $true
+        collectorSha256Required = $true
+        minimumUptimeHoursRequired = 72
+      }
       note = "Ready only for the stated strict CI release scope."
     }
     supportScope = [ordered]@{
@@ -152,6 +235,7 @@ function Invoke-SelfTest {
     bundle = [ordered]@{
       productionRecommendedRuntimeEvidenceCount = 224
       nonProductionRecommendedRuntimeEvidenceCount = 88
+      runtimeSupportTiers = @("community-package", "experimental", "tier-1")
     }
     sourceControl = [ordered]@{
       commitSha = "0123456789abcdef"
@@ -175,11 +259,41 @@ function Invoke-SelfTest {
   if (-not $summary.releaseClaim.finalFullMatrixReleaseClaim) {
     throw "Release readiness summary self-test failed: final claim was not preserved."
   }
+  if ($summary.releaseClaim.requirements.fullMatrixScope -ne $true -or $summary.releaseClaim.requirements.coverageComplete -ne $true -or $summary.releaseClaim.requirements.workflowApplicabilityKnown -ne $true -or $summary.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $true -or [int]$summary.releaseClaim.requirements.minimumUptimeHoursRequired -ne 72) {
+    throw "Release readiness summary self-test failed: final claim requirements were not preserved."
+  }
+
+  $legacyInputJson = Join-Path $selfTestRoot "legacy-release-readiness.json"
+  $legacyOutputJson = Join-Path $selfTestRoot "legacy-release-readiness-summary.json"
+  $legacyReadiness = $fullReadiness | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+  $legacyReadiness.releaseClaim.PSObject.Properties.Remove("requirements")
+  $legacyReadiness.bundle.PSObject.Properties.Remove("runtimeSupportTiers")
+  $legacyReadiness | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $legacyInputJson -Encoding UTF8
+  Write-ReleaseReadinessSummary -SourcePath $legacyInputJson -DestinationPath $legacyOutputJson -RequireFinalClaim $false
+  $legacySummary = Get-Content -LiteralPath $legacyOutputJson -Raw | ConvertFrom-Json
+  if ($legacySummary.releaseClaim.requirements.fullMatrixScope -ne $false -or
+    $legacySummary.releaseClaim.requirements.coverageComplete -ne $false -or
+    $legacySummary.releaseClaim.requirements.workflowApplicabilityKnown -ne $false -or
+    $legacySummary.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $false -or
+    [int]$legacySummary.releaseClaim.requirements.minimumUptimeHoursRequired -ne 0) {
+    throw "Release readiness summary self-test failed: legacy missing requirements were not safely defaulted."
+  }
+  $legacyRuntimeSupportTiers = @(Get-OptionalStringArray -Object $legacySummary.coverage -Name "runtimeSupportTiers")
+  if ($legacyRuntimeSupportTiers.Count -ne 0) {
+    throw "Release readiness summary self-test failed: legacy missing runtime support tiers were not safely defaulted."
+  }
+
   if ([int]$summary.coverage.expectedCount -ne 312 -or [int]$summary.coverage.coveredCount -ne 312 -or [int]$summary.coverage.missingCount -ne 0) {
     throw "Release readiness summary self-test failed: aggregate coverage counts were not preserved."
   }
   if ([int]$summary.coverage.productionRecommendedRuntimeEvidenceCount -ne 224 -or [int]$summary.coverage.nonProductionRecommendedRuntimeEvidenceCount -ne 88) {
     throw "Release readiness summary self-test failed: runtime evidence counts were not preserved."
+  }
+  if (@($summary.coverage.runtimeSupportTiers).Count -ne 3 -or
+    -not (@($summary.coverage.runtimeSupportTiers) -contains "community-package") -or
+    -not (@($summary.coverage.runtimeSupportTiers) -contains "experimental") -or
+    -not (@($summary.coverage.runtimeSupportTiers) -contains "tier-1")) {
+    throw "Release readiness summary self-test failed: runtime support tiers were not preserved."
   }
   if ([string]$summary.sourceControl.commitSha -ne "0123456789abcdef" -or [string]$summary.bundleCi.workflowName -ne "host-evidence") {
     throw "Release readiness summary self-test failed: safe provenance was not preserved."

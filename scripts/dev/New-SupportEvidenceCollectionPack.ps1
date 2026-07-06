@@ -346,6 +346,8 @@ function New-StagingAuditScript {
   $lines.Add("param(") | Out-Null
   $lines.Add("  [string]`$ArtifactPath = $(Quote-PowerShellArgument $ArtifactPath),") | Out-Null
   $lines.Add("  [string]`$EvidencePath = $(Quote-PowerShellArgument $EvidencePath),") | Out-Null
+  $lines.Add("  [switch]`$ValidateWithHostEvidence,") | Out-Null
+  $lines.Add("  [string]`$HostEvidenceValidatorPath = `"`",") | Out-Null
   $lines.Add("  [switch]`$ReportOnly,") | Out-Null
   $lines.Add("  [switch]`$PassThru") | Out-Null
   $lines.Add(")") | Out-Null
@@ -364,6 +366,9 @@ function New-StagingAuditScript {
     $lines.Add("    ReverseProxy = $(Quote-PowerShellArgument ([string]$entry.reverseProxy))") | Out-Null
     $lines.Add("    EvidenceName = $(Quote-PowerShellArgument ([string]$inputs.evidence_name))") | Out-Null
     $lines.Add("    EvidenceFile = $(Quote-PowerShellArgument ([string]$entry.evidenceFile))") | Out-Null
+    $lines.Add("    RequiredMinimumUptimeHours = $([int]$entry.requiredMinimumUptimeHours)") | Out-Null
+    $lines.Add("    FailOnWarnings = $(if ($FailOnWarnings) { '$true' } else { '$false' })") | Out-Null
+    $lines.Add("    WorkflowDispatchSupported = `$true") | Out-Null
     $lines.Add("  }") | Out-Null
   }
   $lines.Add(")") | Out-Null
@@ -376,6 +381,9 @@ function New-StagingAuditScript {
     $lines.Add("    ServiceManager = $(Quote-PowerShellArgument ([string]$entry.serviceManager))") | Out-Null
     $lines.Add("    ReverseProxy = $(Quote-PowerShellArgument ([string]$entry.reverseProxy))") | Out-Null
     $lines.Add("    EvidenceFile = $(Quote-PowerShellArgument ([string]$entry.evidenceFile))") | Out-Null
+    $lines.Add("    RequiredMinimumUptimeHours = $([int]$entry.requiredMinimumUptimeHours)") | Out-Null
+    $lines.Add("    FailOnWarnings = $(if ($FailOnWarnings) { '$true' } else { '$false' })") | Out-Null
+    $lines.Add("    WorkflowDispatchSupported = `$false") | Out-Null
     $lines.Add("  }") | Out-Null
   }
   $lines.Add(")") | Out-Null
@@ -463,6 +471,71 @@ function New-StagingAuditScript {
   $lines.Add("  `$normalized = Normalize-CollectionToken `$Value") | Out-Null
   $lines.Add("  if ([string]::IsNullOrWhiteSpace(`$normalized) -or `$normalized -in @('disabled', 'not-applicable', 'not-configured')) { return 'none' }") | Out-Null
   $lines.Add("  return `$normalized") | Out-Null
+  $lines.Add("}") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("function Resolve-HostEvidenceValidatorPath {") | Out-Null
+  $lines.Add("  if (-not [string]::IsNullOrWhiteSpace(`$HostEvidenceValidatorPath)) {") | Out-Null
+  $lines.Add("    if (-not (Test-Path -LiteralPath `$HostEvidenceValidatorPath -PathType Leaf)) {") | Out-Null
+  $lines.Add("      throw `"Host evidence validator not found: `$HostEvidenceValidatorPath`"") | Out-Null
+  $lines.Add("    }") | Out-Null
+  $lines.Add("    return (Resolve-Path -LiteralPath `$HostEvidenceValidatorPath).ProviderPath") | Out-Null
+  $lines.Add("  }") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("  `$candidates = @(") | Out-Null
+  $lines.Add("    (Join-Path (Get-Location) `"scripts\dev\Test-HostEvidence.ps1`"),") | Out-Null
+  $lines.Add("    (Join-Path `$PSScriptRoot `"..\..\scripts\dev\Test-HostEvidence.ps1`"),") | Out-Null
+  $lines.Add("    (Join-Path `$PSScriptRoot `"scripts\dev\Test-HostEvidence.ps1`")") | Out-Null
+  $lines.Add("  )") | Out-Null
+  $lines.Add("  foreach (`$candidate in `$candidates) {") | Out-Null
+  $lines.Add("    if (Test-Path -LiteralPath `$candidate -PathType Leaf) {") | Out-Null
+  $lines.Add("      return (Resolve-Path -LiteralPath `$candidate).ProviderPath") | Out-Null
+  $lines.Add("    }") | Out-Null
+  $lines.Add("  }") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("  throw `"Test-HostEvidence.ps1 was not found. Run this staging audit from the repository root, keep the generated pack under evidence\collection-pack, pass -HostEvidenceValidatorPath, or omit -ValidateWithHostEvidence.`"") | Out-Null
+  $lines.Add("}") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("function Invoke-HostEvidenceValidation {") | Out-Null
+  $lines.Add("  param(") | Out-Null
+  $lines.Add("    [string]`$StatusPath,") | Out-Null
+  $lines.Add("    [object]`$Expected") | Out-Null
+  $lines.Add("  )") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("  if (-not `$ValidateWithHostEvidence) { return `$null }") | Out-Null
+  $lines.Add("  `$validatorPath = Resolve-HostEvidenceValidatorPath") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("  `$args = @(") | Out-Null
+  $lines.Add("    '-EvidencePath', `$StatusPath,") | Out-Null
+  $lines.Add("    '-RequireNextJs',") | Out-Null
+  $lines.Add("    '-RequireDeploymentIdentity',") | Out-Null
+  $lines.Add("    '-RequireCollectorSha256',") | Out-Null
+  $lines.Add("    '-RequireMinimumUptimeHours', [string]`$Expected.RequiredMinimumUptimeHours,") | Out-Null
+  $lines.Add("    '-MaxEvidenceAgeDays', '1',") | Out-Null
+  $lines.Add("    '-ExpectedTargetId', `$Expected.TargetId,") | Out-Null
+  $lines.Add("    '-ExpectedNextJsMode', `$Expected.NextJsMode,") | Out-Null
+  $lines.Add("    '-ExpectedServiceManager', `$Expected.ServiceManager,") | Out-Null
+  $lines.Add("    '-ExpectedReverseProxy', `$Expected.ReverseProxy,") | Out-Null
+  $lines.Add("    '-RequireReverseProxy'") | Out-Null
+  $lines.Add("  )") | Out-Null
+  $lines.Add("  if (`$Expected.WorkflowDispatchSupported) { `$args += @('-RequireCiCollection', '-RequireHostEvidenceWorkflowCollection') }") | Out-Null
+  $lines.Add("  if ((Normalize-CollectionReverseProxy `$Expected.ReverseProxy) -eq 'none') { `$args += '-AllowReverseProxyNone' }") | Out-Null
+  $lines.Add("  if (`$Expected.FailOnWarnings) { `$args += '-FailOnWarnings' }") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("  try {") | Out-Null
+  $lines.Add("    & `$validatorPath @args | Out-Null") | Out-Null
+  $lines.Add("    return `$null") | Out-Null
+  $lines.Add("  } catch {") | Out-Null
+  $lines.Add("    return [pscustomobject]@{") | Out-Null
+  $lines.Add("      targetId = `$Expected.TargetId") | Out-Null
+  $lines.Add("      nextJsMode = `$Expected.NextJsMode") | Out-Null
+  $lines.Add("      serviceManager = `$Expected.ServiceManager") | Out-Null
+  $lines.Add("      reverseProxy = `$Expected.ReverseProxy") | Out-Null
+  $lines.Add("      evidenceName = if (`$Expected.PSObject.Properties['EvidenceName']) { `$Expected.EvidenceName } else { `"`" }") | Out-Null
+  $lines.Add("      evidenceFile = if (`$Expected.PSObject.Properties['EvidenceFile']) { `$Expected.EvidenceFile } else { `"`" }") | Out-Null
+  $lines.Add("      sourcePath = `$StatusPath") | Out-Null
+  $lines.Add("      reason = `"host evidence validation failed: `$(`$_.Exception.Message)`"") | Out-Null
+  $lines.Add("    }") | Out-Null
+  $lines.Add("  }") | Out-Null
   $lines.Add("}") | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("function Get-EvidenceTargetId {") | Out-Null
@@ -565,11 +638,16 @@ function New-StagingAuditScript {
   $lines.Add("  } else {") | Out-Null
   $lines.Add("    `$statusEvidence = Read-EvidenceJson -Path `$statusPath") | Out-Null
   $lines.Add("    `$mismatch = Get-EvidenceIdentityMismatch -Evidence `$statusEvidence -Expected `$artifact -SourcePath `$statusPath") | Out-Null
-  $lines.Add("    if (`$null -ne `$mismatch) {") | Out-Null
-  $lines.Add("      `$invalidWorkflowArtifacts.Add(`$mismatch) | Out-Null") | Out-Null
-  $lines.Add("    } else {") | Out-Null
-  $lines.Add("      `$presentWorkflowArtifacts.Add([pscustomobject]@{ targetId = `$artifact.TargetId; nextJsMode = `$artifact.NextJsMode; serviceManager = `$artifact.ServiceManager; reverseProxy = `$artifact.ReverseProxy; evidenceName = `$artifact.EvidenceName; statusPath = `$statusPath }) | Out-Null") | Out-Null
-  $lines.Add("    }") | Out-Null
+    $lines.Add("    if (`$null -ne `$mismatch) {") | Out-Null
+    $lines.Add("      `$invalidWorkflowArtifacts.Add(`$mismatch) | Out-Null") | Out-Null
+    $lines.Add("    } else {") | Out-Null
+    $lines.Add("      `$validationFailure = Invoke-HostEvidenceValidation -StatusPath `$statusPath -Expected `$artifact") | Out-Null
+    $lines.Add("      if (`$null -ne `$validationFailure) {") | Out-Null
+    $lines.Add("        `$invalidWorkflowArtifacts.Add(`$validationFailure) | Out-Null") | Out-Null
+    $lines.Add("      } else {") | Out-Null
+    $lines.Add("        `$presentWorkflowArtifacts.Add([pscustomobject]@{ targetId = `$artifact.TargetId; nextJsMode = `$artifact.NextJsMode; serviceManager = `$artifact.ServiceManager; reverseProxy = `$artifact.ReverseProxy; evidenceName = `$artifact.EvidenceName; statusPath = `$statusPath }) | Out-Null") | Out-Null
+    $lines.Add("      }") | Out-Null
+    $lines.Add("    }") | Out-Null
   $lines.Add("  }") | Out-Null
   $lines.Add("}") | Out-Null
   $lines.Add("") | Out-Null
@@ -580,11 +658,16 @@ function New-StagingAuditScript {
   $lines.Add("  } else {") | Out-Null
   $lines.Add("    `$localEvidenceJson = Read-EvidenceJson -Path `$expectedPath") | Out-Null
   $lines.Add("    `$mismatch = Get-EvidenceIdentityMismatch -Evidence `$localEvidenceJson -Expected `$evidence -SourcePath `$expectedPath") | Out-Null
-  $lines.Add("    if (`$null -ne `$mismatch) {") | Out-Null
-  $lines.Add("      `$invalidLocalOnlyEvidence.Add(`$mismatch) | Out-Null") | Out-Null
-  $lines.Add("    } else {") | Out-Null
-  $lines.Add("      `$presentLocalOnlyEvidence.Add([pscustomobject]@{ targetId = `$evidence.TargetId; nextJsMode = `$evidence.NextJsMode; serviceManager = `$evidence.ServiceManager; reverseProxy = `$evidence.ReverseProxy; evidenceFile = `$evidence.EvidenceFile; evidencePath = `$expectedPath }) | Out-Null") | Out-Null
-  $lines.Add("    }") | Out-Null
+    $lines.Add("    if (`$null -ne `$mismatch) {") | Out-Null
+    $lines.Add("      `$invalidLocalOnlyEvidence.Add(`$mismatch) | Out-Null") | Out-Null
+    $lines.Add("    } else {") | Out-Null
+    $lines.Add("      `$validationFailure = Invoke-HostEvidenceValidation -StatusPath `$expectedPath -Expected `$evidence") | Out-Null
+    $lines.Add("      if (`$null -ne `$validationFailure) {") | Out-Null
+    $lines.Add("        `$invalidLocalOnlyEvidence.Add(`$validationFailure) | Out-Null") | Out-Null
+    $lines.Add("      } else {") | Out-Null
+    $lines.Add("        `$presentLocalOnlyEvidence.Add([pscustomobject]@{ targetId = `$evidence.TargetId; nextJsMode = `$evidence.NextJsMode; serviceManager = `$evidence.ServiceManager; reverseProxy = `$evidence.ReverseProxy; evidenceFile = `$evidence.EvidenceFile; evidencePath = `$expectedPath }) | Out-Null") | Out-Null
+    $lines.Add("      }") | Out-Null
+    $lines.Add("    }") | Out-Null
   $lines.Add("  }") | Out-Null
   $lines.Add("}") | Out-Null
   $lines.Add("") | Out-Null
@@ -672,7 +755,7 @@ function New-Readme {
   $lines.Add(("- {0}{1}{0} / {0}{2}{0}: expected workflow artifact names and canonical destinations." -f $tick, $workflowArtifactsJsonName, $workflowArtifactsCsvName)) | Out-Null
   $lines.Add(("- {0}{1}{0} / {0}{2}{0}: local-command-only rows that must be collected outside GitHub Actions." -f $tick, $localOnlyJsonName, $localOnlyCsvName)) | Out-Null
   $lines.Add(("- {0}{1}{0}: pre-release staging audit for downloaded {0}status.json{0} artifacts, local-only evidence files, and matrix-row identity." -f $tick, $stagingAuditScriptName)) | Out-Null
-  $lines.Add(("- {0}{1}{0}: guarded release gate; imports artifacts, checks coverage, bundles evidence, and writes readiness JSON when run with {0}-Run{0}." -f $tick, $releaseScriptName)) | Out-Null
+  $lines.Add(("- {0}{1}{0}: guarded release gate; imports artifacts, checks coverage, bundles evidence, and writes detailed readiness plus redacted summary JSON when run with {0}-Run{0}." -f $tick, $releaseScriptName)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("## Operator Sequence") | Out-Null
   $lines.Add("") | Out-Null
@@ -704,17 +787,20 @@ function New-Readme {
   $lines.Add("") | Out-Null
   $lines.Add("${fence}powershell") | Out-Null
   $lines.Add("& $(Quote-PowerShellArgument $StagingAuditScript)") | Out-Null
+  $lines.Add("& $(Quote-PowerShellArgument $StagingAuditScript) -ValidateWithHostEvidence") | Out-Null
+  $lines.Add("& $(Quote-PowerShellArgument $StagingAuditScript) -ValidateWithHostEvidence -HostEvidenceValidatorPath .\scripts\dev\Test-HostEvidence.ps1") | Out-Null
   $lines.Add($fence) | Out-Null
   $lines.Add("") | Out-Null
-  $lines.Add(("   Use {0}-ReportOnly{0} for a baseline inventory while collection is still in progress. Without {0}-ReportOnly{0}, the audit fails on missing downloaded {0}status.json{0} artifacts, missing local-only evidence files, or evidence whose target/mode/service/proxy identity does not match the matrix row." -f $tick)) | Out-Null
+  $lines.Add(("   Use {0}-ReportOnly{0} for a baseline inventory while collection is still in progress. Without {0}-ReportOnly{0}, the audit fails on missing downloaded {0}status.json{0} artifacts, missing local-only evidence files, or evidence whose target/mode/service/proxy identity does not match the matrix row. Add {0}-ValidateWithHostEvidence{0} to run {0}Test-HostEvidence.ps1{0} against each staged row before the release gate, including uptime, Next.js, reverse-proxy, collector SHA256, and workflow provenance checks. The audit auto-resolves the validator from the repository root or the default {0}evidence\collection-pack{0} location; pass {0}-HostEvidenceValidatorPath{0} if the pack was copied elsewhere." -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
-  $lines.Add(("8. Run the release gate. It imports downloaded artifacts, refuses incomplete coverage, creates the bundle, and writes {0}release-readiness.json{0}:" -f $tick)) | Out-Null
+  $lines.Add(("8. Run the release gate. It imports downloaded artifacts, refuses incomplete coverage, creates the bundle, and writes {0}release-readiness.json{0} plus {0}release-readiness-summary.json{0}:" -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("${fence}powershell") | Out-Null
   $lines.Add("& $(Quote-PowerShellArgument $ReleaseScript) -Run") | Out-Null
   $lines.Add($fence) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add(("Use {0}-StrictCiRelease{0} on the generated release script only from a clean, committed CI-controlled final signoff path. Add {0}-RequireFinalFullMatrixReleaseClaim{0} with {0}-StrictCiRelease{0} when a release must fail unless readiness proves a final full-matrix claim." -f $tick)) | Out-Null
+  $lines.Add(("Publish {0}release-readiness-summary.json{0} as the normal CI/review artifact. Keep the full evidence bundle in restricted private storage unless {0}upload_private_bundle=true{0} is explicitly needed for a separate verifier run; otherwise the self-hosted run is the final CI gate and {0}release-evidence.yml{0} cannot download a bundle from it." -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("## Output Targets") | Out-Null
   $lines.Add("") | Out-Null
@@ -791,6 +877,11 @@ function Invoke-SelfTest {
   if (-not $stagingAuditScriptText.Contains("status.json") -or -not $stagingAuditScriptText.Contains("LocalOnlyEvidence")) {
     throw "Support evidence collection pack self-test failed: staging audit script is missing workflow or local-only checks."
   }
+  foreach ($expected in @("ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Resolve-HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "RequireCollectorSha256", "RequireHostEvidenceWorkflowCollection", "RequiredMinimumUptimeHours")) {
+    if (-not $stagingAuditScriptText.Contains($expected)) {
+      throw "Support evidence collection pack self-test failed: staging audit script is missing '$expected'."
+    }
+  }
   $tokens = $null
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($result.stagingAuditScript, [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -818,7 +909,7 @@ function Invoke-SelfTest {
   }
 
   $readmeText = Get-Content -LiteralPath $result.readme -Raw
-  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "RequireFinalFullMatrixReleaseClaim", "local-command-only", "release-readiness")) {
+  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "RequireFinalFullMatrixReleaseClaim", "local-command-only", "release-readiness", "release-readiness-summary.json", "upload_private_bundle=true", "restricted private storage", "self-hosted run is the final CI gate", "release-evidence.yml")) {
     if (-not $readmeText.Contains($expected)) {
       throw "Support evidence collection pack self-test failed: README is missing '$expected'."
     }
@@ -892,6 +983,15 @@ function Invoke-SelfTest {
   }
   if ($stagingAudit.invalidWorkflowArtifactCount -ne 0 -or $stagingAudit.invalidLocalOnlyEvidenceCount -ne 0) {
     throw "Support evidence collection pack self-test failed: staging audit marked matching staged evidence as invalid."
+  }
+  $validationAudit = & $result.stagingAuditScript `
+    -ArtifactPath $stagingArtifactRoot `
+    -EvidencePath $stagingEvidenceRoot `
+    -ValidateWithHostEvidence `
+    -ReportOnly `
+    -PassThru
+  if ($validationAudit.invalidWorkflowArtifactCount -lt 1 -or $validationAudit.invalidLocalOnlyEvidenceCount -lt 1) {
+    throw "Support evidence collection pack self-test failed: staging audit did not run full host evidence validation."
   }
   if ($workflowArtifactManifest.Count -gt 1 -and $stagingAudit.missingWorkflowArtifactCount -lt 1) {
     throw "Support evidence collection pack self-test failed: staging audit did not detect missing workflow artifacts."

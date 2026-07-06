@@ -259,7 +259,20 @@ function Invoke-SelfTest {
   if (-not (Test-Path -LiteralPath (Resolve-DisplayPath -Path ([string]$result.readinessJson)) -PathType Leaf)) {
     throw "Support evidence release workflow self-test failed: readiness JSON was not created."
   }
+  if (-not (Test-Path -LiteralPath (Resolve-DisplayPath -Path ([string]$result.readinessSummaryJson)) -PathType Leaf)) {
+    throw "Support evidence release workflow self-test failed: redacted readiness summary JSON was not created."
+  }
   $readiness = Get-Content -LiteralPath (Resolve-DisplayPath -Path ([string]$result.readinessJson)) -Raw | ConvertFrom-Json
+  $summaryText = Get-Content -LiteralPath (Resolve-DisplayPath -Path ([string]$result.readinessSummaryJson)) -Raw
+  $summary = $summaryText | ConvertFrom-Json
+  if ([string]$summary.releaseClaim.kind -ne [string]$readiness.releaseClaim.kind) {
+    throw "Support evidence release workflow self-test failed: redacted readiness summary did not preserve the release claim kind."
+  }
+  foreach ($blockedSummaryText in @("collectionCommand", "workflowDispatchCommand", '"covered"', '"missing"', "bundlePath")) {
+    if ($summaryText.Contains($blockedSummaryText)) {
+      throw "Support evidence release workflow self-test failed: redacted readiness summary leaked '$blockedSummaryText'."
+    }
+  }
   $firstReadinessCoverageRow = @($readiness.coverage.covered | Select-Object -First 1)[0]
   if ($null -eq $firstReadinessCoverageRow -or -not ([string]$firstReadinessCoverageRow.validationCommand).Contains("Test-HostEvidence.ps1")) {
     throw "Support evidence release workflow self-test failed: readiness JSON did not preserve row validation commands."
@@ -432,6 +445,7 @@ Invoke-Step "Support evidence bundle verification" {
 }
 
 $readinessJson = Join-Path $OutputDirectory "release-readiness.json"
+$readinessSummaryJson = Join-Path $OutputDirectory "release-readiness-summary.json"
 Invoke-Step "Release support readiness" {
   $readinessArgs = @{
     BundlePath = $bundleZip
@@ -452,6 +466,15 @@ Invoke-Step "Release support readiness" {
   & (Join-Path $ScriptDir "Test-ReleaseSupportReadiness.ps1") @readinessArgs | Out-Null
 }
 
+Invoke-Step "Release readiness summary" {
+  $summaryArgs = @{
+    InputPath = $readinessJson
+    OutputPath = $readinessSummaryJson
+  }
+  if ($RequireFinalFullMatrixReleaseClaim) { $summaryArgs.RequireFinalFullMatrixReleaseClaim = $true }
+  & (Join-Path $ScriptDir "New-ReleaseReadinessSummary.ps1") @summaryArgs | Out-Null
+}
+
 $readiness = Get-Content -LiteralPath $readinessJson -Raw | ConvertFrom-Json
 $result = [pscustomobject]@{
   ready = [bool]$readiness.ready
@@ -461,6 +484,7 @@ $result = [pscustomobject]@{
   coverageMarkdown = Get-DisplayPath -Path $coverageMarkdown
   bundleZip = Get-DisplayPath -Path $bundleZip
   readinessJson = Get-DisplayPath -Path $readinessJson
+  readinessSummaryJson = Get-DisplayPath -Path $readinessSummaryJson
   expectedCoverage = [int]$coverage.summary.expectedCount
   coveredEvidence = [int]$coverage.summary.coveredCount
   missingEvidence = [int]$coverage.summary.missingCount
@@ -493,4 +517,5 @@ if ($PassThru) {
   Write-Host "Coverage report: $($result.coverageMarkdown)"
   Write-Host "Bundle: $($result.bundleZip)"
   Write-Host "Readiness: $($result.readinessJson)"
+  Write-Host "Readiness summary: $($result.readinessSummaryJson)"
 }

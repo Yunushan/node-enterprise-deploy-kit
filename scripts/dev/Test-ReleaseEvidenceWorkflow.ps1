@@ -172,4 +172,18 @@ foreach ($unexpectedPattern in @(
   Assert-DoesNotMatch -Text $workflow -Pattern $unexpectedPattern -Context ".github/workflows/release-evidence.yml"
 }
 
+$uploadArtifactBlocks = @([regex]::Matches($workflow, '(?ms)uses:\s+actions/upload-artifact@v7.*?(?=\r?\n\s+- name:|\z)'))
+if ($uploadArtifactBlocks.Count -ne 1) {
+  throw ".github/workflows/release-evidence.yml must have exactly one upload-artifact block for the redacted readiness summary."
+}
+$releaseReadinessUploadBlock = $uploadArtifactBlocks[0].Value
+Assert-Contains -Text $releaseReadinessUploadBlock -Expected "path: release-readiness-summary.json" -Context ".github/workflows/release-evidence.yml upload-artifact block"
+foreach ($unexpectedUploadText in @(
+    ".zip",
+    "release-evidence-input",
+    "release-readiness.json"
+  )) {
+  Assert-DoesNotContain -Text $releaseReadinessUploadBlock -Unexpected $unexpectedUploadText -Context ".github/workflows/release-evidence.yml upload-artifact block"
+}
+
 Write-Host "Release evidence workflow OK"

@@ -121,3 +121,38 @@ port is listening, the HTTP health check succeeds, and the Next.js runtime
 layout matches the configured deployment mode.
 Use `--json-output` for the same kind of release evidence on Linux, macOS, and
 BSD hosts; it follows the same privacy-safe evidence shape.
+
+## Final Support Evidence Checklist
+
+Before making a final support claim for a release, keep the raw evidence in a
+private release record and publish only redacted readiness summaries.
+
+1. Confirm the repository verification is green on the exact committed revision
+   being released.
+2. Deploy the release artifact to each claimed target host or self-hosted runner
+   environment.
+3. Wait for the required uptime window when the release requires uptime proof,
+   such as 72 hours for strict support evidence.
+4. Collect status JSON from each target with the expected target ID, Next.js
+   deployment mode, service manager, and reverse proxy.
+5. Run `Test-HostEvidence.ps1` or the generated collection-pack staging audit
+   before bundling evidence.
+6. Run `Invoke-SupportEvidenceReleaseWorkflow.ps1` with `-StrictCiRelease` and
+   `-RequireFinalFullMatrixReleaseClaim` only from a clean, committed,
+   CI-controlled final signoff path.
+7. Review the redacted `release-readiness-summary.json`; it must report
+   `ready: true`, `supportScope.kind: full-matrix`, and
+   `releaseClaim.finalFullMatrixReleaseClaim: true` for a final full-matrix
+   claim. Also check `releaseClaim.requirements.coverageComplete: true`,
+   `releaseClaim.requirements.workflowApplicabilityKnown: true`,
+   `releaseClaim.requirements.runtimeSupportMetadataKnown: true`,
+   `releaseClaim.requirements.strictCiRelease: true`, and
+   `releaseClaim.requirements.warningClean: true`.
+8. Keep `evidence/`, `evidence-downloads/`, `release-evidence/`, and full
+   support evidence bundles out of git. Store them only in restricted private
+   release/change records.
+9. If using `.github/workflows/support-evidence-bundle.yml`, leave
+   `upload_private_bundle=false` unless a separate verifier workflow is
+   explicitly required and the repository/artifact visibility is acceptable.
+10. Record the final commit SHA, CI run URL, redacted readiness summary, and
+    private evidence bundle location in the release/change record.

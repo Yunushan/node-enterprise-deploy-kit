@@ -207,13 +207,30 @@ $reverseProxyArtifacts = @{
 $ciWorkflowText = Get-Content -LiteralPath (Join-Path $RepoRoot ".github\workflows\ci.yml") -Raw
 $platformMatrixText = Get-Content -LiteralPath (Join-Path $RepoRoot "scripts\dev\test-platform-matrix.sh") -Raw
 $staticVerificationJobRequirements = @{
-  "basic-checks" = @("Test-Repository.ps1", "apt-get install -y shellcheck", "lint-shellcheck.sh")
-  "windows-checks" = @("Test-Repository.ps1", "-SkipShellSyntax", "windows-2022", "windows-2025")
-  "linux-family-static-checks" = @("test-platform-matrix.sh", '${{ matrix.platform }}')
-  "linux-container-smoke" = @("test-linux-container-smoke.sh", '${{ matrix.platform }}', "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora", "alpine")
-  "macos-checks" = @("test-platform-matrix.sh --case macos", "test-unix-nextjs-support.sh")
+  "basic-checks" = @("timeout-minutes:", "Test-Repository.ps1", "-SkipReleaseEvidenceSelfTests", "apt-get install -y shellcheck", "lint-shellcheck.sh")
+  "windows-checks" = @("timeout-minutes:", "Test-Repository.ps1", "-SkipShellSyntax", "-SkipReleaseEvidenceSelfTests", "windows-2022", "windows-2025")
+  "linux-family-static-checks" = @("timeout-minutes:", "test-platform-matrix.sh", '${{ matrix.platform }}')
+  "linux-container-smoke" = @("timeout-minutes:", "test-linux-container-smoke.sh", '${{ matrix.platform }}', "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora", "alpine")
+  "macos-checks" = @("timeout-minutes:", "test-platform-matrix.sh --case macos", "test-unix-nextjs-support.sh")
 }
+$releaseEvidenceJobRequirements = @(
+  "timeout-minutes:",
+  "New-SupportEvidenceCollectionPack.ps1 -SelfTest",
+  "New-SupportEvidenceBundle.ps1 -SelfTest",
+  "Test-SupportEvidenceBundle.ps1 -SelfTest",
+  "Test-SupportEvidenceCoverage.ps1 -SelfTest",
+  "Import-HostEvidenceArtifacts.ps1 -SelfTest",
+  "Invoke-SupportEvidenceReleaseWorkflow.ps1 -SelfTest",
+  "Test-ReleaseSupportReadiness.ps1 -SelfTest"
+)
 $ciWorkflowJobBlocks = @{}
+
+$releaseEvidenceJobBlock = Get-CiWorkflowJobBlock -WorkflowText $ciWorkflowText -JobName "release-evidence-checks"
+if ([string]::IsNullOrWhiteSpace($releaseEvidenceJobBlock)) {
+  Add-Issue $issues "Missing CI job: release-evidence-checks."
+} elseif (-not (Test-TextContainsAll -Text $releaseEvidenceJobBlock -Expected $releaseEvidenceJobRequirements)) {
+  Add-Issue $issues "release-evidence-checks does not contain required heavy release evidence self-test command fragment(s): $($releaseEvidenceJobRequirements -join ', ')."
+}
 
 foreach ($target in $targets) {
   $id = [string]$target.id

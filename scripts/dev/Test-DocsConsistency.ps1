@@ -130,6 +130,7 @@ $requiredFiles = @(
   "docs/VARIABLES.md",
   "docs/ANSIBLE.md",
   "docs/assets/logo.svg",
+  ".github/workflows/ci.yml",
   ".github/workflows/host-evidence.yml",
   ".github/workflows/support-evidence-bundle.yml",
   ".github/workflows/release-evidence.yml",
@@ -200,10 +201,14 @@ $releaseReadinessSnippets = @(
   "bundleSupportScope",
   "releaseClaim.kind",
   "releaseClaim.finalFullMatrixReleaseClaim",
+  "releaseClaim.requirements",
   "-RequireFinalFullMatrixReleaseClaim",
   "release-evidence.yml",
   "support-evidence-bundle.yml",
   "release-readiness-summary.json",
+  "upload_private_bundle",
+  "restricted private storage",
+  "self-hosted run is the final CI gate",
   "Test-SupportEvidenceBundleWorkflowInputs.ps1",
   "New-ReleaseReadinessSummary.ps1",
   "Resolve-ReleaseEvidenceBundle.ps1",
@@ -211,12 +216,21 @@ $releaseReadinessSnippets = @(
   "Test-ReleaseEvidenceWorkflowInputs.ps1",
   "sourceControl.commitSha",
   "bundleCi.workflowName",
+  "workflowCapableEvidenceCount",
+  "localCommandOnlyEvidenceCount",
+  "productionRecommendedRuntimeEvidenceCount",
+  "runtimeSupportTiers",
+  "safe claim requirements",
+  "workflow applicability metadata",
+  "runtime support metadata",
   "redacted",
   "does not re-upload",
   "workflow-dispatch commands",
   "stated review scope",
   "one-command handoff",
   "-PassThru",
+  "ValidateWithHostEvidence",
+  "HostEvidenceValidatorPath",
   "full-matrix release claim"
 )
 $requiredDocSnippets = @(
@@ -240,7 +254,8 @@ $supportClaimCaveatExpectations = @(
     Snippets = @(
       "vendor destek garantisi degildir",
       "gercek host kaniti",
-      "final tam matris release iddiasi"
+      "final tam matris release iddiasi",
+      "upload_private_bundle"
     )
   },
   @{
@@ -254,6 +269,23 @@ $supportClaimCaveatExpectations = @(
 )
 
 $requiredDocSnippets += $supportClaimCaveatExpectations
+$requiredDocSnippets += @(
+  @{
+    Path = "docs/RUNBOOK.md"
+    Snippets = @(
+      "Final Support Evidence Checklist",
+      "exact committed revision",
+      "release-readiness-summary.json",
+      "releaseClaim.finalFullMatrixReleaseClaim: true",
+      "releaseClaim.requirements.coverageComplete: true",
+      "releaseClaim.requirements.workflowApplicabilityKnown: true",
+      "releaseClaim.requirements.runtimeSupportMetadataKnown: true",
+      "upload_private_bundle=false",
+      "evidence-downloads/",
+      "restricted private"
+    )
+  }
+)
 
 foreach ($expectation in $requiredDocSnippets) {
   $docPath = Join-Path $RepoRoot (($expectation.Path) -replace '/', '\')
