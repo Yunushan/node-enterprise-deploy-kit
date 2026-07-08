@@ -331,7 +331,8 @@ function New-StagingAuditScript {
     [string]$Path,
     [object]$Plan,
     [string]$ArtifactPath,
-    [string]$EvidencePath
+    [string]$EvidencePath,
+    [string]$MatrixPath
   )
 
   $entries = Get-PlanEntries -Plan $Plan
@@ -355,6 +356,9 @@ function New-StagingAuditScript {
   $lines.Add("Set-StrictMode -Version Latest") | Out-Null
   $lines.Add("`$ErrorActionPreference = `"Stop`"") | Out-Null
   $lines.Add("") | Out-Null
+  $lines.Add("`$MatrixPath = $(Quote-PowerShellArgument $MatrixPath)") | Out-Null
+  $lines.Add("`$ExpectedMatrixSha256 = if (Test-Path -LiteralPath `$MatrixPath -PathType Leaf) { (Get-FileHash -LiteralPath `$MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { `"`" }") | Out-Null
+  $lines.Add("") | Out-Null
   $lines.Add("`$ExpectedArtifacts = @(") | Out-Null
   foreach ($entry in $workflowEntries) {
     $inputs = $entry.workflowInputs
@@ -365,6 +369,7 @@ function New-StagingAuditScript {
     $lines.Add("    ServiceManager = $(Quote-PowerShellArgument ([string]$entry.serviceManager))") | Out-Null
     $lines.Add("    ReverseProxy = $(Quote-PowerShellArgument ([string]$entry.reverseProxy))") | Out-Null
     $lines.Add("    EvidenceName = $(Quote-PowerShellArgument ([string]$inputs.evidence_name))") | Out-Null
+    $lines.Add("    MatrixPath = $(Quote-PowerShellArgument ([string]$inputs.matrix_path))") | Out-Null
     $lines.Add("    EvidenceFile = $(Quote-PowerShellArgument ([string]$entry.evidenceFile))") | Out-Null
     $lines.Add("    RequiredMinimumUptimeHours = $([int]$entry.requiredMinimumUptimeHours)") | Out-Null
     $lines.Add("    FailOnWarnings = $(if ($FailOnWarnings) { '$true' } else { '$false' })") | Out-Null
@@ -517,7 +522,11 @@ function New-StagingAuditScript {
   $lines.Add("    '-ExpectedReverseProxy', `$Expected.ReverseProxy,") | Out-Null
   $lines.Add("    '-RequireReverseProxy'") | Out-Null
   $lines.Add("  )") | Out-Null
-  $lines.Add("  if (`$Expected.WorkflowDispatchSupported) { `$args += @('-RequireCiCollection', '-RequireHostEvidenceWorkflowCollection') }") | Out-Null
+  $lines.Add("  if (`$Expected.WorkflowDispatchSupported) {") | Out-Null
+  $lines.Add("    `$args += @('-RequireCiCollection', '-RequireHostEvidenceWorkflowCollection')") | Out-Null
+  $lines.Add("    if (`$Expected.PSObject.Properties['MatrixPath'] -and -not [string]::IsNullOrWhiteSpace([string]`$Expected.MatrixPath)) { `$args += @('-ExpectedMatrixPath', [string]`$Expected.MatrixPath) }") | Out-Null
+  $lines.Add("    if (-not [string]::IsNullOrWhiteSpace(`$ExpectedMatrixSha256)) { `$args += @('-ExpectedMatrixSha256', `$ExpectedMatrixSha256) }") | Out-Null
+  $lines.Add("  }") | Out-Null
   $lines.Add("  if ((Normalize-CollectionReverseProxy `$Expected.ReverseProxy) -eq 'none') { `$args += '-AllowReverseProxyNone' }") | Out-Null
   $lines.Add("  if (`$Expected.FailOnWarnings) { `$args += '-FailOnWarnings' }") | Out-Null
   $lines.Add("") | Out-Null
@@ -801,6 +810,7 @@ function New-Readme {
   $lines.Add("") | Out-Null
   $lines.Add(("Use {0}-StrictCiRelease{0} on the generated release script only from a clean, committed CI-controlled final signoff path. Add {0}-RequireFinalFullMatrixReleaseClaim{0} with {0}-StrictCiRelease{0} when a release must fail unless readiness proves a final full-matrix claim." -f $tick)) | Out-Null
   $lines.Add(("Publish {0}release-readiness-summary.json{0} as the normal CI/review artifact. Keep the full evidence bundle in restricted private storage unless {0}upload_private_bundle=true{0} is explicitly needed for a separate verifier run; otherwise the self-hosted run is the final CI gate and {0}release-evidence.yml{0} cannot download a bundle from it." -f $tick)) | Out-Null
+  $lines.Add(("Reviewers can validate the redacted summary without the private bundle by running {0}Test-ReleaseReadinessSummary.ps1 -InputPath <release-readiness-summary.json> -MatrixPath <support-matrix.json> -RequireFinalFullMatrixReleaseClaim{0}; this checks the final claim, strict CI full-matrix claim kind, complete coverage, clean provenance, required uptime, support matrix SHA256, target count, saved bundleSupportScope target counts, and runtime support tiers." -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("## Output Targets") | Out-Null
   $lines.Add("") | Out-Null
@@ -877,7 +887,7 @@ function Invoke-SelfTest {
   if (-not $stagingAuditScriptText.Contains("status.json") -or -not $stagingAuditScriptText.Contains("LocalOnlyEvidence")) {
     throw "Support evidence collection pack self-test failed: staging audit script is missing workflow or local-only checks."
   }
-  foreach ($expected in @("ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Resolve-HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "RequireCollectorSha256", "RequireHostEvidenceWorkflowCollection", "RequiredMinimumUptimeHours")) {
+  foreach ($expected in @("ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Resolve-HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "RequireCollectorSha256", "RequireHostEvidenceWorkflowCollection", "ExpectedMatrixSha256", "ExpectedMatrixPath", "MatrixPath", "RequiredMinimumUptimeHours")) {
     if (-not $stagingAuditScriptText.Contains($expected)) {
       throw "Support evidence collection pack self-test failed: staging audit script is missing '$expected'."
     }
@@ -909,7 +919,7 @@ function Invoke-SelfTest {
   }
 
   $readmeText = Get-Content -LiteralPath $result.readme -Raw
-  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "RequireFinalFullMatrixReleaseClaim", "local-command-only", "release-readiness", "release-readiness-summary.json", "upload_private_bundle=true", "restricted private storage", "self-hosted run is the final CI gate", "release-evidence.yml")) {
+  foreach ($expected in @("expected-workflow-artifacts.csv", "local-command-only-evidence.csv", "Test-HostEvidenceCollectionStaging", "ValidateWithHostEvidence", "HostEvidenceValidatorPath", "Test-HostEvidence.ps1", "Test-ReleaseReadinessSummary.ps1", "-MatrixPath", "strict CI full-matrix claim kind", "support matrix SHA256", "bundleSupportScope target counts", "runtime support tiers", "Invoke-HostEvidenceArtifactDownload", "gh run download", "StrictCiRelease", "RequireFinalFullMatrixReleaseClaim", "local-command-only", "release-readiness", "release-readiness-summary.json", "upload_private_bundle=true", "restricted private storage", "self-hosted run is the final CI gate", "release-evidence.yml")) {
     if (-not $readmeText.Contains($expected)) {
       throw "Support evidence collection pack self-test failed: README is missing '$expected'."
     }
@@ -1086,7 +1096,8 @@ New-StagingAuditScript `
   -Path $stagingAuditScript `
   -Plan $plan `
   -ArtifactPath $ArtifactPath `
-  -EvidencePath $EvidencePath
+  -EvidencePath $EvidencePath `
+  -MatrixPath (Get-DisplayPath -Path $MatrixPath)
 
 New-ReleaseCommandScript `
   -Path $releaseScript `

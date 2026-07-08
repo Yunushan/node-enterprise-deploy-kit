@@ -5,6 +5,8 @@ param(
   [string]$ExpectedNextJsMode = "",
   [string]$ExpectedServiceManager = "",
   [string]$ExpectedReverseProxy = "",
+  [string]$ExpectedMatrixPath = "",
+  [string]$ExpectedMatrixSha256 = "",
   [int]$MaxEvidenceAgeDays = 0,
   [switch]$RequireNextJs,
   [switch]$RequireReverseProxy,
@@ -42,6 +44,16 @@ function Normalize-ReverseProxy {
   $normalized = Normalize-Target $Value
   if ($normalized -eq "httpd") { return "apache" }
   return $normalized
+}
+
+function Normalize-RepositoryRelativePath {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $normalized = $Value.Trim().Replace("\", "/")
+  if ($normalized.StartsWith("./", [StringComparison]::Ordinal)) {
+    $normalized = $normalized.Substring(2)
+  }
+  return $normalized.Trim("/")
 }
 
 function Get-DisplayPath {
@@ -460,6 +472,7 @@ function Get-NextJsEvidence {
     MinimumNodeVersion = Get-StringValue -Object $nextJs -Names @("MinimumNodeVersion", "minimumNodeVersion")
     NodeVersionSatisfied = Get-BooleanValue -Object $nextJs -Names @("NodeVersionSatisfied", "nodeVersionSatisfied") -Default $null
     NextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
+    NextPackageJsonExists = Get-BooleanValue -Object $nextJs -Names @("NextPackageJsonExists", "nextPackageJsonExists") -Default $null
     NextStartScriptIsExpectedCli = Get-BooleanValue -Object $nextJs -Names @("NextStartScriptIsExpectedCli", "nextStartScriptIsExpectedCli", "NextStartCommandIsExpectedCli", "nextStartCommandIsExpectedCli") -Default $null
   }
 }
@@ -688,6 +701,8 @@ function Get-EvidenceCollectionEvidence {
       ExpectedServiceManager = Normalize-Target (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
       ExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
       MinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+      SupportMatrixPath = Normalize-RepositoryRelativePath (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixPath", "supportMatrixPath", "matrixPath", "matrix_path"))
+      SupportMatrixSha256 = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixSha256", "supportMatrixSha256", "matrixSha256", "matrix_sha256")).Trim().ToLowerInvariant()
     }
   }
 }
@@ -700,7 +715,9 @@ function Get-WorkflowDispatchDimensionIssues {
     [string]$NextJsMode,
     [string]$ServiceManager,
     [string]$ReverseProxy,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$ExpectedMatrixPath,
+    [string]$ExpectedMatrixSha256
   )
 
   $issues = New-Object System.Collections.Generic.List[string]
@@ -728,6 +745,24 @@ function Get-WorkflowDispatchDimensionIssues {
     $issues.Add("$FileName evidenceCollection.workflowDispatch.minimumUptimeHours is required for host-evidence workflow provenance.") | Out-Null
   } elseif ($RequiredMinimumUptimeHours -gt 0 -and [int]$Dispatch.MinimumUptimeHours -lt $RequiredMinimumUptimeHours) {
     $issues.Add("$FileName evidenceCollection.workflowDispatch.minimumUptimeHours is below the required minimum uptime.") | Out-Null
+  }
+  $expectedMatrixPathValue = Normalize-RepositoryRelativePath $ExpectedMatrixPath
+  if (-not [string]::IsNullOrWhiteSpace($expectedMatrixPathValue)) {
+    if ([string]::IsNullOrWhiteSpace([string]$Dispatch.SupportMatrixPath)) {
+      $issues.Add("$FileName evidenceCollection.workflowDispatch.supportMatrixPath is required for host-evidence workflow provenance.") | Out-Null
+    } elseif ([string]$Dispatch.SupportMatrixPath -ne $expectedMatrixPathValue) {
+      $issues.Add("$FileName evidenceCollection.workflowDispatch.supportMatrixPath does not match expected support matrix path '$expectedMatrixPathValue'.") | Out-Null
+    }
+  }
+  $expectedMatrixShaValue = ([string]$ExpectedMatrixSha256).Trim().ToLowerInvariant()
+  if (-not [string]::IsNullOrWhiteSpace($expectedMatrixShaValue)) {
+    if ($expectedMatrixShaValue -notmatch '^[a-f0-9]{64}$') {
+      $issues.Add("$FileName expected support matrix SHA256 is not a valid SHA256 hash.") | Out-Null
+    } elseif ([string]::IsNullOrWhiteSpace([string]$Dispatch.SupportMatrixSha256)) {
+      $issues.Add("$FileName evidenceCollection.workflowDispatch.supportMatrixSha256 is required for host-evidence workflow provenance.") | Out-Null
+    } elseif ([string]$Dispatch.SupportMatrixSha256 -ne $expectedMatrixShaValue) {
+      $issues.Add("$FileName evidenceCollection.workflowDispatch.supportMatrixSha256 does not match expected support matrix SHA256.") | Out-Null
+    }
   }
 
   return @($issues | ForEach-Object { $_ })
@@ -1044,6 +1079,7 @@ function New-SelfTestEvidence {
           MinimumNodeVersion = "20.9.0"
           NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
+          NextPackageJsonExists = $true
           RuntimeRootName = "example-next-app"
         }
         ReverseProxy = [ordered]@{
@@ -1172,6 +1208,7 @@ function New-SelfTestEvidence {
           MinimumNodeVersion = "20.9.0"
           NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
+          NextPackageJsonExists = $true
           RuntimeRootName = "example-next-app"
         }
         ReverseProxy = [ordered]@{
@@ -1239,6 +1276,7 @@ function New-SelfTestEvidence {
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
+          nextPackageJsonExists = $true
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1303,6 +1341,7 @@ function New-SelfTestEvidence {
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
+          nextPackageJsonExists = $true
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1362,6 +1401,7 @@ function New-SelfTestEvidence {
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
+          nextPackageJsonExists = $true
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1418,6 +1458,7 @@ function New-SelfTestEvidence {
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
+          nextPackageJsonExists = $true
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1474,6 +1515,7 @@ function New-SelfTestEvidence {
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
+          nextPackageJsonExists = $true
           runtimeRootName = "example-next-app"
         }
         reverseProxy = [ordered]@{
@@ -1642,7 +1684,7 @@ function Test-EvidenceFile {
     $Issues.Add("$displayFile does not prove controlled host-evidence workflow_dispatch collection provenance.") | Out-Null
   }
   if ($RequireHostEvidenceWorkflowCollection) {
-    foreach ($workflowDispatchIssue in @(Get-WorkflowDispatchDimensionIssues -Dispatch $collectionEvidence.WorkflowDispatch -FileName $displayFile -TargetId $supportTargetId -NextJsMode $nextJsMode -ServiceManager $serviceManager -ReverseProxy $reverseProxyMode -RequiredMinimumUptimeHours $RequireMinimumUptimeHours)) {
+    foreach ($workflowDispatchIssue in @(Get-WorkflowDispatchDimensionIssues -Dispatch $collectionEvidence.WorkflowDispatch -FileName $displayFile -TargetId $supportTargetId -NextJsMode $nextJsMode -ServiceManager $serviceManager -ReverseProxy $reverseProxyMode -RequiredMinimumUptimeHours $RequireMinimumUptimeHours -ExpectedMatrixPath $ExpectedMatrixPath -ExpectedMatrixSha256 $ExpectedMatrixSha256)) {
       $Issues.Add($workflowDispatchIssue) | Out-Null
     }
   }
@@ -1670,7 +1712,11 @@ function Test-EvidenceFile {
   } else {
     try {
       $generatedDate = [DateTime]::Parse($generatedAt).ToUniversalTime()
-      if ($MaxEvidenceAgeDays -gt 0 -and ((Get-Date).ToUniversalTime() - $generatedDate).TotalDays -gt $MaxEvidenceAgeDays) {
+      $nowUtc = (Get-Date).ToUniversalTime()
+      if ($generatedDate -gt $nowUtc.AddMinutes(5)) {
+        $Issues.Add("$displayFile has a generated timestamp in the future: $generatedAt") | Out-Null
+      }
+      if ($MaxEvidenceAgeDays -gt 0 -and ($nowUtc - $generatedDate).TotalDays -gt $MaxEvidenceAgeDays) {
         $Issues.Add("$displayFile is older than $MaxEvidenceAgeDays day(s).") | Out-Null
       }
     } catch {
@@ -1880,6 +1926,9 @@ function Test-EvidenceFile {
     if ($nextJsEvidence.Status -ne "ok") {
       $Issues.Add("$displayFile does not prove a successful Next.js runtime layout check (status: $($nextJsEvidence.Status)).") | Out-Null
     }
+    if ([string]::IsNullOrWhiteSpace($nextJsEvidence.NodeVersion)) {
+      $Issues.Add("$displayFile does not prove the active Node.js runtime version used by the Next.js service.") | Out-Null
+    }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NodeVersion)) {
       $Issues.Add("$displayFile contains an unsafe Node.js runtime version value in Next.js evidence.") | Out-Null
     }
@@ -1894,6 +1943,12 @@ function Test-EvidenceFile {
     }
     if ((Normalize-Target $nextJsEvidence.Mode) -eq "next-start" -and $nextJsEvidence.NextStartScriptIsExpectedCli -ne $true) {
       $Issues.Add("$displayFile does not prove Next.js next-start uses node_modules/next/dist/bin/next.") | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($nextJsEvidence.NextVersion)) {
+      $Issues.Add("$displayFile does not prove the installed Next.js package version.") | Out-Null
+    }
+    if ($nextJsEvidence.NextPackageJsonExists -ne $true) {
+      $Issues.Add("$displayFile does not prove node_modules/next/package.json exists in the active Next.js runtime.") | Out-Null
     }
     if (-not (Test-SafeRuntimeVersionEvidence -Value $nextJsEvidence.NextVersion)) {
       $Issues.Add("$displayFile contains an unsafe Next.js package version value in Next.js evidence.") | Out-Null
@@ -2207,6 +2262,19 @@ if ($SelfTest) {
     RequireDeploymentIdentity = $true
   }
 
+  $futureGeneratedAtEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-future-generated-at-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $futureGeneratedAtEvidencePath
+  $futureGeneratedAtFile = Join-Path $futureGeneratedAtEvidencePath "ubuntu.json"
+  $futureGeneratedAtEvidence = Get-Content -LiteralPath $futureGeneratedAtFile -Raw | ConvertFrom-Json
+  $futureGeneratedAtEvidence.generatedAtUtc = (Get-Date).ToUniversalTime().AddHours(1).ToString("o")
+  $futureGeneratedAtEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $futureGeneratedAtFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "generated timestamp in the future" -Parameters @{
+    EvidencePath = $futureGeneratedAtEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
   $unsafeVersionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-runtime-version-$([Guid]::NewGuid().ToString('N'))"
   New-SelfTestEvidence -Path $unsafeVersionEvidencePath
   $unsafeVersionFile = Join-Path $unsafeVersionEvidencePath "ubuntu.json"
@@ -2229,6 +2297,45 @@ if ($SelfTest) {
   $unsupportedNodeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $unsupportedNodeFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "configured Node.js runtime satisfies the Next.js minimum version requirement" -Parameters @{
     EvidencePath = $unsupportedNodeEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $missingNodeVersionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-node-version-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNodeVersionEvidencePath
+  $missingNodeVersionFile = Join-Path $missingNodeVersionEvidencePath "ubuntu.json"
+  $missingNodeVersionEvidence = Get-Content -LiteralPath $missingNodeVersionFile -Raw | ConvertFrom-Json
+  $missingNodeVersionEvidence.nextJsRuntime.nodeVersion = ""
+  $missingNodeVersionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingNodeVersionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "active Node.js runtime version" -Parameters @{
+    EvidencePath = $missingNodeVersionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $missingNextVersionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-next-version-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNextVersionEvidencePath
+  $missingNextVersionFile = Join-Path $missingNextVersionEvidencePath "ubuntu.json"
+  $missingNextVersionEvidence = Get-Content -LiteralPath $missingNextVersionFile -Raw | ConvertFrom-Json
+  $missingNextVersionEvidence.nextJsRuntime.nextVersion = ""
+  $missingNextVersionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingNextVersionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "installed Next.js package version" -Parameters @{
+    EvidencePath = $missingNextVersionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+  }
+
+  $missingNextPackageJsonEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-next-package-json-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNextPackageJsonEvidencePath
+  $missingNextPackageJsonFile = Join-Path $missingNextPackageJsonEvidencePath "ubuntu.json"
+  $missingNextPackageJsonEvidence = Get-Content -LiteralPath $missingNextPackageJsonFile -Raw | ConvertFrom-Json
+  $missingNextPackageJsonEvidence.nextJsRuntime.nextPackageJsonExists = $false
+  $missingNextPackageJsonEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $missingNextPackageJsonFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "node_modules/next/package.json exists" -Parameters @{
+    EvidencePath = $missingNextPackageJsonEvidencePath
     RequireNextJs = $true
     RequireReverseProxy = $true
     RequireDeploymentIdentity = $true
@@ -2308,6 +2415,8 @@ if ($SelfTest) {
       expectedServiceManager = "systemd"
       expectedReverseProxy = "nginx"
       minimumUptimeHours = "72"
+      supportMatrixPath = "config/support-matrix.example.json"
+      supportMatrixSha256 = ("d" * 64)
     }) -Force
   $workflowCiEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowCiFile -Encoding UTF8
   Invoke-ExpectHostEvidenceSuccess -Name "expected controlled host-evidence workflow provenance" -Parameters @{
@@ -2323,6 +2432,50 @@ if ($SelfTest) {
     ExpectedNextJsMode = "standalone"
     ExpectedServiceManager = "systemd"
     ExpectedReverseProxy = "nginx"
+    ExpectedMatrixPath = "config/support-matrix.example.json"
+    ExpectedMatrixSha256 = ("d" * 64)
+  }
+
+  $badWorkflowMatrixEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-workflow-matrix-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $badWorkflowMatrixEvidencePath
+  $badWorkflowMatrixFile = Join-Path $badWorkflowMatrixEvidencePath "ubuntu.json"
+  $badWorkflowMatrixEvidence = Get-Content -LiteralPath $badWorkflowMatrixFile -Raw | ConvertFrom-Json
+  $badWorkflowMatrixEvidence.evidenceCollection | Add-Member -NotePropertyName "ci" -NotePropertyValue ([pscustomobject]@{
+      isCi = $true
+      provider = "github-actions"
+      workflowName = "host-evidence"
+      runId = "12345"
+      runAttempt = "1"
+      eventName = "workflow_dispatch"
+      refName = "main"
+      sha = ("d" * 40)
+    }) -Force
+  $badWorkflowMatrixEvidence.evidenceCollection | Add-Member -NotePropertyName "workflowDispatch" -NotePropertyValue ([pscustomobject]@{
+      evidenceName = "ubuntu-standalone-systemd-nginx"
+      expectedTargetId = "ubuntu"
+      expectedNextJsMode = "standalone"
+      expectedServiceManager = "systemd"
+      expectedReverseProxy = "nginx"
+      minimumUptimeHours = "72"
+      supportMatrixPath = "config/support-matrix.example.json"
+      supportMatrixSha256 = ("e" * 64)
+    }) -Force
+  $badWorkflowMatrixEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $badWorkflowMatrixFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "workflowDispatch.supportMatrixSha256 does not match" -Parameters @{
+    EvidencePath = $badWorkflowMatrixFile
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
+    RequireCiCollection = $true
+    RequireHostEvidenceWorkflowCollection = $true
+    ExpectedTargetId = "ubuntu"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "systemd"
+    ExpectedReverseProxy = "nginx"
+    ExpectedMatrixPath = "config/support-matrix.example.json"
+    ExpectedMatrixSha256 = ("d" * 64)
   }
 
   $badWorkflowDispatchEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-workflow-dispatch-$([Guid]::NewGuid().ToString('N'))"
@@ -2346,6 +2499,8 @@ if ($SelfTest) {
       expectedServiceManager = "systemd"
       expectedReverseProxy = "nginx"
       minimumUptimeHours = "72"
+      supportMatrixPath = "config/support-matrix.example.json"
+      supportMatrixSha256 = ("d" * 64)
     }) -Force
   $badWorkflowDispatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $badWorkflowDispatchFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "workflowDispatch.expectedTargetId does not match" -Parameters @{

@@ -15,7 +15,9 @@ param(
   [string]$WorkflowFile = "host-evidence.yml",
   [string]$WorkflowRef = "main",
   [string]$OutputPath = "",
-  [switch]$SelfTest
+  [switch]$SelfTest,
+  [switch]$SkipExtendedSelfTestChecks,
+  [switch]$SkipMatrixValidation
 )
 
 Set-StrictMode -Version Latest
@@ -217,7 +219,9 @@ function Get-ValidationCommand {
     [string]$ReverseProxy,
     [int]$RequiredMinimumUptimeHours,
     [bool]$FailOnWarnings,
-    [bool]$WorkflowDispatchSupported
+    [bool]$WorkflowDispatchSupported,
+    [string]$ExpectedMatrixPath = "",
+    [string]$ExpectedMatrixSha256 = ""
   )
 
   $windowsPath = $EvidenceFile.Replace("/", "\")
@@ -248,6 +252,14 @@ function Get-ValidationCommand {
   if ($WorkflowDispatchSupported) {
     $args.Add("-RequireCiCollection") | Out-Null
     $args.Add("-RequireHostEvidenceWorkflowCollection") | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixPath)) {
+      $args.Add("-ExpectedMatrixPath") | Out-Null
+      $args.Add($ExpectedMatrixPath) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixSha256)) {
+      $args.Add("-ExpectedMatrixSha256") | Out-Null
+      $args.Add($ExpectedMatrixSha256) | Out-Null
+    }
   }
   if ($ReverseProxy -eq "none") {
     $args.Add("-AllowReverseProxyNone") | Out-Null
@@ -336,6 +348,7 @@ function Format-GhWorkflowRunCommand {
       "minimum_uptime_hours",
       "require_reverse_proxy",
       "fail_on_warnings",
+      "matrix_path",
       "upload_retention_days"
     )) {
     $args.Add("-f") | Out-Null
@@ -566,6 +579,7 @@ function Get-NextJsRuntimeEvidence {
     minimumNodeVersion = Get-StringValue -Object $nextJs -Names @("MinimumNodeVersion", "minimumNodeVersion")
     nodeVersionSatisfied = Get-BooleanValue -Object $nextJs -Names @("NodeVersionSatisfied", "nodeVersionSatisfied") -Default $null
     nextVersion = Get-StringValue -Object $nextJs -Names @("NextVersion", "nextVersion")
+    nextPackageJsonExists = Get-BooleanValue -Object $nextJs -Names @("NextPackageJsonExists", "nextPackageJsonExists") -Default $null
     nextStartScriptIsExpectedCli = Get-BooleanValue -Object $nextJs -Names @("NextStartScriptIsExpectedCli", "nextStartScriptIsExpectedCli", "NextStartCommandIsExpectedCli", "nextStartCommandIsExpectedCli") -Default $null
   }
 }
@@ -577,11 +591,14 @@ function Test-NextJsRuntimeEvidence {
   if ($Evidence.mode -notin @("standalone", "next-start")) { return $false }
   if ($Evidence.applicable -ne $true) { return $false }
   if ($Evidence.status -ne "ok") { return $false }
+  if ([string]::IsNullOrWhiteSpace([string]$Evidence.nodeVersion)) { return $false }
   if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.nodeVersion)) { return $false }
   if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.minimumNodeVersion)) { return $false }
   if ([string]::IsNullOrWhiteSpace([string]$Evidence.minimumNodeVersion)) { return $false }
   if ($Evidence.nodeVersionSatisfied -ne $true) { return $false }
   if ($Evidence.mode -eq "next-start" -and $Evidence.nextStartScriptIsExpectedCli -ne $true) { return $false }
+  if ($Evidence.nextPackageJsonExists -ne $true) { return $false }
+  if ([string]::IsNullOrWhiteSpace([string]$Evidence.nextVersion)) { return $false }
   if (-not (Test-SafeRuntimeVersionEvidence -Value $Evidence.nextVersion)) { return $false }
   return $true
 }
@@ -887,6 +904,8 @@ function Get-EvidenceCollectionEvidence {
     workflowDispatchExpectedServiceManager = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
     workflowDispatchExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
     workflowDispatchMinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+    workflowDispatchSupportMatrixPath = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixPath", "supportMatrixPath", "matrixPath", "matrix_path")).Trim().Replace("\", "/")
+    workflowDispatchSupportMatrixSha256 = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixSha256", "supportMatrixSha256", "matrixSha256", "matrix_sha256")).Trim().ToLowerInvariant()
     topLevelSynthetic = Get-BooleanValue -Object $Evidence -Names @("Synthetic", "synthetic") -Default $false
     topLevelMock = Get-BooleanValue -Object $Evidence -Names @("Mock", "mock") -Default $false
     topLevelSample = Get-BooleanValue -Object $Evidence -Names @("Sample", "sample") -Default $false
@@ -1052,6 +1071,8 @@ function Get-EvidenceRecords {
         workflowDispatchExpectedServiceManager = $collection.workflowDispatchExpectedServiceManager
         workflowDispatchExpectedReverseProxy = $collection.workflowDispatchExpectedReverseProxy
         workflowDispatchMinimumUptimeHours = $collection.workflowDispatchMinimumUptimeHours
+        workflowDispatchSupportMatrixPath = $collection.workflowDispatchSupportMatrixPath
+        workflowDispatchSupportMatrixSha256 = $collection.workflowDispatchSupportMatrixSha256
         parseError = ""
       }
     } catch {
@@ -1088,6 +1109,8 @@ function Get-EvidenceRecords {
         workflowDispatchExpectedServiceManager = ""
         workflowDispatchExpectedReverseProxy = ""
         workflowDispatchMinimumUptimeHours = $null
+        workflowDispatchSupportMatrixPath = ""
+        workflowDispatchSupportMatrixSha256 = ""
         parseError = $_.Exception.Message
       }
     }
@@ -1121,16 +1144,21 @@ function Test-RecordHealthy {
     if ($Record.minimumSatisfied -ne $true) { return $false }
     if ($null -eq $Record.serviceUptimeSeconds -or [int64]$Record.serviceUptimeSeconds -lt $requiredMinimumUptimeSeconds) { return $false }
   }
-  if ($MaxEvidenceAgeDays -gt 0) {
-    if (-not $Record.generatedAtUtc) { return $false }
+  if ($Record.generatedAtUtc) {
     try {
       $generatedDate = [DateTime]::Parse([string]$Record.generatedAtUtc).ToUniversalTime()
-      if (((Get-Date).ToUniversalTime() - $generatedDate).TotalDays -gt $MaxEvidenceAgeDays) {
+      $nowUtc = (Get-Date).ToUniversalTime()
+      if ($generatedDate -gt $nowUtc.AddMinutes(5)) {
+        return $false
+      }
+      if ($MaxEvidenceAgeDays -gt 0 -and ($nowUtc - $generatedDate).TotalDays -gt $MaxEvidenceAgeDays) {
         return $false
       }
     } catch {
       return $false
     }
+  } elseif ($MaxEvidenceAgeDays -gt 0) {
+    return $false
   }
   return $true
 }
@@ -1151,7 +1179,9 @@ function Test-RecordWorkflowDispatchMatches {
     [string]$Record.workflowDispatchExpectedServiceManager -eq [string]$Entry.serviceManager -and
     [string]$Record.workflowDispatchExpectedReverseProxy -eq [string]$Entry.reverseProxy -and
     $null -ne $Record.workflowDispatchMinimumUptimeHours -and
-    [int]$Record.workflowDispatchMinimumUptimeHours -ge [int]$Entry.requiredMinimumUptimeHours
+    [int]$Record.workflowDispatchMinimumUptimeHours -ge [int]$Entry.requiredMinimumUptimeHours -and
+    [string]$Record.workflowDispatchSupportMatrixPath -eq [string]$Entry.workflowSupportMatrixPath -and
+    [string]$Record.workflowDispatchSupportMatrixSha256 -eq [string]$Entry.workflowSupportMatrixSha256
   )
 }
 
@@ -1243,7 +1273,11 @@ function New-ExpectedEntry {
   $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
   $workflowDispatchCommand = ""
+  $workflowSupportMatrixPath = ""
+  $workflowSupportMatrixSha256 = ""
   if ($workflowDispatchSupported) {
+    $workflowSupportMatrixPath = Get-DisplayPath -Path $MatrixPath
+    $workflowSupportMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $workflowInputs = [pscustomobject]@{
       runner_labels = '["self-hosted","' + $targetId + '"]'
       platform = Get-WorkflowPlatform -Category $category
@@ -1256,6 +1290,7 @@ function New-ExpectedEntry {
       minimum_uptime_hours = [string]$RequiredMinimumUptimeHours
       require_reverse_proxy = "true"
       fail_on_warnings = if ($FailOnWarnings) { "true" } else { "false" }
+      matrix_path = $workflowSupportMatrixPath
       upload_retention_days = "30"
     }
     $workflowInputSummary = (@(
@@ -1264,7 +1299,8 @@ function New-ExpectedEntry {
         "expected_target_id=$($workflowInputs.expected_target_id)",
         "expected_nextjs_mode=$($workflowInputs.expected_nextjs_mode)",
         "expected_service_manager=$($workflowInputs.expected_service_manager)",
-        "expected_reverse_proxy=$($workflowInputs.expected_reverse_proxy)"
+        "expected_reverse_proxy=$($workflowInputs.expected_reverse_proxy)",
+        "matrix_path=$($workflowInputs.matrix_path)"
       ) -join "; ")
     $workflowDispatchCommand = Format-GhWorkflowRunCommand -Inputs $workflowInputs -WorkflowFile $WorkflowFile -WorkflowRef $WorkflowRef
   }
@@ -1283,12 +1319,14 @@ function New-ExpectedEntry {
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
-    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported -ExpectedMatrixPath $workflowSupportMatrixPath -ExpectedMatrixSha256 $workflowSupportMatrixSha256
     workflowDispatchSupported = $workflowDispatchSupported
     localCommandOnly = $localCommandOnly
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
     workflowDispatchCommand = $workflowDispatchCommand
+    workflowSupportMatrixPath = $workflowSupportMatrixPath
+    workflowSupportMatrixSha256 = $workflowSupportMatrixSha256
   }
 }
 
@@ -1310,7 +1348,7 @@ function Assert-WorkflowInputsAccepted {
     }
     try {
       & $workflowInputValidatorPath `
-        -MatrixPath $MatrixPath `
+        -MatrixPath ([string]$entry.workflowInputs.matrix_path) `
         -RunnerLabels ([string]$entry.workflowInputs.runner_labels) `
         -Platform ([string]$entry.workflowInputs.platform) `
         -ConfigPath ([string]$entry.workflowInputs.config_path) `
@@ -1478,6 +1516,11 @@ function New-SelfTestEvidence {
   New-Item -ItemType Directory -Path $Path -Force | Out-Null
   $now = (Get-Date).ToUniversalTime().ToString("o")
   $requiredMinimumUptimeSeconds = [int64]$RequiredMinimumUptimeHours * 3600
+  if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
+    throw "Support matrix not found for support evidence coverage self-test: $(Get-DisplayPath -Path $MatrixPath)"
+  }
+  $matrixRelativePath = Get-DisplayPath -Path $MatrixPath
+  $matrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
   foreach ($entry in $ExpectedEntries) {
     $fileName = "$($entry.kind)-$($entry.targetId)-$($entry.nextJsMode)-$($entry.serviceManager)-$($entry.reverseProxy).json"
     $targetId = [string]$entry.targetId
@@ -1516,6 +1559,8 @@ function New-SelfTestEvidence {
         expectedServiceManager = $serviceManager
         expectedReverseProxy = $reverseProxy
         minimumUptimeHours = [string]$RequiredMinimumUptimeHours
+        supportMatrixPath = $matrixRelativePath
+        supportMatrixSha256 = $matrixSha256
       }
     }
     $scheduleType = if ($targetIsWindows) {
@@ -1766,6 +1811,7 @@ function New-SelfTestEvidence {
         minimumNodeVersion = "20.9.0"
         nodeVersionSatisfied = $true
         nextVersion = "14.2.3"
+        nextPackageJsonExists = $true
         nextStartScriptIsExpectedCli = if ($nextJsMode -eq "next-start") { $true } else { $null }
         runtimeRootName = "example-next-app"
       }
@@ -1790,7 +1836,9 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
   throw "Support matrix not found: $(Get-DisplayPath -Path $MatrixPath)"
 }
 
-& (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
+if (-not $SkipMatrixValidation) {
+  & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
+}
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
 $allTargets = @(Get-ArrayValue $matrix.targets)
@@ -1829,6 +1877,19 @@ if ($evidencePathExists) {
 } else {
   $records = @()
 }
+if ($SelfTest -and $records.Count -gt 0) {
+  $futureGeneratedAtRecord = $records[0] | Select-Object *
+  $futureGeneratedAtRecord.generatedAtUtc = (Get-Date).ToUniversalTime().AddHours(1).ToString("o")
+  $originalMaxEvidenceAgeDays = $MaxEvidenceAgeDays
+  try {
+    $MaxEvidenceAgeDays = 0
+    if (Test-RecordHealthy -Record $futureGeneratedAtRecord -RequiredMinimumUptimeHours $requiredMinimumUptimeHours) {
+      throw "Support evidence coverage self-test failed: future-dated evidence should not be treated as healthy coverage."
+    }
+  } finally {
+    $MaxEvidenceAgeDays = $originalMaxEvidenceAgeDays
+  }
+}
 $healthyRecords = @($records | Where-Object { Test-RecordHealthy -Record $_ -RequiredMinimumUptimeHours $requiredMinimumUptimeHours })
 $covered = New-Object System.Collections.Generic.List[object]
 $missing = New-Object System.Collections.Generic.List[object]
@@ -1862,6 +1923,8 @@ foreach ($entry in $expectedEntries) {
       localCommandOnly = $entry.localCommandOnly
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
+      workflowSupportMatrixPath = $entry.workflowSupportMatrixPath
+      workflowSupportMatrixSha256 = $entry.workflowSupportMatrixSha256
       file = [string]$matches[0].relativeFile
       status = "covered"
     }) | Out-Null
@@ -1885,6 +1948,8 @@ foreach ($entry in $expectedEntries) {
       localCommandOnly = $entry.localCommandOnly
       workflowInputSummary = $entry.workflowInputSummary
       workflowDispatchCommand = $entry.workflowDispatchCommand
+      workflowSupportMatrixPath = $entry.workflowSupportMatrixPath
+      workflowSupportMatrixSha256 = $entry.workflowSupportMatrixSha256
       file = ""
       status = "missing"
     }) | Out-Null
@@ -1936,7 +2001,7 @@ $result = [pscustomobject]@{
   missing = $missingRows
 }
 
-if ($SelfTest) {
+if ($SelfTest -and -not $SkipExtendedSelfTestChecks) {
   function Copy-SelfTestCoverageArgs {
     param([hashtable]$Source)
 
@@ -1947,11 +2012,52 @@ if ($SelfTest) {
     return $copy
   }
 
+  function Select-SelfTestExpectedEntry {
+    param(
+      [string]$Kind,
+      [string]$TargetId,
+      [string]$NextJsMode,
+      [string]$ServiceManager,
+      [string]$ReverseProxy
+    )
+
+    $entry = @($expectedForSelfTest | Where-Object {
+        $_.kind -eq $Kind -and
+        $_.targetId -eq $TargetId -and
+        $_.nextJsMode -eq $NextJsMode -and
+        $_.serviceManager -eq $ServiceManager -and
+        $_.reverseProxy -eq $ReverseProxy
+      } | Select-Object -First 1)
+    if ($entry.Count -ne 1) {
+      throw "Support evidence coverage self-test failed: expected matrix row was not found for $Kind/$TargetId/$NextJsMode/$ServiceManager/$ReverseProxy."
+    }
+    return @($entry[0])
+  }
+
+  function TrySelect-SelfTestExpectedEntry {
+    param(
+      [string]$Kind,
+      [string]$TargetId,
+      [string]$NextJsMode,
+      [string]$ServiceManager,
+      [string]$ReverseProxy
+    )
+
+    return @($expectedForSelfTest | Where-Object {
+        $_.kind -eq $Kind -and
+        $_.targetId -eq $TargetId -and
+        $_.nextJsMode -eq $NextJsMode -and
+        $_.serviceManager -eq $ServiceManager -and
+        $_.reverseProxy -eq $ReverseProxy
+      } | Select-Object -First 1)
+  }
+
   $selfTestCoverageArgs = @{
     MatrixPath = $MatrixPath
     IncludeServiceOnly = $true
     IncludeFallback = $true
     ReportOnly = $true
+    SkipMatrixValidation = $true
   }
   if ($TargetId.Count -gt 0) {
     $selfTestCoverageArgs.TargetId = [string[]]$TargetId
@@ -1962,6 +2068,21 @@ if ($SelfTest) {
   if ($ProductionRecommendedOnly) {
     $selfTestCoverageArgs.ProductionRecommendedOnly = $true
   }
+
+  function Copy-SelfTestCoverageArgsForTargets {
+    param([string[]]$TargetIds)
+
+    $copy = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+    if ($TargetIds.Count -gt 0) {
+      $copy.TargetId = [string[]]$TargetIds
+    }
+    return $copy
+  }
+
+  $ubuntuCoverageArgs = Copy-SelfTestCoverageArgsForTargets -TargetIds @("ubuntu")
+  $alpineCoverageArgs = Copy-SelfTestCoverageArgsForTargets -TargetIds @("alpine")
+  $macosCoverageArgs = Copy-SelfTestCoverageArgsForTargets -TargetIds @("macos")
+  $mixedCoverageArgs = Copy-SelfTestCoverageArgsForTargets -TargetIds @("windows-10", "ubuntu", "freebsd")
 
   $selfTestReportPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-selftest-report-$([Guid]::NewGuid().ToString('N')).md"
   & $PSCommandPath @selfTestCoverageArgs -EvidencePath $EvidencePath -Format Markdown -OutputPath $selfTestReportPath | Out-Null
@@ -1986,14 +2107,15 @@ if ($SelfTest) {
   }
 
   $mismatchedTargetEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $mismatchedTargetEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $ubuntuSystemdNginxEntry = Select-SelfTestExpectedEntry -Kind "strict" -TargetId "ubuntu" -NextJsMode "standalone" -ServiceManager "systemd" -ReverseProxy "nginx"
+  New-SelfTestEvidence -Path $mismatchedTargetEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $mismatchedTargetFile = Join-Path $mismatchedTargetEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $mismatchedTargetEvidence = Get-Content -LiteralPath $mismatchedTargetFile -Raw | ConvertFrom-Json
   $mismatchedTargetEvidence.supportTargetId = "windows-server-2022"
   $mismatchedTargetEvidence.platform.supportTargetId = "windows-server-2022"
   $mismatchedTargetEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $mismatchedTargetFile -Encoding UTF8
   $mismatchedTargetJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $mismatchedTargetEvidencePath -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $mismatchedTargetEvidencePath -Format Json -OutputPath $mismatchedTargetJsonPath | Out-Null
   $mismatchedTargetJson = Get-Content -LiteralPath $mismatchedTargetJsonPath -Raw | ConvertFrom-Json
   if ([System.IO.Path]::IsPathRooted([string]$mismatchedTargetJson.evidencePath) -or ([string]$mismatchedTargetJson.evidencePath).Contains($RepoRoot)) {
     throw "Support evidence coverage self-test failed: JSON report leaked an absolute evidencePath."
@@ -2013,13 +2135,13 @@ if ($SelfTest) {
   }
 
   $workflowDispatchMismatchEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-dispatch-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $workflowDispatchMismatchEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $workflowDispatchMismatchEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $workflowDispatchMismatchFile = Join-Path $workflowDispatchMismatchEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $workflowDispatchMismatchEvidence = Get-Content -LiteralPath $workflowDispatchMismatchFile -Raw | ConvertFrom-Json
   $workflowDispatchMismatchEvidence.evidenceCollection.workflowDispatch.expectedTargetId = "debian"
   $workflowDispatchMismatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowDispatchMismatchFile -Encoding UTF8
   $workflowDispatchMismatchJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-dispatch-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $workflowDispatchMismatchEvidencePath -Format Json -OutputPath $workflowDispatchMismatchJsonPath | Out-Null
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $workflowDispatchMismatchEvidencePath -Format Json -OutputPath $workflowDispatchMismatchJsonPath | Out-Null
   $workflowDispatchMismatchJson = Get-Content -LiteralPath $workflowDispatchMismatchJsonPath -Raw | ConvertFrom-Json
   $missingWorkflowDispatchRow = @($workflowDispatchMismatchJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -2032,15 +2154,35 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: workflow-dispatch-mismatched evidence was counted as covering ubuntu."
   }
 
+  $workflowMatrixMismatchEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-matrix-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $workflowMatrixMismatchEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $workflowMatrixMismatchFile = Join-Path $workflowMatrixMismatchEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $workflowMatrixMismatchEvidence = Get-Content -LiteralPath $workflowMatrixMismatchFile -Raw | ConvertFrom-Json
+  $workflowMatrixMismatchEvidence.evidenceCollection.workflowDispatch.supportMatrixSha256 = ("0" * 64)
+  $workflowMatrixMismatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowMatrixMismatchFile -Encoding UTF8
+  $workflowMatrixMismatchJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-matrix-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $workflowMatrixMismatchEvidencePath -Format Json -OutputPath $workflowMatrixMismatchJsonPath | Out-Null
+  $workflowMatrixMismatchJson = Get-Content -LiteralPath $workflowMatrixMismatchJsonPath -Raw | ConvertFrom-Json
+  $missingWorkflowMatrixRow = @($workflowMatrixMismatchJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingWorkflowMatrixRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: workflow-dispatch matrix-mismatched evidence was counted as covering ubuntu."
+  }
+
   $runtimeFloorEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $runtimeFloorEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $runtimeFloorEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $runtimeFloorFile = Join-Path $runtimeFloorEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $runtimeFloorEvidence = Get-Content -LiteralPath $runtimeFloorFile -Raw | ConvertFrom-Json
   $runtimeFloorEvidence.platform.kernelRelease = "4.17.0"
   $runtimeFloorEvidence.platform.libcVersion = "2.27"
   $runtimeFloorEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $runtimeFloorFile -Encoding UTF8
   $runtimeFloorJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-runtime-floor-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $runtimeFloorEvidencePath -Format Json -OutputPath $runtimeFloorJsonPath | Out-Null
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $runtimeFloorEvidencePath -Format Json -OutputPath $runtimeFloorJsonPath | Out-Null
   $runtimeFloorJson = Get-Content -LiteralPath $runtimeFloorJsonPath -Raw | ConvertFrom-Json
   $missingRuntimeFloorRow = @($runtimeFloorJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -2057,13 +2199,13 @@ if ($SelfTest) {
   }
 
   $missingNextJsRuntimeEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-nextjs-runtime-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $missingNextJsRuntimeEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $missingNextJsRuntimeEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $missingNextJsRuntimeFile = Join-Path $missingNextJsRuntimeEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $missingNextJsRuntimeEvidence = Get-Content -LiteralPath $missingNextJsRuntimeFile -Raw | ConvertFrom-Json
   $missingNextJsRuntimeEvidence.PSObject.Properties.Remove("nextJsRuntime")
   $missingNextJsRuntimeEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $missingNextJsRuntimeFile -Encoding UTF8
   $missingNextJsRuntimeJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-nextjs-runtime-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingNextJsRuntimeEvidencePath -Format Json -OutputPath $missingNextJsRuntimeJsonPath | Out-Null
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $missingNextJsRuntimeEvidencePath -Format Json -OutputPath $missingNextJsRuntimeJsonPath | Out-Null
   $missingNextJsRuntimeJson = Get-Content -LiteralPath $missingNextJsRuntimeJsonPath -Raw | ConvertFrom-Json
   $missingNextJsRuntimeRow = @($missingNextJsRuntimeJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -2079,15 +2221,62 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: missing Next.js runtime evidence should not be treated as healthy coverage."
   }
 
+  $missingNodeVersionEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-node-version-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNodeVersionEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $missingNodeVersionFile = Join-Path $missingNodeVersionEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $missingNodeVersionEvidence = Get-Content -LiteralPath $missingNodeVersionFile -Raw | ConvertFrom-Json
+  $missingNodeVersionEvidence.nextJsRuntime.nodeVersion = ""
+  $missingNodeVersionEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $missingNodeVersionFile -Encoding UTF8
+  $missingNodeVersionJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-node-version-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $missingNodeVersionEvidencePath -Format Json -OutputPath $missingNodeVersionJsonPath | Out-Null
+  $missingNodeVersionJson = Get-Content -LiteralPath $missingNodeVersionJsonPath -Raw | ConvertFrom-Json
+  $missingNodeVersionRow = @($missingNodeVersionJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingNodeVersionRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: missing Node.js runtime version evidence was counted as covering ubuntu."
+  }
+  if ([int]$missingNodeVersionJson.summary.healthyEvidenceFiles -ge [int]$missingNodeVersionJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: missing Node.js runtime version evidence should not be treated as healthy coverage."
+  }
+
+  $missingNextVersionEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-next-version-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingNextVersionEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $missingNextVersionFile = Join-Path $missingNextVersionEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $missingNextVersionEvidence = Get-Content -LiteralPath $missingNextVersionFile -Raw | ConvertFrom-Json
+  $missingNextVersionEvidence.nextJsRuntime.nextVersion = ""
+  $missingNextVersionEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $missingNextVersionFile -Encoding UTF8
+  $missingNextVersionJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-next-version-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $missingNextVersionEvidencePath -Format Json -OutputPath $missingNextVersionJsonPath | Out-Null
+  $missingNextVersionJson = Get-Content -LiteralPath $missingNextVersionJsonPath -Raw | ConvertFrom-Json
+  $missingNextVersionRow = @($missingNextVersionJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingNextVersionRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: missing Next.js package version evidence was counted as covering ubuntu."
+  }
+  if ([int]$missingNextVersionJson.summary.healthyEvidenceFiles -ge [int]$missingNextVersionJson.summary.parsedEvidenceFiles) {
+    throw "Support evidence coverage self-test failed: missing Next.js package version evidence should not be treated as healthy coverage."
+  }
+
   $openRcServiceEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-openrc-service-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $openRcServiceEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
-  $openRcServiceFile = Join-Path $openRcServiceEvidencePath "strict-alpine-standalone-openrc-apache.json"
-  if (Test-Path -LiteralPath $openRcServiceFile -PathType Leaf) {
+  $alpineOpenRcApacheEntry = @(TrySelect-SelfTestExpectedEntry -Kind "strict" -TargetId "alpine" -NextJsMode "standalone" -ServiceManager "openrc" -ReverseProxy "apache")
+  if ($alpineOpenRcApacheEntry.Count -eq 1) {
+    New-SelfTestEvidence -Path $openRcServiceEvidencePath -ExpectedEntries $alpineOpenRcApacheEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+    $openRcServiceFile = Join-Path $openRcServiceEvidencePath "strict-alpine-standalone-openrc-apache.json"
     $openRcServiceEvidence = Get-Content -LiteralPath $openRcServiceFile -Raw | ConvertFrom-Json
     $openRcServiceEvidence.serviceDefinition.definitionExists = $false
     $openRcServiceEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $openRcServiceFile -Encoding UTF8
     $openRcServiceJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-openrc-service-$([Guid]::NewGuid().ToString('N')).json"
-    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $openRcServiceEvidencePath -Format Json -OutputPath $openRcServiceJsonPath | Out-Null
+    & $PSCommandPath @alpineCoverageArgs -EvidencePath $openRcServiceEvidencePath -Format Json -OutputPath $openRcServiceJsonPath | Out-Null
     $openRcServiceJson = Get-Content -LiteralPath $openRcServiceJsonPath -Raw | ConvertFrom-Json
     $missingOpenRcServiceRow = @($openRcServiceJson.missing | Where-Object {
         $_.kind -eq "strict" -and
@@ -2105,14 +2294,15 @@ if ($SelfTest) {
   }
 
   $systemvApacheEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-systemv-apache-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $systemvApacheEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $ubuntuSystemvApacheEntry = Select-SelfTestExpectedEntry -Kind "strict" -TargetId "ubuntu" -NextJsMode "standalone" -ServiceManager "systemv" -ReverseProxy "apache"
+  New-SelfTestEvidence -Path $systemvApacheEvidencePath -ExpectedEntries $ubuntuSystemvApacheEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $systemvApacheFile = Join-Path $systemvApacheEvidencePath "strict-ubuntu-standalone-systemv-apache.json"
   if (Test-Path -LiteralPath $systemvApacheFile -PathType Leaf) {
     $systemvApacheEvidence = Get-Content -LiteralPath $systemvApacheFile -Raw | ConvertFrom-Json
     $systemvApacheEvidence.reverseProxy.config.managedMarkerFound = $false
     $systemvApacheEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $systemvApacheFile -Encoding UTF8
     $systemvApacheJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-systemv-apache-$([Guid]::NewGuid().ToString('N')).json"
-    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $systemvApacheEvidencePath -Format Json -OutputPath $systemvApacheJsonPath | Out-Null
+    & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $systemvApacheEvidencePath -Format Json -OutputPath $systemvApacheJsonPath | Out-Null
     $systemvApacheJson = Get-Content -LiteralPath $systemvApacheJsonPath -Raw | ConvertFrom-Json
     $missingSystemvApacheRow = @($systemvApacheJson.missing | Where-Object {
         $_.kind -eq "strict" -and
@@ -2130,14 +2320,15 @@ if ($SelfTest) {
   }
 
   $launchdRunnerEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-launchd-runner-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $launchdRunnerEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
-  $launchdRunnerFile = Join-Path $launchdRunnerEvidencePath "strict-macos-standalone-launchd-nginx.json"
-  if (Test-Path -LiteralPath $launchdRunnerFile -PathType Leaf) {
+  $macosLaunchdNginxEntry = @(TrySelect-SelfTestExpectedEntry -Kind "strict" -TargetId "macos" -NextJsMode "standalone" -ServiceManager "launchd" -ReverseProxy "nginx")
+  if ($macosLaunchdNginxEntry.Count -eq 1) {
+    New-SelfTestEvidence -Path $launchdRunnerEvidencePath -ExpectedEntries $macosLaunchdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+    $launchdRunnerFile = Join-Path $launchdRunnerEvidencePath "strict-macos-standalone-launchd-nginx.json"
     $launchdRunnerEvidence = Get-Content -LiteralPath $launchdRunnerFile -Raw | ConvertFrom-Json
     $launchdRunnerEvidence.serviceDefinition.runnerScriptMatchesConfig = $false
     $launchdRunnerEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $launchdRunnerFile -Encoding UTF8
     $launchdRunnerJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-launchd-runner-$([Guid]::NewGuid().ToString('N')).json"
-    & $PSCommandPath @selfTestCoverageArgs -EvidencePath $launchdRunnerEvidencePath -Format Json -OutputPath $launchdRunnerJsonPath | Out-Null
+    & $PSCommandPath @macosCoverageArgs -EvidencePath $launchdRunnerEvidencePath -Format Json -OutputPath $launchdRunnerJsonPath | Out-Null
     $launchdRunnerJson = Get-Content -LiteralPath $launchdRunnerJsonPath -Raw | ConvertFrom-Json
     $missingLaunchdRunnerRow = @($launchdRunnerJson.missing | Where-Object {
         $_.kind -eq "strict" -and
@@ -2155,7 +2346,7 @@ if ($SelfTest) {
   }
 
   $uptimeFloorEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-uptime-floor-$([Guid]::NewGuid().ToString('N'))"
-  New-SelfTestEvidence -Path $uptimeFloorEvidencePath -ExpectedEntries $expectedForSelfTest -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $uptimeFloorEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $uptimeFloorFile = Join-Path $uptimeFloorEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $uptimeFloorEvidence = Get-Content -LiteralPath $uptimeFloorFile -Raw | ConvertFrom-Json
   $uptimeFloorEvidence.uptime.minimumUptimeHours = "1"
@@ -2163,7 +2354,7 @@ if ($SelfTest) {
   $uptimeFloorEvidence.uptime.serviceUptimeSeconds = 3600
   $uptimeFloorEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $uptimeFloorFile -Encoding UTF8
   $uptimeFloorJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-uptime-floor-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $uptimeFloorEvidencePath -Format Json -OutputPath $uptimeFloorJsonPath | Out-Null
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $uptimeFloorEvidencePath -Format Json -OutputPath $uptimeFloorJsonPath | Out-Null
   $uptimeFloorJson = Get-Content -LiteralPath $uptimeFloorJsonPath -Raw | ConvertFrom-Json
   $missingUptimeFloorRow = @($uptimeFloorJson.missing | Where-Object {
       $_.kind -eq "strict" -and
@@ -2182,7 +2373,7 @@ if ($SelfTest) {
   $missingEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-selftest-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $missingEvidencePath -Force | Out-Null
   $missingReportPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).md"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Markdown -OutputPath $missingReportPath | Out-Null
+  & $PSCommandPath @mixedCoverageArgs -EvidencePath $missingEvidencePath -Format Markdown -OutputPath $missingReportPath | Out-Null
   $missingReport = Get-Content -LiteralPath $missingReportPath -Raw
   foreach ($expectedReportText in @(
       "Next Collection Commands",
@@ -2190,7 +2381,9 @@ if ($SelfTest) {
       "gh workflow run",
       "minimum_uptime_hours=$requiredMinimumUptimeHours",
       "fail_on_warnings=true",
+      "matrix_path=$(Get-DisplayPath -Path $MatrixPath)",
       "-MinimumUptimeHours $requiredMinimumUptimeHours",
+      "-ExpectedMatrixPath $(Get-DisplayPath -Path $MatrixPath)",
       "-FailOnWarnings",
       "--minimum-uptime-hours $requiredMinimumUptimeHours",
       "--fail-on-warnings",
@@ -2209,7 +2402,7 @@ if ($SelfTest) {
   }
 
   $missingJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $missingJsonPath | Out-Null
+  & $PSCommandPath @mixedCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $missingJsonPath | Out-Null
   $missingJson = Get-Content -LiteralPath $missingJsonPath -Raw | ConvertFrom-Json
   if ([int]$missingJson.summary.missingCount -le 0) {
     throw "Support evidence coverage self-test failed: missing JSON report did not report missing entries."
@@ -2236,7 +2429,7 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: default missing report did not record strict warning collection."
   }
   $firstMissing = @($missingJson.missing | Select-Object -First 1)[0]
-  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "validationCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "localCommandOnly", "workflowInputSummary", "workflowDispatchCommand")) {
+  foreach ($requiredProperty in @("evidenceFile", "collectionCommand", "validationCommand", "nodeRuntimeMinimumNodeVersion", "nodeRuntimeSupportTier", "nodeRuntimeProductionRecommended", "nodeRuntimeRequirements", "requiredMinimumUptimeHours", "workflowDispatchSupported", "localCommandOnly", "workflowInputSummary", "workflowDispatchCommand", "workflowSupportMatrixPath", "workflowSupportMatrixSha256")) {
     if (-not $firstMissing.PSObject.Properties[$requiredProperty]) {
       throw "Support evidence coverage self-test failed: missing JSON row did not include $requiredProperty."
     }
@@ -2261,7 +2454,9 @@ if ($SelfTest) {
       "-ExpectedReverseProxy $($firstWindowsMissing.reverseProxy)",
       "-RequireMinimumUptimeHours $requiredMinimumUptimeHours",
       "-RequireCiCollection",
-      "-RequireHostEvidenceWorkflowCollection"
+      "-RequireHostEvidenceWorkflowCollection",
+      "-ExpectedMatrixPath $($firstWindowsMissing.workflowSupportMatrixPath)",
+      "-ExpectedMatrixSha256 $($firstWindowsMissing.workflowSupportMatrixSha256)"
     )) {
     if (-not ([string]$firstWindowsMissing.validationCommand).Contains($expectedValidationFragment)) {
       throw "Support evidence coverage self-test failed: Windows validation command is missing $expectedValidationFragment."
@@ -2275,6 +2470,9 @@ if ($SelfTest) {
   }
   if (-not ([string]$firstWindowsMissing.workflowDispatchCommand).Contains("fail_on_warnings=true")) {
     throw "Support evidence coverage self-test failed: strict workflow dispatch command is missing fail_on_warnings=true."
+  }
+  if (-not ([string]$firstWindowsMissing.workflowDispatchCommand).Contains("matrix_path=$($firstWindowsMissing.workflowSupportMatrixPath)")) {
+    throw "Support evidence coverage self-test failed: strict workflow dispatch command is missing matrix_path."
   }
   $firstLocalOnlyMissing = @($missingJson.missing | Where-Object { $_.workflowDispatchSupported -ne $true } | Select-Object -First 1)[0]
   if ($null -ne $firstLocalOnlyMissing -and $firstLocalOnlyMissing.localCommandOnly -ne $true) {
@@ -2296,7 +2494,7 @@ if ($SelfTest) {
 
   $missingDirectoryPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-directory-$([Guid]::NewGuid().ToString('N'))"
   $missingDirectoryJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-directory-$([Guid]::NewGuid().ToString('N')).json"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingDirectoryPath -Format Json -OutputPath $missingDirectoryJsonPath | Out-Null
+  & $PSCommandPath @mixedCoverageArgs -EvidencePath $missingDirectoryPath -Format Json -OutputPath $missingDirectoryJsonPath | Out-Null
   $missingDirectoryJson = Get-Content -LiteralPath $missingDirectoryJsonPath -Raw | ConvertFrom-Json
   if ($missingDirectoryJson.evidencePathExists -ne $false) {
     throw "Support evidence coverage self-test failed: missing evidence path should be reported as absent."
@@ -2312,7 +2510,7 @@ if ($SelfTest) {
   }
 
   $missingCsvPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-missing-report-$([Guid]::NewGuid().ToString('N')).csv"
-  & $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Csv -OutputPath $missingCsvPath | Out-Null
+  & $PSCommandPath @mixedCoverageArgs -EvidencePath $missingEvidencePath -Format Csv -OutputPath $missingCsvPath | Out-Null
   $missingCsvHeader = Get-Content -LiteralPath $missingCsvPath -First 1
   if (-not ([string]$missingCsvHeader).Contains("validationCommand")) {
     throw "Support evidence coverage self-test failed: CSV report is missing validationCommand."
@@ -2322,7 +2520,7 @@ if ($SelfTest) {
     throw "Support evidence coverage self-test failed: CSV report is missing validation command content."
   }
 
-  $missingTableOutput = (& $PSCommandPath @selfTestCoverageArgs -EvidencePath $missingEvidencePath -Format Table 6>&1 | Out-String)
+  $missingTableOutput = (& $PSCommandPath @mixedCoverageArgs -EvidencePath $missingEvidencePath -Format Table 6>&1 | Out-String)
   foreach ($expectedTableText in @(
       "Next collection and validation commands:",
       "Collect:",
@@ -2335,7 +2533,7 @@ if ($SelfTest) {
   }
 
   $allowWarningsJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-allow-warnings-report-$([Guid]::NewGuid().ToString('N')).json"
-  $allowWarningsCoverageArgs = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+  $allowWarningsCoverageArgs = Copy-SelfTestCoverageArgs -Source $mixedCoverageArgs
   $allowWarningsCoverageArgs.AllowWarnings = $true
   & $PSCommandPath @allowWarningsCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $allowWarningsJsonPath | Out-Null
   $allowWarningsJson = Get-Content -LiteralPath $allowWarningsJsonPath -Raw | ConvertFrom-Json
@@ -2354,7 +2552,7 @@ if ($SelfTest) {
   }
 
   $productionOnlyJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-production-only-$([Guid]::NewGuid().ToString('N')).json"
-  $productionOnlyCoverageArgs = Copy-SelfTestCoverageArgs -Source $selfTestCoverageArgs
+  $productionOnlyCoverageArgs = Copy-SelfTestCoverageArgs -Source $mixedCoverageArgs
   $productionOnlyCoverageArgs.ProductionRecommendedOnly = $true
   & $PSCommandPath @productionOnlyCoverageArgs -EvidencePath $missingEvidencePath -Format Json -OutputPath $productionOnlyJsonPath | Out-Null
   $productionOnlyJson = Get-Content -LiteralPath $productionOnlyJsonPath -Raw | ConvertFrom-Json

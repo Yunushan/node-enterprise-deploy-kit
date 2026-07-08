@@ -258,7 +258,7 @@ validate_nextjs_layout() {
       if is_true "${NEXTJS_REQUIRE_PUBLIC_DIR:-false}" && [[ ! -d "$standalone_root/public" ]]; then
         add_error "Next.js standalone runtime root is missing public directory, but NEXTJS_REQUIRE_PUBLIC_DIR=true."
       fi
-      [[ -d "$standalone_root/node_modules" ]] || add_warning "Next.js standalone runtime root has no node_modules directory. Confirm the standalone artifact includes traced dependencies."
+      [[ -f "$standalone_root/node_modules/next/package.json" ]] || add_error "Next.js standalone runtime root is missing node_modules/next/package.json. Keep Next.js package metadata with the deployed artifact so status evidence can prove the installed Next.js version."
       ;;
     next-start)
       if [[ "${START_SCRIPT:-}" == *" "* ]]; then
@@ -268,6 +268,7 @@ validate_nextjs_layout() {
       else
         start_path="$(nextjs_start_command_path)"
         [[ -f "$start_path" ]] || add_error "Next.js next-start START_SCRIPT file was not found: $start_path"
+        [[ -f "${APP_DIR%/}/node_modules/next/package.json" ]] || add_error "Next.js next-start mode is missing node_modules/next/package.json under APP_DIR."
         expected_next_start_script="node_modules/next/dist/bin/next"
         expected_start_path="${APP_DIR%/}/$expected_next_start_script"
         if [[ "${START_SCRIPT:-}" = /* ]]; then

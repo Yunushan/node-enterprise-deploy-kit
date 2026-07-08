@@ -353,6 +353,8 @@ function Get-SafeWorkflowDispatchEvidence {
         ExpectedServiceManager = Get-SafeCiValue -Value ([string]$env:EXPECTED_SERVICE_MANAGER) -Pattern '[^A-Za-z0-9._-]'
         ExpectedReverseProxy = Get-SafeCiValue -Value ([string]$env:EXPECTED_REVERSE_PROXY) -Pattern '[^A-Za-z0-9._-]'
         MinimumUptimeHours = Get-SafeCiValue -Value ([string]$env:MINIMUM_UPTIME_HOURS) -Pattern '[^0-9]'
+        SupportMatrixPath = Get-SafeCiValue -Value ([string]$env:SUPPORT_MATRIX_PATH)
+        SupportMatrixSha256 = Get-SafeCiValue -Value ([string]$env:SUPPORT_MATRIX_SHA256) -Pattern '[^A-Fa-f0-9]'
     }
 }
 function Get-CollectorFileSha256 {
@@ -459,6 +461,7 @@ function Get-SafeNextJsRuntimeEvidence($Evidence) {
         NodeModulesExists = Get-ObjectPropertyValue $Evidence "NodeModulesExists" $null
         PackageJsonExists = Get-ObjectPropertyValue $Evidence "PackageJsonExists" $null
         NextPackageExists = Get-ObjectPropertyValue $Evidence "NextPackageExists" $null
+        NextPackageJsonExists = Get-ObjectPropertyValue $Evidence "NextPackageJsonExists" $null
     }
 }
 function Get-SafeDeploymentIdentityEvidence($Evidence) {
@@ -1027,7 +1030,8 @@ function Show-NextJsRuntimeLayout {
     $publicPath = Join-Path $runtimeRoot "public"
     $nodeModulesPath = Join-Path $runtimeRoot "node_modules"
     $packagePath = Join-Path $appDirectory "package.json"
-    $nextPackagePath = Join-Path $appDirectory "node_modules\next"
+    $nextPackagePath = if ($mode -eq "standalone") { Join-Path $runtimeRoot "node_modules\next" } else { Join-Path $appDirectory "node_modules\next" }
+    $nextPackageJsonPath = Join-Path $nextPackagePath "package.json"
     $nextVersion = Get-NextPackageVersion -AppDirectory $appDirectory -RuntimeRoot $runtimeRoot
 
     $script:nextJsRuntimeEvidence = [pscustomobject]@{
@@ -1050,6 +1054,7 @@ function Show-NextJsRuntimeLayout {
         StaticAssetsExist = (Test-Path -LiteralPath $staticPath -PathType Container)
         PublicDirectoryExists = (Test-Path -LiteralPath $publicPath -PathType Container)
         NodeModulesExists = (Test-Path -LiteralPath $nodeModulesPath -PathType Container)
+        NextPackageJsonExists = (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)
     }
 
     switch ($mode) {
@@ -1077,8 +1082,9 @@ function Show-NextJsRuntimeLayout {
                 Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing public directory: $publicPath"
                 $layoutFailed = $true
             }
-            if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
-                Add-Finding -Severity Warning -Message "Next.js standalone runtime root has no node_modules directory. Confirm the artifact includes traced dependencies."
+            if (-not (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js standalone runtime root is missing node_modules/next/package.json. Keep Next.js package metadata with the deployed artifact so status evidence can prove the installed Next.js version."
+                $layoutFailed = $true
             }
         }
         "next-start" {
@@ -1132,6 +1138,10 @@ function Show-NextJsRuntimeLayout {
             }
             if (-not (Test-Path -LiteralPath $nextPackagePath -PathType Container)) {
                 Add-Finding -Severity Critical -Message "Next.js next-start mode is missing node_modules/next under AppDirectory."
+                $layoutFailed = $true
+            }
+            if (-not (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)) {
+                Add-Finding -Severity Critical -Message "Next.js next-start mode is missing node_modules/next/package.json under AppDirectory."
                 $layoutFailed = $true
             }
         }

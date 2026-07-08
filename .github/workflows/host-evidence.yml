@@ -18,6 +18,10 @@ on:
         description: Path to the deployed app config on the runner workspace
         required: true
         default: config/windows/app.config.json
+      matrix_path:
+        description: Relative repository path to the support matrix used for this evidence run
+        required: true
+        default: config/support-matrix.example.json
       evidence_name:
         description: Artifact-safe name matching target-mode-service-proxy, with -fallback for fallback managers
         required: true
@@ -94,6 +98,7 @@ jobs:
           EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
           EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
           EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
           PLATFORM: ${{ inputs.platform }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
@@ -113,6 +118,7 @@ jobs:
       EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
       EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
       FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
+      MATRIX_PATH: ${{ inputs.matrix_path }}
       MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
     steps:
       - name: Checkout repository without deleting local private config
@@ -148,6 +154,9 @@ jobs:
           Assert-SafeRelativeConfigPath -Value $env:CONFIG_PATH
           if (-not (Test-Path -LiteralPath $env:CONFIG_PATH -PathType Leaf)) {
             throw "config_path was not found on the self-hosted runner workspace."
+          }
+          if (-not (Test-Path -LiteralPath $env:MATRIX_PATH -PathType Leaf)) {
+            throw "matrix_path was not found on the self-hosted runner workspace."
           }
           if ($env:EVIDENCE_NAME -notmatch '^[A-Za-z0-9._-]+$') {
             throw "evidence_name must contain only letters, numbers, dot, underscore, or dash."
@@ -187,6 +196,10 @@ jobs:
             echo "config_path was not found on the self-hosted runner workspace." >&2
             exit 1
           fi
+          if [[ ! -f "$MATRIX_PATH" ]]; then
+            echo "matrix_path was not found on the self-hosted runner workspace." >&2
+            exit 1
+          fi
           case "$EVIDENCE_NAME" in
             *[!A-Za-z0-9._-]*|'') echo "evidence_name must contain only letters, numbers, dot, underscore, or dash." >&2; exit 1 ;;
           esac
@@ -205,6 +218,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $env:SUPPORT_MATRIX_PATH = $env:MATRIX_PATH
+          $env:SUPPORT_MATRIX_SHA256 = (Get-FileHash -LiteralPath $env:MATRIX_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
           $statusArgs = @(
             "-ConfigPath", $env:CONFIG_PATH,
             "-MinimumUptimeHours", $env:MINIMUM_UPTIME_HOURS,
@@ -221,6 +236,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          matrix_sha="$(sha256sum "$MATRIX_PATH" | awk '{print $1}')"
           extra=()
           if [[ "$FAIL_ON_WARNINGS" == "true" ]]; then
             extra+=(--fail-on-warnings)
@@ -240,6 +256,8 @@ jobs:
             GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
             GITHUB_SHA="${GITHUB_SHA:-}" \
             MINIMUM_UPTIME_HOURS="${MINIMUM_UPTIME_HOURS:-}" \
+            SUPPORT_MATRIX_PATH="${MATRIX_PATH:-}" \
+            SUPPORT_MATRIX_SHA256="$matrix_sha" \
             bash scripts/linux/status-node-app.sh \
             "$CONFIG_PATH" \
             --minimum-uptime-hours "$MINIMUM_UPTIME_HOURS" \
@@ -278,10 +296,12 @@ jobs:
           EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
           EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
           FAIL_ON_WARNINGS: ${{ inputs.fail_on_warnings }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           MINIMUM_UPTIME_HOURS: ${{ inputs.minimum_uptime_hours }}
           REQUIRE_REVERSE_PROXY: ${{ inputs.require_reverse_proxy }}
         run: |
           $ErrorActionPreference = "Stop"
+          $matrixSha256 = (Get-FileHash -LiteralPath $env:MATRIX_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
           $validationArgs = @(
             "-EvidencePath", (Join-Path "evidence" $env:EVIDENCE_NAME),
             "-RequireNextJs",
@@ -290,6 +310,8 @@ jobs:
             "-RequireCiCollection",
             "-RequireHostEvidenceWorkflowCollection",
             "-RequireMinimumUptimeHours", $env:MINIMUM_UPTIME_HOURS,
+            "-ExpectedMatrixPath", $env:MATRIX_PATH,
+            "-ExpectedMatrixSha256", $matrixSha256,
             "-MaxEvidenceAgeDays", "1"
           )
           $requireReverseProxy = ($env:REQUIRE_REVERSE_PROXY -eq "true")

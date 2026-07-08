@@ -156,7 +156,9 @@ function Get-ValidationCommand {
     [string]$ReverseProxy,
     [int]$RequiredMinimumUptimeHours,
     [bool]$FailOnWarnings,
-    [bool]$WorkflowDispatchSupported
+    [bool]$WorkflowDispatchSupported,
+    [string]$ExpectedMatrixPath = "",
+    [string]$ExpectedMatrixSha256 = ""
   )
 
   $windowsPath = $EvidenceFile.Replace("/", "\")
@@ -187,6 +189,14 @@ function Get-ValidationCommand {
   if ($WorkflowDispatchSupported) {
     $args.Add("-RequireCiCollection") | Out-Null
     $args.Add("-RequireHostEvidenceWorkflowCollection") | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixPath)) {
+      $args.Add("-ExpectedMatrixPath") | Out-Null
+      $args.Add($ExpectedMatrixPath) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixSha256)) {
+      $args.Add("-ExpectedMatrixSha256") | Out-Null
+      $args.Add($ExpectedMatrixSha256) | Out-Null
+    }
   }
   if ($ReverseProxy -eq "none") {
     $args.Add("-AllowReverseProxyNone") | Out-Null
@@ -244,6 +254,18 @@ function Quote-PowerShellArgument {
   return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function Get-RepoRelativePath {
+  param([string]$Path)
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+  return $Path.Replace("\", "/")
+}
+
 function Format-GhWorkflowRunCommand {
   param(
     [object]$Inputs,
@@ -267,6 +289,7 @@ function Format-GhWorkflowRunCommand {
       "runner_labels",
       "platform",
       "config_path",
+      "matrix_path",
       "evidence_name",
       "expected_target_id",
       "expected_nextjs_mode",
@@ -326,11 +349,16 @@ function New-PlanEntry {
   $workflowInputs = $null
   $workflowInputSummary = "local command only; host-evidence workflow is not supported for target category '$category'"
   $workflowDispatchCommand = ""
+  $workflowSupportMatrixPath = ""
+  $workflowSupportMatrixSha256 = ""
   if ($workflowDispatchSupported) {
+    $workflowSupportMatrixPath = Get-RepoRelativePath -Path $MatrixPath
+    $workflowSupportMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $workflowInputs = [pscustomobject]@{
       runner_labels = '["self-hosted","' + $targetId + '"]'
       platform = Get-WorkflowPlatform -Category $category
       config_path = Get-WorkflowConfigPath -Category $category
+      matrix_path = $workflowSupportMatrixPath
       evidence_name = Get-WorkflowEvidenceName -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -Kind $Kind
       expected_target_id = $targetId
       expected_nextjs_mode = $modeValue
@@ -360,12 +388,14 @@ function New-PlanEntry {
     requiredMinimumUptimeHours = $RequiredMinimumUptimeHours
     evidenceFile = $evidenceFile
     collectionCommand = Get-CollectionCommand -Category $category -EvidenceFile $evidenceFile -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings
-    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported
+    validationCommand = Get-ValidationCommand -EvidenceFile $evidenceFile -TargetId $targetId -Mode $modeValue -ServiceManager $serviceManagerValue -ReverseProxy $reverseProxyValue -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -FailOnWarnings $FailOnWarnings -WorkflowDispatchSupported $workflowDispatchSupported -ExpectedMatrixPath $workflowSupportMatrixPath -ExpectedMatrixSha256 $workflowSupportMatrixSha256
     workflowDispatchSupported = $workflowDispatchSupported
     localCommandOnly = $localCommandOnly
     workflowInputs = $workflowInputs
     workflowInputSummary = $workflowInputSummary
     workflowDispatchCommand = $workflowDispatchCommand
+    workflowSupportMatrixPath = $workflowSupportMatrixPath
+    workflowSupportMatrixSha256 = $workflowSupportMatrixSha256
     notes = $Notes
   }
 }
@@ -759,7 +789,7 @@ if ($SelfTest) {
   $allPlanEntries = @($parsed.strictEvidence) + @($parsed.serviceOnlyEvidence) + @($parsed.fallbackEvidence)
   foreach ($entry in $allPlanEntries) {
     $context = "$($entry.kind)/$($entry.targetId)/$($entry.nextJsMode)/$($entry.serviceManager)/$($entry.reverseProxy)"
-    foreach ($requiredPlanProperty in @("validationCommand", "workflowDispatchSupported", "localCommandOnly")) {
+    foreach ($requiredPlanProperty in @("validationCommand", "workflowDispatchSupported", "localCommandOnly", "workflowSupportMatrixPath", "workflowSupportMatrixSha256")) {
       if (-not $entry.PSObject.Properties[$requiredPlanProperty]) {
         throw "Support evidence plan self-test failed: $requiredPlanProperty missing from $context."
       }
@@ -796,6 +826,7 @@ if ($SelfTest) {
         "runner_labels",
         "platform",
         "config_path",
+        "matrix_path",
         "evidence_name",
         "expected_target_id",
         "expected_nextjs_mode",
@@ -839,6 +870,15 @@ if ($SelfTest) {
     if ([int]$entry.workflowInputs.minimum_uptime_hours -ne [int]$entry.requiredMinimumUptimeHours) {
       throw "Support evidence plan self-test failed: minimum_uptime_hours does not match requiredMinimumUptimeHours for $context."
     }
+    if ([string]$entry.workflowInputs.matrix_path -ne (Get-RepoRelativePath -Path $MatrixPath)) {
+      throw "Support evidence plan self-test failed: matrix_path does not match MatrixPath for $context."
+    }
+    if ([string]$entry.workflowSupportMatrixPath -ne (Get-RepoRelativePath -Path $MatrixPath)) {
+      throw "Support evidence plan self-test failed: workflowSupportMatrixPath does not match MatrixPath for $context."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$entry.workflowSupportMatrixSha256) -or [string]$entry.workflowSupportMatrixSha256 -notmatch '^[a-f0-9]{64}$') {
+      throw "Support evidence plan self-test failed: workflowSupportMatrixSha256 is missing or invalid for $context."
+    }
     $validationCommand = [string]$entry.validationCommand
     foreach ($expectedValidationFragment in @(
         "-EvidencePath .\$(([string]$entry.evidenceFile).Replace('/', '\'))",
@@ -846,7 +886,9 @@ if ($SelfTest) {
         "-ExpectedNextJsMode $($entry.nextJsMode)",
         "-ExpectedServiceManager $($entry.serviceManager)",
         "-ExpectedReverseProxy $($entry.reverseProxy)",
-        "-RequireMinimumUptimeHours $($entry.requiredMinimumUptimeHours)"
+        "-RequireMinimumUptimeHours $($entry.requiredMinimumUptimeHours)",
+        "-ExpectedMatrixPath $($entry.workflowSupportMatrixPath)",
+        "-ExpectedMatrixSha256 $($entry.workflowSupportMatrixSha256)"
       )) {
       if (-not $validationCommand.Contains($expectedValidationFragment)) {
         throw "Support evidence plan self-test failed: validationCommand is missing $expectedValidationFragment for $context."
@@ -857,10 +899,10 @@ if ($SelfTest) {
     }
     try {
       & $workflowInputValidatorPath `
-        -MatrixPath $MatrixPath `
         -RunnerLabels ([string]$entry.workflowInputs.runner_labels) `
         -Platform ([string]$entry.workflowInputs.platform) `
         -ConfigPath ([string]$entry.workflowInputs.config_path) `
+        -MatrixPath ([string]$entry.workflowInputs.matrix_path) `
         -EvidenceName ([string]$entry.workflowInputs.evidence_name) `
         -ExpectedTargetId ([string]$entry.workflowInputs.expected_target_id) `
         -ExpectedNextJsMode ([string]$entry.workflowInputs.expected_nextjs_mode) `
@@ -877,6 +919,7 @@ if ($SelfTest) {
       throw "Support evidence plan self-test failed: workflowDispatchCommand is missing gh workflow run for $context."
     }
     foreach ($expectedFragment in @(
+        "matrix_path=$($entry.workflowInputs.matrix_path)",
         "expected_target_id=$($entry.targetId)",
         "expected_nextjs_mode=$($entry.nextJsMode)",
         "expected_service_manager=$($entry.serviceManager)",
@@ -907,9 +950,15 @@ if ($SelfTest) {
   if (-not ([string]$planCsvHeader).Contains("validationCommand")) {
     throw "Support evidence plan self-test failed: CSV output is missing validationCommand."
   }
+  if (-not ([string]$planCsvHeader).Contains("workflowSupportMatrixSha256")) {
+    throw "Support evidence plan self-test failed: CSV output is missing workflowSupportMatrixSha256."
+  }
   $planCsvText = Get-Content -LiteralPath $planCsvPath -Raw
   if (-not $planCsvText.Contains("Test-HostEvidence.ps1")) {
     throw "Support evidence plan self-test failed: CSV output is missing validation command content."
+  }
+  if (-not $planCsvText.Contains("-ExpectedMatrixSha256")) {
+    throw "Support evidence plan self-test failed: CSV output is missing matrix SHA256 validation guidance."
   }
   if (-not $planMarkdown.Contains("Node runtime")) {
     throw "Support evidence plan self-test failed: Markdown output is missing Node runtime support guidance."

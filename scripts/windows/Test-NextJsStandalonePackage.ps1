@@ -142,6 +142,9 @@ try {
         if (-not ($runtimeEntries | Where-Object { $_ -like ".next/static/*" })) {
             throw "Package is missing .next/static content."
         }
+        if ($runtimeEntries -notcontains "node_modules/next/package.json") {
+            throw "Package is missing node_modules/next/package.json at the runtime root."
+        }
     } elseif ($modeNormalized -eq "next-start") {
         if ($runtimeEntries -notcontains "package.json") {
             throw "Package is missing package.json at the runtime root."
@@ -154,6 +157,9 @@ try {
         }
         if (-not ($runtimeEntries | Where-Object { $_ -like "node_modules/next/*" })) {
             throw "Package is missing node_modules/next content."
+        }
+        if ($runtimeEntries -notcontains "node_modules/next/package.json") {
+            throw "Package is missing node_modules/next/package.json at the runtime root."
         }
         if ($runtimeEntries -notcontains "node_modules/next/dist/bin/next") {
             throw "Package is missing node_modules/next/dist/bin/next at the runtime root."

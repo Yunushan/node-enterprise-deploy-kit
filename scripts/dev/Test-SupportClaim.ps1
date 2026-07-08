@@ -447,6 +447,8 @@ function Set-SelfTestWorkflowCollection {
   )
 
   $localOnly = @($LocalOnlyTargets | ForEach-Object { Normalize-Token $_ })
+  $selfTestMatrixPath = Get-DisplayPath -Path $MatrixPath
+  $selfTestMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
   foreach ($file in @(Get-ChildItem -Path $Path -Recurse -File -Filter "*.json")) {
     $evidence = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
     $targetId = Get-PrimaryEvidenceTarget -Evidence $evidence
@@ -481,6 +483,8 @@ function Set-SelfTestWorkflowCollection {
           expectedServiceManager = $serviceManager
           expectedReverseProxy = $reverseProxy
           minimumUptimeHours = [string]$RequireMinimumUptimeHours
+          supportMatrixPath = $selfTestMatrixPath
+          supportMatrixSha256 = $selfTestMatrixSha256
         }) -Force
     }
     $evidence | ConvertTo-Json -Depth 10 | Set-Content -Path $file.FullName -Encoding UTF8
@@ -752,6 +756,7 @@ function New-ClaimSelfTestEvidence {
               MinimumNodeVersion = "20.9.0"
               NodeVersionSatisfied = $true
               NextVersion = "14.2.3"
+              NextPackageJsonExists = $true
               NextStartCommandIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               RuntimeRootName = "example-next-app"
             }
@@ -893,6 +898,7 @@ function New-ClaimSelfTestEvidence {
               minimumNodeVersion = "20.9.0"
               nodeVersionSatisfied = $true
               nextVersion = "14.2.3"
+              nextPackageJsonExists = $true
               nextStartScriptIsExpectedCli = if ($mode -eq "next-start") { $true } else { $null }
               runtimeRootName = "example-next-app"
             }

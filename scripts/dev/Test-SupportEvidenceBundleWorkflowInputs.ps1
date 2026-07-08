@@ -2,6 +2,7 @@ param(
   [string]$RunnerLabels = $env:RUNNER_LABELS,
   [string]$EvidencePath = $env:EVIDENCE_PATH,
   [string]$ArtifactPath = $env:ARTIFACT_PATH,
+  [string]$MatrixPath = $env:MATRIX_PATH,
   [string]$OutputDirectory = $env:OUTPUT_DIRECTORY,
   [string]$BundleName = $env:BUNDLE_NAME,
   [string]$BundleArtifactName = $env:BUNDLE_ARTIFACT_NAME,
@@ -19,6 +20,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 function Assert-WorkflowBoolean {
   param(
@@ -57,6 +61,41 @@ function Assert-SafeRelativePath {
   $normalizedPath = $pathText.Replace('\', '/')
   if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
     throw "$DisplayName must not contain parent traversal, empty path segments, or a trailing slash."
+  }
+}
+
+function Assert-SafeRelativeJsonPath {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  Assert-SafeRelativePath -Value $Value -DisplayName $DisplayName
+  $normalizedPath = $Value.Trim().Replace('\', '/')
+  if ($normalizedPath -notmatch '\.json$') {
+    throw "$DisplayName must be a relative .json path inside the repository workspace."
+  }
+}
+
+function Assert-GitTrackedFile {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  $normalizedPath = $Value.Trim().Replace('\', '/')
+  $trackedPaths = @(& git -C $RepoRoot ls-files -- $normalizedPath)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to verify that $DisplayName is tracked by git."
+  }
+
+  $trackedMatch = @(
+    $trackedPaths | Where-Object {
+      [string]::Equals([string]$_, $normalizedPath, [StringComparison]::OrdinalIgnoreCase)
+    }
+  )
+  if ($trackedMatch.Count -eq 0) {
+    throw "$DisplayName must reference a tracked repository file."
   }
 }
 
@@ -137,6 +176,7 @@ function Invoke-SupportEvidenceBundleWorkflowInputValidation {
     [string]$RunnerLabels,
     [string]$EvidencePath,
     [string]$ArtifactPath,
+    [string]$MatrixPath,
     [string]$OutputDirectory,
     [string]$BundleName,
     [string]$BundleArtifactName,
@@ -153,6 +193,8 @@ function Invoke-SupportEvidenceBundleWorkflowInputValidation {
   Assert-SelfHostedRunnerLabels -Value $RunnerLabels
   Assert-SafeRelativePath -Value $EvidencePath -DisplayName "evidence_path"
   Assert-SafeRelativePath -Value $ArtifactPath -DisplayName "artifact_path" -AllowEmpty
+  Assert-SafeRelativeJsonPath -Value $MatrixPath -DisplayName "matrix_path"
+  Assert-GitTrackedFile -Value $MatrixPath -DisplayName "matrix_path"
   Assert-SafeRelativePath -Value $OutputDirectory -DisplayName "output_directory"
   Assert-SafeSimpleName -Value $BundleName -DisplayName "bundle_name" -RejectZipExtension
   Assert-SafeSimpleName -Value $BundleArtifactName -DisplayName "bundle_artifact_name"
@@ -167,6 +209,9 @@ function Invoke-SupportEvidenceBundleWorkflowInputValidation {
 
   if ($RequireFinalFullMatrixReleaseClaim -eq "true" -and $StrictCiRelease -ne "true") {
     throw "require_final_full_matrix_release_claim requires strict_ci_release=true."
+  }
+  if ($RequireFinalFullMatrixReleaseClaim -eq "true" -and ($IncludeServiceOnly -ne "true" -or $IncludeFallback -ne "true")) {
+    throw "require_final_full_matrix_release_claim requires include_service_only=true and include_fallback=true."
   }
 
   if ($UploadRetentionDays -notmatch '^\d+$') {
@@ -207,6 +252,7 @@ function Invoke-SelfTest {
     RunnerLabels = '["self-hosted","release-evidence-builder"]'
     EvidencePath = "evidence"
     ArtifactPath = "evidence-downloads"
+    MatrixPath = "config/support-matrix.example.json"
     OutputDirectory = "release-evidence"
     BundleName = "support-evidence"
     BundleArtifactName = "support-evidence"
@@ -250,6 +296,26 @@ function Invoke-SelfTest {
     $case.ArtifactPath = "../evidence-downloads"
     Invoke-SupportEvidenceBundleWorkflowInputValidation @case
   }
+  Invoke-ExpectValidationFailure -Name "missing matrix path" -ExpectedMessage "matrix_path is required and must be a relative path" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = ""
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "unsafe matrix path" -ExpectedMessage "matrix_path must not contain parent traversal" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "../config/support-matrix.example.json"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "non-json matrix path" -ExpectedMessage "matrix_path must be a relative .json path" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "config/support-matrix.example.txt"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "untracked matrix path" -ExpectedMessage "matrix_path must reference a tracked repository file" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "config/not-tracked-support-matrix.json"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
   Invoke-ExpectValidationFailure -Name "absolute output directory" -ExpectedMessage "output_directory must not contain control characters" -Action {
     $case = $base.Clone()
     $case.OutputDirectory = "C:\release-evidence"
@@ -280,6 +346,16 @@ function Invoke-SelfTest {
     $case.StrictCiRelease = "false"
     Invoke-SupportEvidenceBundleWorkflowInputValidation @case
   }
+  Invoke-ExpectValidationFailure -Name "final without service-only scope" -ExpectedMessage "require_final_full_matrix_release_claim requires include_service_only=true and include_fallback=true" -Action {
+    $case = $base.Clone()
+    $case.IncludeServiceOnly = "false"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "final without fallback scope" -ExpectedMessage "require_final_full_matrix_release_claim requires include_service_only=true and include_fallback=true" -Action {
+    $case = $base.Clone()
+    $case.IncludeFallback = "false"
+    Invoke-SupportEvidenceBundleWorkflowInputValidation @case
+  }
   Invoke-ExpectValidationFailure -Name "retention too high" -ExpectedMessage "upload_retention_days must be an integer from 1 to 90" -Action {
     $case = $base.Clone()
     $case.UploadRetentionDays = "120"
@@ -298,6 +374,7 @@ Invoke-SupportEvidenceBundleWorkflowInputValidation `
   -RunnerLabels $RunnerLabels `
   -EvidencePath $EvidencePath `
   -ArtifactPath $ArtifactPath `
+  -MatrixPath $MatrixPath `
   -OutputDirectory $OutputDirectory `
   -BundleName $BundleName `
   -BundleArtifactName $BundleArtifactName `

@@ -2,6 +2,7 @@ param(
   [string]$SourceRunId = $env:SOURCE_RUN_ID,
   [string]$BundleArtifactName = $env:BUNDLE_ARTIFACT_NAME,
   [string]$BundleFile = $env:BUNDLE_FILE,
+  [string]$MatrixPath = $env:MATRIX_PATH,
   [string]$IncludeServiceOnly = $env:INCLUDE_SERVICE_ONLY,
   [string]$IncludeFallback = $env:INCLUDE_FALLBACK,
   [switch]$Quiet,
@@ -10,6 +11,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 function Assert-SafeSimpleName {
   param(
@@ -47,11 +51,64 @@ function Assert-WorkflowBoolean {
   }
 }
 
+function Assert-SafeRelativeJsonPath {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    throw "$DisplayName is required and must be a relative .json path inside the repository workspace."
+  }
+
+  $pathText = $Value.Trim()
+  if ($pathText.Length -gt 240) {
+    throw "$DisplayName must be 240 characters or less."
+  }
+  if ($pathText -match '[\x00-\x1F\x7F:*?"<>|]') {
+    throw "$DisplayName must not contain control characters, drive letters, wildcards, or shell metacharacters."
+  }
+  if ($pathText -match '^[A-Za-z]:[\\/]' -or $pathText -match '^[\\/]' -or $pathText -match '^\\\\' -or $pathText -match '^//') {
+    throw "$DisplayName must be a relative path inside the repository workspace."
+  }
+
+  $normalizedPath = $pathText.Replace('\', '/')
+  if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
+    throw "$DisplayName must not contain parent traversal, empty path segments, or a trailing slash."
+  }
+  if ($normalizedPath -notmatch '\.json$') {
+    throw "$DisplayName must be a relative .json path inside the repository workspace."
+  }
+}
+
+function Assert-GitTrackedFile {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  $normalizedPath = $Value.Trim().Replace('\', '/')
+  $trackedPaths = @(& git -C $RepoRoot ls-files -- $normalizedPath)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to verify that $DisplayName is tracked by git."
+  }
+
+  $trackedMatch = @(
+    $trackedPaths | Where-Object {
+      [string]::Equals([string]$_, $normalizedPath, [StringComparison]::OrdinalIgnoreCase)
+    }
+  )
+  if ($trackedMatch.Count -eq 0) {
+    throw "$DisplayName must reference a tracked repository file."
+  }
+}
+
 function Invoke-ReleaseEvidenceWorkflowInputValidation {
   param(
     [string]$SourceRunId,
     [string]$BundleArtifactName,
     [string]$BundleFile,
+    [string]$MatrixPath,
     [string]$IncludeServiceOnly,
     [string]$IncludeFallback
   )
@@ -76,8 +133,13 @@ function Invoke-ReleaseEvidenceWorkflowInputValidation {
     }
   }
 
+  Assert-SafeRelativeJsonPath -Value $MatrixPath -DisplayName "matrix_path"
+  Assert-GitTrackedFile -Value $MatrixPath -DisplayName "matrix_path"
   Assert-WorkflowBoolean -Value $IncludeServiceOnly -DisplayName "include_service_only"
   Assert-WorkflowBoolean -Value $IncludeFallback -DisplayName "include_fallback"
+  if ($IncludeServiceOnly -ne "true" -or $IncludeFallback -ne "true") {
+    throw "release-evidence final full-matrix gate requires include_service_only=true and include_fallback=true."
+  }
 }
 
 function Invoke-ExpectValidationFailure {
@@ -110,6 +172,7 @@ function Invoke-SelfTest {
     SourceRunId = "123456789"
     BundleArtifactName = "support-evidence"
     BundleFile = ""
+    MatrixPath = "config/support-matrix.example.json"
     IncludeServiceOnly = "true"
     IncludeFallback = "true"
   }
@@ -117,8 +180,6 @@ function Invoke-SelfTest {
 
   $withBundleFile = $base.Clone()
   $withBundleFile.BundleFile = "node-enterprise-deploy-kit-1.0.0-evidence.zip"
-  $withBundleFile.IncludeServiceOnly = "false"
-  $withBundleFile.IncludeFallback = "false"
   Invoke-ReleaseEvidenceWorkflowInputValidation @withBundleFile
 
   Invoke-ExpectValidationFailure -Name "empty source run id" -ExpectedMessage "source_run_id is required" -Action {
@@ -161,6 +222,26 @@ function Invoke-SelfTest {
     $case.BundleFile = "nested/support-evidence.zip"
     Invoke-ReleaseEvidenceWorkflowInputValidation @case
   }
+  Invoke-ExpectValidationFailure -Name "empty matrix path" -ExpectedMessage "matrix_path is required and must be a relative .json path" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = ""
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "unsafe matrix path" -ExpectedMessage "matrix_path must not contain parent traversal" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "../config/support-matrix.example.json"
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "non-json matrix path" -ExpectedMessage "matrix_path must be a relative .json path" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "config/support-matrix.example.txt"
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "untracked matrix path" -ExpectedMessage "matrix_path must reference a tracked repository file" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "config/not-tracked-support-matrix.json"
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
   Invoke-ExpectValidationFailure -Name "invalid include service only" -ExpectedMessage "include_service_only must be true or false" -Action {
     $case = $base.Clone()
     $case.IncludeServiceOnly = "yes"
@@ -169,6 +250,16 @@ function Invoke-SelfTest {
   Invoke-ExpectValidationFailure -Name "invalid include fallback" -ExpectedMessage "include_fallback must be true or false" -Action {
     $case = $base.Clone()
     $case.IncludeFallback = "1"
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "final without service-only scope" -ExpectedMessage "release-evidence final full-matrix gate requires include_service_only=true and include_fallback=true" -Action {
+    $case = $base.Clone()
+    $case.IncludeServiceOnly = "false"
+    Invoke-ReleaseEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "final without fallback scope" -ExpectedMessage "release-evidence final full-matrix gate requires include_service_only=true and include_fallback=true" -Action {
+    $case = $base.Clone()
+    $case.IncludeFallback = "false"
     Invoke-ReleaseEvidenceWorkflowInputValidation @case
   }
 
@@ -186,6 +277,7 @@ Invoke-ReleaseEvidenceWorkflowInputValidation `
   -SourceRunId $SourceRunId `
   -BundleArtifactName $BundleArtifactName `
   -BundleFile $BundleFile `
+  -MatrixPath $MatrixPath `
   -IncludeServiceOnly $IncludeServiceOnly `
   -IncludeFallback $IncludeFallback
 

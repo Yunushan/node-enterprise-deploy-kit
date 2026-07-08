@@ -192,6 +192,7 @@ DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC=""
 DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID=""
 NODE_RUNTIME_VERSION=""
 NEXT_PACKAGE_VERSION=""
+NEXT_PACKAGE_JSON_EXISTS="false"
 
 findings=()
 add_finding() {
@@ -1347,7 +1348,9 @@ write_json_output() {
     printf '      "expectedNextJsMode": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_NEXTJS_MODE:-}")")"
     printf '      "expectedServiceManager": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_SERVICE_MANAGER:-}")")"
     printf '      "expectedReverseProxy": "%s",\n' "$(json_escape "$(safe_ci_token_value "${EXPECTED_REVERSE_PROXY:-}")")"
-    printf '      "minimumUptimeHours": "%s"\n' "$(json_escape "$(safe_ci_digits_value "${MINIMUM_UPTIME_HOURS:-}")")"
+    printf '      "minimumUptimeHours": "%s",\n' "$(json_escape "$(safe_ci_digits_value "${MINIMUM_UPTIME_HOURS:-}")")"
+    printf '      "supportMatrixPath": "%s",\n' "$(json_escape "$(safe_ci_path_value "${SUPPORT_MATRIX_PATH:-}")")"
+    printf '      "supportMatrixSha256": "%s"\n' "$(json_escape "$(safe_ci_hex_value "${SUPPORT_MATRIX_SHA256:-}")")"
     printf '    },\n'
     printf '    "ci": {\n'
     printf '      "isCi": %s,\n' "$ci_is_ci"
@@ -1468,6 +1471,7 @@ write_json_output() {
       printf '    "nodeVersionSatisfied": null,\n'
     fi
     printf '    "nextVersion": "%s",\n' "$(json_escape "$NEXT_PACKAGE_VERSION")"
+    printf '    "nextPackageJsonExists": %s,\n' "$NEXT_PACKAGE_JSON_EXISTS"
     if [[ "$NEXT_START_SCRIPT_IS_EXPECTED_CLI" == "true" || "$NEXT_START_SCRIPT_IS_EXPECTED_CLI" == "false" ]]; then
       printf '    "nextStartScriptIsExpectedCli": %s,\n' "$NEXT_START_SCRIPT_IS_EXPECTED_CLI"
     else
@@ -1570,6 +1574,7 @@ run_nextjs_layout_check() {
   runtime_root="$(printf '%s\n' "$output" | awk -v key="RuntimeRoot" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   minimum_node_version="$(printf '%s\n' "$output" | awk -v key="MinimumNodeVersion" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   node_version_satisfied="$(printf '%s\n' "$output" | awk -v key="NodeVersionSatisfied" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
+  next_package_json_exists="$(printf '%s\n' "$output" | awk -v key="NextPackageJsonExists" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   next_start_script_is_expected_cli="$(printf '%s\n' "$output" | awk -v key="NextStartScriptIsExpectedCli" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }')"
   if [[ -n "$runtime_root" ]]; then
     NEXTJS_RUNTIME_ROOT="$runtime_root"
@@ -1581,6 +1586,9 @@ run_nextjs_layout_check() {
   fi
   case "$node_version_satisfied" in
     true|false) NEXTJS_NODE_VERSION_SATISFIED="$node_version_satisfied" ;;
+  esac
+  case "$next_package_json_exists" in
+    true|false) NEXT_PACKAGE_JSON_EXISTS="$next_package_json_exists" ;;
   esac
   case "$next_start_script_is_expected_cli" in
     true|false) NEXT_START_SCRIPT_IS_EXPECTED_CLI="$next_start_script_is_expected_cli" ;;

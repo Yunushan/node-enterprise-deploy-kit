@@ -138,12 +138,14 @@ esac
 
 STANDALONE_ROOT="$PROJECT_ROOT/.next/standalone"
 STATIC_ROOT="$PROJECT_ROOT/.next/static"
+STANDALONE_NEXT_PACKAGE_JSON_PATH="$STANDALONE_ROOT/node_modules/next/package.json"
 NEXT_ROOT="$PROJECT_ROOT/.next"
 BUILD_ID_PATH="$PROJECT_ROOT/.next/BUILD_ID"
 PUBLIC_ROOT="$PROJECT_ROOT/public"
 PACKAGE_JSON_PATH="$PROJECT_ROOT/package.json"
 NODE_MODULES_ROOT="$PROJECT_ROOT/node_modules"
 NEXT_PACKAGE_ROOT="$NODE_MODULES_ROOT/next"
+NEXT_PACKAGE_JSON_PATH="$NEXT_PACKAGE_ROOT/package.json"
 NEXT_CLI_PATH="$NEXT_PACKAGE_ROOT/dist/bin/next"
 
 [[ -f "$BUILD_ID_PATH" ]] || {
@@ -163,6 +165,10 @@ if [[ "$DEPLOYMENT_MODE" == "standalone" ]]; then
     echo "Next.js static assets were not found: $STATIC_ROOT" >&2
     exit 1
   }
+  [[ -f "$STANDALONE_NEXT_PACKAGE_JSON_PATH" ]] || {
+    echo "Next.js standalone package metadata was not found: $STANDALONE_NEXT_PACKAGE_JSON_PATH. Build with output: 'standalone' before packaging so runtime evidence can prove the installed Next.js version." >&2
+    exit 1
+  }
 else
   [[ -f "$PACKAGE_JSON_PATH" ]] || {
     echo "Next.js next-start package.json was not found: $PACKAGE_JSON_PATH" >&2
@@ -174,6 +180,10 @@ else
   }
   [[ -d "$NEXT_PACKAGE_ROOT" ]] || {
     echo "Next.js next-start node_modules/next directory was not found: $NEXT_PACKAGE_ROOT. Run a production install before packaging." >&2
+    exit 1
+  }
+  [[ -f "$NEXT_PACKAGE_JSON_PATH" ]] || {
+    echo "Next.js next-start package metadata was not found: $NEXT_PACKAGE_JSON_PATH. Run a production install before packaging so runtime evidence can prove the installed Next.js version." >&2
     exit 1
   }
   [[ -f "$NEXT_CLI_PATH" ]] || {
@@ -255,6 +265,10 @@ if [[ "$DEPLOYMENT_MODE" == "standalone" ]]; then
     echo "Package archive is missing .next/BUILD_ID at the archive root." >&2
     exit 1
   fi
+  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/package[.]json$'; then
+    echo "Package archive is missing node_modules/next/package.json at the archive root." >&2
+    exit 1
+  fi
 else
   if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)package[.]json$'; then
     echo "Package archive is missing package.json at the archive root." >&2
@@ -266,6 +280,10 @@ else
   fi
   if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/.+'; then
     echo "Package archive is missing node_modules/next content." >&2
+    exit 1
+  fi
+  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/package[.]json$'; then
+    echo "Package archive is missing node_modules/next/package.json at the archive root." >&2
     exit 1
   fi
   if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/dist/bin/next$'; then

@@ -23,6 +23,7 @@
     "package.json",
     ".next",
     ".next/BUILD_ID",
+    "node_modules/next/package.json",
     "node_modules/next/dist/bin/next"
   ],
   "PackageStripSingleTopLevelDirectory": true,

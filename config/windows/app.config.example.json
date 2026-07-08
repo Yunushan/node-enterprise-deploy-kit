@@ -22,7 +22,8 @@
   "PackageExpectedFiles": [
     "server.js",
     ".next/BUILD_ID",
-    ".next/static"
+    ".next/static",
+    "node_modules/next/package.json"
   ],
   "PackageStripSingleTopLevelDirectory": true,
   "DeploymentId": "",

@@ -135,7 +135,8 @@ whether the result is full-matrix, filtered, or production-runtime-only. Add
 `-StrictCiRelease` only for final CI-controlled signoff; strict signoff refuses
 `-AllowWarnings`. Add `-RequireFinalFullMatrixReleaseClaim` when the command
 must fail unless readiness proves `releaseClaim.finalFullMatrixReleaseClaim:
-true`; that switch requires `-StrictCiRelease`.
+true`; that switch requires `-StrictCiRelease`, `-IncludeServiceOnly`, and
+`-IncludeFallback`.
 For a CI-enforced final gate, first dispatch
 `.github/workflows/support-evidence-bundle.yml` on a self-hosted runner that can
 read the private evidence workspace. It validates inputs with
@@ -144,8 +145,13 @@ release workflow, writes the reviewer-facing GitHub step summary, and uploads
 only the redacted `release-readiness-summary.json` artifact by default. It does
 not upload the private bundle zip unless `upload_private_bundle` is explicitly
 set to `true`; keep that input `false` for public or broadly readable
-repositories. Leave `artifact_path` empty when the self-hosted runner already
-has canonical `evidence/`; set it only when the workflow should import
+repositories. Set `matrix_path` to the committed support matrix for the release;
+the workflow input validators require it to be a tracked repository `.json` file,
+so untracked or private matrix files left in a self-hosted workspace are
+rejected. The bundle workflow, separate verifier workflow, and redacted summary
+verifier use the same relative matrix path for coverage, bundling, readiness,
+and summary verification. Leave `artifact_path` empty when the self-hosted runner
+already has canonical `evidence/`; set it only when the workflow should import
 downloaded `host-evidence` artifacts before bundling. With the default
 `upload_private_bundle=false`, that self-hosted run is the final CI gate and
 `release-evidence.yml` cannot download a bundle from it. If you need a separate
@@ -154,26 +160,68 @@ GitHub-hosted verifier run, enable `upload_private_bundle`, then dispatch
 name. The verifier workflow validates dispatch inputs with
 `scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1`, downloads that artifact,
 locates the evidence zip with `scripts/dev/Resolve-ReleaseEvidenceBundle.ps1`,
-and runs `Test-ReleaseSupportReadiness.ps1` with
+and runs `Test-ReleaseSupportReadiness.ps1` with the same `matrix_path` plus
 `-StrictCiRelease -RequireFinalFullMatrixReleaseClaim`, keeps the detailed
 `release-readiness.json` only inside the job workspace, does not re-upload the
 private evidence bundle, and uploads only the redacted
 `release-readiness-summary.json` result. The summary artifact and workflow
 summary include only safe claim requirements, aggregate evidence counts, and
-provenance fields such as `releaseClaim.requirements`,
+provenance fields such as `generatedAtUtc`, `releaseClaim.requirements`,
+`releaseClaim.requirements.maxEvidenceAgeDaysRequired`, `maxEvidenceAgeDays`,
+`supportScope.includeServiceOnly`, `supportScope.includeFallback`,
 `supportScope.workflowCapableEvidenceCount`,
 `supportScope.localCommandOnlyEvidenceCount`,
+`coverage.includeServiceOnly`, `coverage.includeFallback`,
+`coverage.uniqueEvidenceSha256Count`,
 `coverage.productionRecommendedRuntimeEvidenceCount`,
 `coverage.runtimeSupportTiers`,
-`sourceControl.commitSha`, and `bundleCi.workflowName`, so reviewers can match
-the final claim to the source revision and bundle-producing CI run without
-exposing raw host evidence.
+`supportMatrix.sha256`, `supportMatrix.targetCount`,
+`supportMatrix.requiredMinimumUptimeHours`, `supportMatrix.runtimeSupportTiers`,
+`sourceControl.isGitRepository`,
+`sourceControl.commitSha`, `bundleCi.provider`, `bundleCi.workflowName`,
+`bundleCi.eventName`, `bundleCi.runId`, `bundleCi.runAttempt`, and
+`bundleCi.sha`, so reviewers can match the final claim to a real Git
+repository, a lowercase 40-character git SHA, a matching GitHub Actions
+bundle SHA, exact support matrix, and GitHub Actions
+`workflow_dispatch` bundle-producing CI run without exposing raw host evidence.
 They intentionally avoid raw coverage rows, collection commands,
 workflow-dispatch commands, and bundle paths.
 The redacted summary is produced by
 `scripts/dev/New-ReleaseReadinessSummary.ps1`; its self-test verifies that the
 summary preserves aggregate proof/provenance while excluding detailed evidence
 rows and machine-specific paths.
+`scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1` immediately validates
+that summary with the same `-MatrixPath` used for coverage, bundling, and
+readiness, so one-command release handoff cannot publish an unverified summary.
+`scripts/dev/Test-ReleaseReadinessSummary.ps1` validates a downloaded
+`release-readiness-summary.json` without reading the private bundle; with
+`-RequireFinalFullMatrixReleaseClaim`, it rejects summaries that are not final,
+do not prove complete coverage, lack clean source/CI provenance, lack safe
+runtime support metadata, do not have a strict CI full-matrix claim kind, do
+not have the strict CI active proof level, do not match the support matrix
+SHA256, target count, required uptime, runtime support tiers, evidence-path
+scope flags, matrix-derived evidence count, workflow/local evidence counts,
+runtime evidence aggregate counts, saved `bundleSupportScope.proofLevel`,
+saved `bundleSupportScope target counts`, saved
+`bundleSupportScope.workflowCapableEvidenceCount` /
+`bundleSupportScope.localCommandOnlyEvidenceCount`, strict bundle support claim
+flags (`supportClaimValidated`, `requireBothNextJsModes`,
+`requireDeclaredServiceManagers`, `requireDeclaredReverseProxies`),
+coverage warning-clean and uptime metadata
+(`coverage.failOnWarningsDuringCollection`,
+`coverage.requiredMinimumUptimeHours`), saved
+`bundleSupportScope.requiredMinimumUptimeHours`, collection provenance
+aggregate counts (`collectionProvenance`, `collectionCiEvidenceCount`,
+`collectionCiMissingCount`, `collectionCiSourceMatchCount`,
+`collectionCiSourceMismatchCount`, `hostEvidenceWorkflowCollectionCount`,
+`hostEvidenceWorkflowMismatchCount`, `collectionWorkflowDispatchMatchCount`,
+`collectionWorkflowDispatchMismatchCount`,
+`collectionWorkflowDispatchMatrixMismatchCount`), or contain raw evidence details.
+Host evidence and coverage validation reject missing, invalid, stale, or
+future-dated `generatedAtUtc` values, so clock-drifted or edited status files
+cannot extend the freshness window.
+It uses `config/support-matrix.example.json` by default; pass `-MatrixPath`
+when validating a summary for a release-specific support matrix.
 `scripts/dev/Write-ReleaseReadinessStepSummary.ps1` writes the GitHub step
 summary from that redacted summary only, so reviewer-facing Markdown does not
 read the detailed readiness JSON.
@@ -210,9 +258,10 @@ After evidence is collected and validated, create a private evidence bundle:
 
 The bundle manifest records each evidence file's SHA256, support dimensions,
 Node runtime support tier, live status collector provenance including collector
-SHA256 digest, exact collection workflow dispatch dimensions when present, and
-explicit non-synthetic/non-mock/non-sample markers so later release reviews can
-prove exactly which files supported the claim. It also records top-level
+SHA256 digest, exact collection workflow dispatch dimensions, support matrix
+path, and support matrix SHA256 when present, and explicit
+non-synthetic/non-mock/non-sample markers so later release reviews can prove
+exactly which files supported the claim. It also records top-level
 `supportScope` metadata, including scope kind, proof level, selected-vs-matrix
 target counts, workflow-capable evidence counts, and local-command-only evidence
 counts. Bundle verification recalculates those values from the manifest rows
@@ -228,6 +277,11 @@ Verify a saved bundle with:
 .\scripts\dev\Test-SupportEvidenceBundle.ps1 `
   -BundlePath .\release-evidence\node-enterprise-deploy-kit-1.0.0-evidence.zip
 ```
+
+The bundle verifier requires the manifest `matrixPath` to reference a tracked
+repository `.json` file and requires `matrixSha256` to match that file. Pass
+`-MatrixPath config/support-matrix.example.json` when you want the verifier to
+also assert the expected tracked matrix path explicitly.
 
 Check strict release readiness from the saved bundle with:
 
@@ -246,9 +300,10 @@ evidence counts, and `releaseClaim.kind` for the active readiness review. It
 also preserves the saved bundle's original `bundleSupportScope`.
 `releaseClaim.requirements` records the safe checklist behind the final claim,
 including full-matrix scope, strict CI release mode, warning-clean evidence,
-complete coverage, workflow applicability metadata, runtime support metadata,
-provenance requirements, collector SHA256, runtime-version requirements, and
-minimum uptime. Treat `Ready: True` as valid only for the
+complete coverage, non-synthetic evidence enforcement, unique evidence payloads,
+workflow applicability metadata, runtime support metadata, provenance
+requirements, collector SHA256, runtime-version requirements, and minimum
+uptime. Treat `Ready: True` as valid only for the
 stated review scope: `releaseClaim.finalFullMatrixReleaseClaim` must be `true`
 before using the result as a final full-matrix release claim. A filtered,
 provisional, production-runtime-only, or incomplete-coverage result is not a
@@ -283,15 +338,18 @@ validation command, and, where supported, the exact manual
 commands fail on warning-only status evidence by default; add
 `-AllowWarnings` when the missing-coverage report should generate
 warning-tolerant collection commands instead. Workflow-capable rows include
-`-RequireCiCollection` and `-RequireHostEvidenceWorkflowCollection` in the
-single-row validation command; local-command-only rows omit those switches.
-Coverage counts only evidence whose declared `supportTargetId` is corroborated
-by collected OS/platform metadata and, for Next.js rows, still proves the
-required runtime platform floor. Reports also include
-`summary.coveragePercent` plus breakdowns by evidence kind, target category,
-and workflow collection path. With `-ReportOnly`, a missing `EvidencePath` is
-treated as zero collected evidence so the same command can produce a 0%
-baseline before any host evidence has been imported.
+`matrix_path` in the workflow dispatch command plus `-RequireCiCollection`,
+`-RequireHostEvidenceWorkflowCollection`, `-ExpectedMatrixPath`, and
+`-ExpectedMatrixSha256` in the single-row validation command;
+local-command-only rows omit those workflow switches. Coverage only counts
+workflow evidence whose collected support matrix path and SHA256 match the
+current `-MatrixPath`. Coverage counts only evidence whose declared
+`supportTargetId` is corroborated by collected OS/platform metadata and, for
+Next.js rows, still proves the required runtime platform floor. Reports also
+include `summary.coveragePercent` plus breakdowns by evidence kind, target
+category, and workflow collection path. With `-ReportOnly`, a missing
+`EvidencePath` is treated as zero collected evidence so the same command can
+produce a 0% baseline before any host evidence has been imported.
 The default table output prints the first missing collect/validate command
 pairs; use Markdown, JSON, or CSV for the complete command list.
 
@@ -412,7 +470,7 @@ metadata to prove the Node.js runtime platform floor where it applies: Windows
 build number, Linux kernel and glibc versions, or macOS product version and
 architecture.
 Saved bundle verification and coverage reports enforce the same floor so stale
-evidence cannot keep a matrix row covered.
+or future-dated evidence cannot keep a matrix row covered.
 
 ## Node Runtime Support Tiers
 

@@ -62,6 +62,10 @@ if ($RequireFinalFullMatrixReleaseClaim -and -not $StrictCiRelease) {
   throw "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease; final full-matrix signoff must use strict CI release checks."
 }
 
+if ($RequireFinalFullMatrixReleaseClaim -and (-not $IncludeServiceOnly -or -not $IncludeFallback)) {
+  throw "-RequireFinalFullMatrixReleaseClaim requires -IncludeServiceOnly and -IncludeFallback; final full-matrix signoff must cover service-only and fallback rows."
+}
+
 if ($StrictCiRelease) {
   $RequireCleanSource = $true
   $RequireCurrentCommit = $true
@@ -401,6 +405,16 @@ function Test-SafeSha256Value {
   return (([string]$Value).Trim().ToLowerInvariant() -match '^[a-f0-9]{64}$')
 }
 
+function Test-SafeGitShaValue {
+  param([string]$Value)
+  return (([string]$Value).Trim().ToLowerInvariant() -match '^[a-f0-9]{40}$')
+}
+
+function Test-NumericText {
+  param([string]$Value)
+  return (([string]$Value).Trim() -match '^[0-9]+$')
+}
+
 function Add-OrSetNoteProperty {
   param(
     [object]$Object,
@@ -425,6 +439,8 @@ function Set-TestCollectionCiProvenance {
 
   $manifestPath = Join-Path $BundleRoot "support-evidence-manifest.json"
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $manifestMatrixPath = ([string]$manifest.matrixPath).Trim().Replace("\", "/")
+  $manifestMatrixSha256 = ([string]$manifest.matrixSha256).Trim().ToLowerInvariant()
   foreach ($row in @($manifest.files)) {
     $relative = ([string]$row.path).Replace("/", "\")
     $evidencePath = Join-Path $BundleRoot $relative
@@ -462,6 +478,8 @@ function Set-TestCollectionCiProvenance {
         expectedServiceManager = $serviceManager
         expectedReverseProxy = $reverseProxy
         minimumUptimeHours = $minimumUptimeHours
+        supportMatrixPath = $manifestMatrixPath
+        supportMatrixSha256 = $manifestMatrixSha256
       })
     ($evidence | ConvertTo-Json -Depth 12) | Set-Content -Path $evidencePath -Encoding UTF8
 
@@ -481,6 +499,8 @@ function Set-TestCollectionCiProvenance {
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedServiceManager" -Value $serviceManager
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedReverseProxy" -Value $reverseProxy
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMinimumUptimeHours" -Value $minimumUptimeHours
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchSupportMatrixPath" -Value $manifestMatrixPath
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchSupportMatrixSha256" -Value $manifestMatrixSha256
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMatchesDimensions" -Value $true
   }
   ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $manifestPath -Encoding UTF8
@@ -533,6 +553,8 @@ function Remove-TestCollectionCiProvenanceFromLocalOnlyRows {
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedServiceManager" -Value ""
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchExpectedReverseProxy" -Value ""
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMinimumUptimeHours" -Value $null
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchSupportMatrixPath" -Value ""
+    Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchSupportMatrixSha256" -Value ""
     Add-OrSetNoteProperty -Object $row -Name "collectionWorkflowDispatchMatchesDimensions" -Value $null
     $updatedCount += 1
   }
@@ -545,7 +567,7 @@ function Remove-TestCollectionCiProvenanceFromLocalOnlyRows {
 function Set-TestBundleCiProvenance {
   param(
     [string]$BundleRoot,
-    [string]$WorkflowName = "host-evidence",
+    [string]$WorkflowName = "support-evidence-bundle",
     [string]$EventName = "workflow_dispatch"
   )
 
@@ -801,11 +823,20 @@ if ($SelfTest) {
   if ($readinessJson.releaseClaim.requirements.coverageComplete -ne $true -or $readinessJson.releaseClaim.requirements.fullMatrixScope -ne $false) {
     throw "Release support readiness self-test failed: releaseClaim requirements do not explain filtered readiness."
   }
+  if ($readinessJson.releaseClaim.requirements.nonSyntheticEvidenceRequired -ne $true) {
+    throw "Release support readiness self-test failed: releaseClaim requirements did not record non-synthetic evidence enforcement."
+  }
+  if ($readinessJson.releaseClaim.requirements.uniqueEvidencePayloadsRequired -ne $true) {
+    throw "Release support readiness self-test failed: releaseClaim requirements did not record unique evidence payload enforcement."
+  }
   if ($readinessJson.releaseClaim.requirements.workflowApplicabilityKnown -ne $true) {
     throw "Release support readiness self-test failed: releaseClaim requirements did not record workflow applicability."
   }
   if ($readinessJson.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $true) {
     throw "Release support readiness self-test failed: releaseClaim requirements did not record runtime support metadata."
+  }
+  if ([int]$readinessJson.releaseClaim.requirements.maxEvidenceAgeDaysRequired -ne 30) {
+    throw "Release support readiness self-test failed: releaseClaim requirements did not record max evidence age."
   }
   if (-not $readinessJson.PSObject.Properties["sourceControl"] -or -not ([string]$readinessJson.sourceControl.commitSha)) {
     throw "Release support readiness self-test failed: readiness JSON is missing sourceControl provenance."
@@ -839,7 +870,7 @@ if ($SelfTest) {
   $matrixMismatchManifest = Get-Content -LiteralPath $matrixMismatchManifestPath -Raw | ConvertFrom-Json
   $matrixMismatchManifest.matrixSha256 = ("0" * 64)
   ($matrixMismatchManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $matrixMismatchManifestPath -Encoding UTF8
-  Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle support matrix SHA256 does not match" -Action {
+  Invoke-ExpectReadinessFailure -ExpectedMessage "matrixSha256 must match" -Action {
     Invoke-SelfTestReadiness -BundlePath $matrixMismatchRoot -IncludeServiceOnly -IncludeFallback
   }
 
@@ -852,6 +883,17 @@ if ($SelfTest) {
   ($dirtySourceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $dirtySourceManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle source-control provenance reports tracked dirty files" -Action {
     Invoke-SelfTestReadiness -BundlePath $dirtySourceRoot -IncludeServiceOnly -IncludeFallback -RequireCleanSource
+  }
+
+  $nonGitSourceRoot = Join-Path $selfTestRoot "non-git-source"
+  New-Item -ItemType Directory -Force -Path $nonGitSourceRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $nonGitSourceRoot -Force
+  $nonGitSourceManifestPath = Join-Path $nonGitSourceRoot "support-evidence-manifest.json"
+  $nonGitSourceManifest = Get-Content -LiteralPath $nonGitSourceManifestPath -Raw | ConvertFrom-Json
+  $nonGitSourceManifest.sourceControl.isGitRepository = $false
+  ($nonGitSourceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $nonGitSourceManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "source-control provenance must report isGitRepository=true" -Action {
+    Invoke-SelfTestReadiness -BundlePath $nonGitSourceRoot -IncludeServiceOnly -IncludeFallback -RequireCurrentCommit
   }
 
   $commitMismatchRoot = Join-Path $selfTestRoot "commit-mismatch"
@@ -888,7 +930,7 @@ if ($SelfTest) {
   $completeCiProvenanceManifest = Get-Content -LiteralPath $completeCiProvenanceManifestPath -Raw | ConvertFrom-Json
   $completeCiProvenanceManifest.ci.isCi = $true
   $completeCiProvenanceManifest.ci.provider = "github-actions"
-  $completeCiProvenanceManifest.ci.workflowName = "selftest"
+  $completeCiProvenanceManifest.ci.workflowName = "support-evidence-bundle"
   $completeCiProvenanceManifest.ci.runId = "123456"
   $completeCiProvenanceManifest.ci.runAttempt = "1"
   $completeCiProvenanceManifest.ci.eventName = "workflow_dispatch"
@@ -896,6 +938,42 @@ if ($SelfTest) {
   $completeCiProvenanceManifest.ci.sha = $completeCiProvenanceManifest.sourceControl.commitSha
   ($completeCiProvenanceManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $completeCiProvenanceManifestPath -Encoding UTF8
   Invoke-SelfTestReadiness -BundlePath $completeCiProvenanceRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance
+
+  $badCiWorkflowRoot = Join-Path $selfTestRoot "bad-ci-workflow"
+  New-Item -ItemType Directory -Force -Path $badCiWorkflowRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $badCiWorkflowRoot -Force
+  $badCiWorkflowManifestPath = Join-Path $badCiWorkflowRoot "support-evidence-manifest.json"
+  $badCiWorkflowManifest = Get-Content -LiteralPath $badCiWorkflowManifestPath -Raw | ConvertFrom-Json
+  $badCiWorkflowManifest.ci.isCi = $true
+  $badCiWorkflowManifest.ci.provider = "github-actions"
+  $badCiWorkflowManifest.ci.workflowName = "other-workflow"
+  $badCiWorkflowManifest.ci.runId = "123456"
+  $badCiWorkflowManifest.ci.runAttempt = "1"
+  $badCiWorkflowManifest.ci.eventName = "workflow_dispatch"
+  $badCiWorkflowManifest.ci.refName = "main"
+  $badCiWorkflowManifest.ci.sha = $badCiWorkflowManifest.sourceControl.commitSha
+  ($badCiWorkflowManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $badCiWorkflowManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle CI workflowName must be support-evidence-bundle" -Action {
+    Invoke-SelfTestReadiness -BundlePath $badCiWorkflowRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance
+  }
+
+  $badCiEventRoot = Join-Path $selfTestRoot "bad-ci-event"
+  New-Item -ItemType Directory -Force -Path $badCiEventRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $badCiEventRoot -Force
+  $badCiEventManifestPath = Join-Path $badCiEventRoot "support-evidence-manifest.json"
+  $badCiEventManifest = Get-Content -LiteralPath $badCiEventManifestPath -Raw | ConvertFrom-Json
+  $badCiEventManifest.ci.isCi = $true
+  $badCiEventManifest.ci.provider = "github-actions"
+  $badCiEventManifest.ci.workflowName = "support-evidence-bundle"
+  $badCiEventManifest.ci.runId = "123456"
+  $badCiEventManifest.ci.runAttempt = "1"
+  $badCiEventManifest.ci.eventName = "push"
+  $badCiEventManifest.ci.refName = "main"
+  $badCiEventManifest.ci.sha = $badCiEventManifest.sourceControl.commitSha
+  ($badCiEventManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $badCiEventManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "Bundle CI eventName must be workflow_dispatch" -Action {
+    Invoke-SelfTestReadiness -BundlePath $badCiEventRoot -IncludeServiceOnly -IncludeFallback -RequireCiProvenance
+  }
 
   $missingCollectionCiRoot = Join-Path $selfTestRoot "missing-collection-ci-provenance"
   New-Item -ItemType Directory -Force -Path $missingCollectionCiRoot | Out-Null
@@ -1051,6 +1129,9 @@ if ($SelfTest) {
   Invoke-ExpectReadinessFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease" -Action {
     Invoke-SelfTestReadiness -BundlePath $BundlePath -IncludeServiceOnly -IncludeFallback -RequireFinalFullMatrixReleaseClaim
   }
+  Invoke-ExpectReadinessFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -IncludeServiceOnly and -IncludeFallback" -Action {
+    Invoke-SelfTestReadiness -BundlePath $BundlePath -StrictCiRelease -RequireFinalFullMatrixReleaseClaim
+  }
 
   $strictMissingCiRoot = Join-Path $selfTestRoot "strict-missing-ci"
   New-Item -ItemType Directory -Force -Path $strictMissingCiRoot | Out-Null
@@ -1103,6 +1184,8 @@ if ($SelfTest) {
     $strictCompleteReadiness.releaseClaim.requirements.strictCiRelease -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.warningClean -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.coverageComplete -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.nonSyntheticEvidenceRequired -ne $true -or
+    $strictCompleteReadiness.releaseClaim.requirements.uniqueEvidencePayloadsRequired -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.workflowApplicabilityKnown -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.runtimeSupportMetadataKnown -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.sourceCleanRequired -ne $true -or
@@ -1113,6 +1196,7 @@ if ($SelfTest) {
     $strictCompleteReadiness.releaseClaim.requirements.hostEvidenceWorkflowCollectionRequired -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.runtimeVersionsRequired -ne $true -or
     $strictCompleteReadiness.releaseClaim.requirements.collectorSha256Required -ne $true -or
+    [int]$strictCompleteReadiness.releaseClaim.requirements.maxEvidenceAgeDaysRequired -ne 30 -or
     [int]$strictCompleteReadiness.releaseClaim.requirements.minimumUptimeHoursRequired -lt $selfTestRequiredMinimumUptimeHours) {
     throw "Release support readiness self-test failed: strict filtered readiness did not preserve the expected releaseClaim requirements."
   }
@@ -1164,10 +1248,12 @@ try {
 
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
   $currentMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $bundleMatrixPath = (Get-StringValue -Object $manifest -Names @("matrixPath")).Trim().Replace("\", "/")
   $bundleMatrixSha256 = ([string]$manifest.matrixSha256).Trim().ToLowerInvariant()
   if ($bundleMatrixSha256 -ne $currentMatrixSha256) {
     throw "Bundle support matrix SHA256 does not match the current support matrix."
   }
+  $sourceIsGitRepository = Get-BooleanValue -Object $manifest.sourceControl -Names @("isGitRepository") -Default $null
   if ($RequireCleanSource) {
     $trackedDirty = [bool]$manifest.sourceControl.trackedDirty
     if ($trackedDirty) {
@@ -1180,6 +1266,9 @@ try {
     if (-not $currentCommitSha) {
       throw "Current repository HEAD commit could not be determined for -RequireCurrentCommit."
     }
+    if ($sourceIsGitRepository -ne $true) {
+      throw "Bundle source-control provenance must report isGitRepository=true for -RequireCurrentCommit."
+    }
     $bundleCommitSha = ([string]$manifest.sourceControl.commitSha).Trim().ToLowerInvariant()
     if (-not $bundleCommitSha) {
       throw "Bundle source-control provenance does not include a commit SHA."
@@ -1190,9 +1279,30 @@ try {
   }
   if ($RequireCiProvenance) {
     $bundleIsCi = [bool]$manifest.ci.isCi
-    $bundleCiProvider = ([string]$manifest.ci.provider).Trim()
-    if (-not $bundleIsCi -or [string]::IsNullOrWhiteSpace($bundleCiProvider)) {
-      throw "Bundle CI provenance is required for -RequireCiProvenance."
+    $bundleCiProvider = ([string]$manifest.ci.provider).Trim().ToLowerInvariant()
+    $bundleCiWorkflowName = ([string]$manifest.ci.workflowName).Trim()
+    $bundleCiRunId = ([string]$manifest.ci.runId).Trim()
+    $bundleCiRunAttempt = ([string]$manifest.ci.runAttempt).Trim()
+    $bundleCiEventName = ([string]$manifest.ci.eventName).Trim().ToLowerInvariant()
+    $bundleCiSha = ([string]$manifest.ci.sha).Trim().ToLowerInvariant()
+    $bundleSourceCommitForCi = ([string]$manifest.sourceControl.commitSha).Trim().ToLowerInvariant()
+    if (-not $bundleIsCi -or $bundleCiProvider -ne "github-actions") {
+      throw "Bundle CI provenance is required for -RequireCiProvenance and must come from github-actions."
+    }
+    if ($bundleCiWorkflowName -ne "support-evidence-bundle") {
+      throw "Bundle CI workflowName must be support-evidence-bundle for -RequireCiProvenance."
+    }
+    if (-not (Test-NumericText -Value $bundleCiRunId)) {
+      throw "Bundle CI runId must be numeric for -RequireCiProvenance."
+    }
+    if (-not (Test-NumericText -Value $bundleCiRunAttempt)) {
+      throw "Bundle CI runAttempt must be numeric for -RequireCiProvenance."
+    }
+    if ($bundleCiEventName -ne "workflow_dispatch") {
+      throw "Bundle CI eventName must be workflow_dispatch for -RequireCiProvenance."
+    }
+    if (-not (Test-SafeGitShaValue -Value $bundleCiSha) -or $bundleCiSha -ne $bundleSourceCommitForCi) {
+      throw "Bundle CI sha must be a 40-character git SHA matching sourceControl.commitSha for -RequireCiProvenance."
     }
   }
   $bundleSourceCommitSha = ([string]$manifest.sourceControl.commitSha).Trim().ToLowerInvariant()
@@ -1207,6 +1317,7 @@ try {
   $hostEvidenceWorkflowMismatchCount = 0
   $collectionWorkflowDispatchMatchCount = 0
   $collectionWorkflowDispatchMismatchCount = 0
+  $collectionWorkflowDispatchMatrixMismatchCount = 0
   $runtimeVersionEvidenceCount = 0
   $runtimeVersionMissingCount = 0
   $runtimeVersionUnsafeCount = 0
@@ -1242,6 +1353,8 @@ try {
     $collectionCiSha = (Get-StringValue -Object $row -Names @("collectionCiSha")).Trim().ToLowerInvariant()
     $collectionWorkflowDispatchMatchesDimensions = Get-BooleanValue -Object $row -Names @("collectionWorkflowDispatchMatchesDimensions") -Default $null
     $collectionWorkflowDispatchMinimumUptimeHours = Get-IntegerValue -Object $row -Names @("collectionWorkflowDispatchMinimumUptimeHours")
+    $collectionWorkflowDispatchSupportMatrixPath = (Get-StringValue -Object $row -Names @("collectionWorkflowDispatchSupportMatrixPath")).Trim().Replace("\", "/")
+    $collectionWorkflowDispatchSupportMatrixSha256 = (Get-StringValue -Object $row -Names @("collectionWorkflowDispatchSupportMatrixSha256")).Trim().ToLowerInvariant()
     $nodeVersion = Get-StringValue -Object $row -Names @("nodeVersion")
     $minimumNodeVersion = Get-StringValue -Object $row -Names @("minimumNodeVersion")
     $nodeVersionSatisfied = Get-BooleanValue -Object $row -Names @("nodeVersionSatisfied") -Default $null
@@ -1280,6 +1393,9 @@ try {
       } else {
         $collectionWorkflowDispatchMismatchCount += 1
       }
+      if ($collectionWorkflowDispatchSupportMatrixPath -ne $bundleMatrixPath -or $collectionWorkflowDispatchSupportMatrixSha256 -ne $bundleMatrixSha256) {
+        $collectionWorkflowDispatchMatrixMismatchCount += 1
+      }
     }
     if ([string]::IsNullOrWhiteSpace($nodeVersion) -or [string]::IsNullOrWhiteSpace($minimumNodeVersion) -or [string]::IsNullOrWhiteSpace($nextVersion) -or $nodeVersionSatisfied -ne $true) {
       $runtimeVersionMissingCount += 1
@@ -1310,6 +1426,9 @@ try {
   }
   if ($RequireHostEvidenceWorkflowCollection -and $collectionWorkflowDispatchMismatchCount -gt 0) {
     throw "Collection workflow dispatch metadata must match the exact support row for workflow-capable evidence with -RequireHostEvidenceWorkflowCollection. Mismatched or missing workflow dispatch dimensions on $collectionWorkflowDispatchMismatchCount workflow-capable evidence file(s)."
+  }
+  if ($RequireHostEvidenceWorkflowCollection -and $collectionWorkflowDispatchMatrixMismatchCount -gt 0) {
+    throw "Collection workflow dispatch metadata must match the bundle support matrix path and SHA256 for workflow-capable evidence with -RequireHostEvidenceWorkflowCollection. Mismatched or missing support matrix provenance on $collectionWorkflowDispatchMatrixMismatchCount workflow-capable evidence file(s)."
   }
   if ($RequireRuntimeVersions -and ($runtimeVersionMissingCount -gt 0 -or $runtimeVersionUnsafeCount -gt 0)) {
     throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js, minimum Node.js, compatible Node.js, or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
@@ -1378,6 +1497,8 @@ try {
     strictCiRelease = [bool]$StrictCiRelease
     warningClean = [bool](-not $AllowWarnings)
     coverageComplete = [bool]([int]$coverage.summary.missingCount -eq 0)
+    nonSyntheticEvidenceRequired = $true
+    uniqueEvidencePayloadsRequired = $true
     workflowApplicabilityKnown = [bool]($workflowApplicabilityMissingCount -eq 0)
     runtimeSupportMetadataKnown = [bool]($runtimeSupportMetadataMissingCount -eq 0)
     sourceCleanRequired = [bool]$RequireCleanSource
@@ -1388,6 +1509,7 @@ try {
     hostEvidenceWorkflowCollectionRequired = [bool]$RequireHostEvidenceWorkflowCollection
     runtimeVersionsRequired = [bool]$RequireRuntimeVersions
     collectorSha256Required = [bool]$RequireCollectorSha256
+    maxEvidenceAgeDaysRequired = [int]$MaxEvidenceAgeDays
     minimumUptimeHoursRequired = [int]$RequireMinimumUptimeHours
   }
   $finalFullMatrixReleaseClaim = [bool](
@@ -1395,6 +1517,8 @@ try {
     $releaseClaimRequirements.strictCiRelease -and
     $releaseClaimRequirements.warningClean -and
     $releaseClaimRequirements.coverageComplete -and
+    $releaseClaimRequirements.nonSyntheticEvidenceRequired -and
+    $releaseClaimRequirements.uniqueEvidencePayloadsRequired -and
     $releaseClaimRequirements.workflowApplicabilityKnown -and
     $releaseClaimRequirements.runtimeSupportMetadataKnown -and
     $releaseClaimRequirements.sourceCleanRequired -and
@@ -1405,6 +1529,7 @@ try {
     $releaseClaimRequirements.hostEvidenceWorkflowCollectionRequired -and
     $releaseClaimRequirements.runtimeVersionsRequired -and
     $releaseClaimRequirements.collectorSha256Required -and
+    ([int]$releaseClaimRequirements.maxEvidenceAgeDaysRequired -gt 0) -and
     ([int]$releaseClaimRequirements.minimumUptimeHoursRequired -gt 0)
   )
 
@@ -1482,6 +1607,7 @@ try {
     }
     bundle = [pscustomobject]@{
       evidenceFileCount = [int]$manifest.summary.evidenceFileCount
+      uniqueEvidenceSha256Count = [int]$manifest.summary.uniqueEvidenceSha256Count
       collectionCiEvidenceCount = $collectionCiEvidenceCount
       collectionCiMissingCount = $collectionCiMissingCount
       collectionCiSourceMatchCount = $collectionCiSourceMatchCount
@@ -1490,6 +1616,7 @@ try {
       hostEvidenceWorkflowMismatchCount = $hostEvidenceWorkflowMismatchCount
       collectionWorkflowDispatchMatchCount = $collectionWorkflowDispatchMatchCount
       collectionWorkflowDispatchMismatchCount = $collectionWorkflowDispatchMismatchCount
+      collectionWorkflowDispatchMatrixMismatchCount = $collectionWorkflowDispatchMatrixMismatchCount
       runtimeVersionEvidenceCount = $runtimeVersionEvidenceCount
       runtimeVersionMissingCount = $runtimeVersionMissingCount
       runtimeVersionUnsafeCount = $runtimeVersionUnsafeCount

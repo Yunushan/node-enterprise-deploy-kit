@@ -49,6 +49,8 @@ jobs:
           ./scripts/dev/Import-HostEvidenceArtifacts.ps1 -SelfTest
           ./scripts/dev/Invoke-SupportEvidenceReleaseWorkflow.ps1 -SelfTest
           ./scripts/dev/Test-ReleaseSupportReadiness.ps1 -SelfTest
+          ./scripts/dev/New-ReleaseReadinessSummary.ps1 -SelfTest
+          ./scripts/dev/Test-ReleaseReadinessSummary.ps1 -SelfTest
 
   windows-checks:
     name: windows-checks (${{ matrix.os }})

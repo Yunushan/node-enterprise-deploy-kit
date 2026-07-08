@@ -101,6 +101,9 @@ function Assert-ZipContainsExpectedPaths {
             if (-not ($entries | Where-Object { $_ -like ".next/static/*" })) {
                 throw "Package zip is missing .next/static content."
             }
+            if ($entries -notcontains "node_modules/next/package.json") {
+                throw "Package zip is missing node_modules/next/package.json at the archive root."
+            }
         } else {
             if ($entries -notcontains "package.json") {
                 throw "Package zip is missing package.json at the archive root."
@@ -113,6 +116,9 @@ function Assert-ZipContainsExpectedPaths {
             }
             if (-not ($entries | Where-Object { $_ -like "node_modules/next/*" })) {
                 throw "Package zip is missing node_modules/next content."
+            }
+            if ($entries -notcontains "node_modules/next/package.json") {
+                throw "Package zip is missing node_modules/next/package.json at the archive root."
             }
             if ($entries -notcontains "node_modules/next/dist/bin/next") {
                 throw "Package zip is missing node_modules/next/dist/bin/next at the archive root."
@@ -153,6 +159,7 @@ if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
 $modeNormalized = $Mode.Trim().ToLowerInvariant()
 $standaloneRoot = Join-Path $projectRoot ".next\standalone"
 $standaloneServer = Join-Path $standaloneRoot "server.js"
+$standaloneNextPackageJsonPath = Join-Path $standaloneRoot "node_modules\next\package.json"
 $staticRoot = Join-Path $projectRoot ".next\static"
 $nextRoot = Join-Path $projectRoot ".next"
 $buildIdPath = Join-Path $projectRoot ".next\BUILD_ID"
@@ -160,6 +167,7 @@ $publicRoot = Join-Path $projectRoot "public"
 $packageJsonPath = Join-Path $projectRoot "package.json"
 $nodeModulesRoot = Join-Path $projectRoot "node_modules"
 $nextPackageRoot = Join-Path $nodeModulesRoot "next"
+$nextPackageJsonPath = Join-Path $nextPackageRoot "package.json"
 $nextCliPath = Join-Path $nextPackageRoot "dist\bin\next"
 
 if (-not (Test-Path -LiteralPath $buildIdPath -PathType Leaf)) {
@@ -175,6 +183,9 @@ if ($modeNormalized -eq "standalone") {
     if (-not (Test-Path -LiteralPath $staticRoot -PathType Container)) {
         throw "Next.js static assets were not found: $staticRoot"
     }
+    if (-not (Test-Path -LiteralPath $standaloneNextPackageJsonPath -PathType Leaf)) {
+        throw "Next.js standalone package metadata was not found: $standaloneNextPackageJsonPath. Build with output: 'standalone' before packaging so runtime evidence can prove the installed Next.js version."
+    }
 } else {
     if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
         throw "Next.js next-start package.json was not found: $packageJsonPath"
@@ -184,6 +195,9 @@ if ($modeNormalized -eq "standalone") {
     }
     if (-not (Test-Path -LiteralPath $nextPackageRoot -PathType Container)) {
         throw "Next.js next-start node_modules/next directory was not found: $nextPackageRoot. Run a production install before packaging."
+    }
+    if (-not (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)) {
+        throw "Next.js next-start package metadata was not found: $nextPackageJsonPath. Run a production install before packaging so runtime evidence can prove the installed Next.js version."
     }
     if (-not (Test-Path -LiteralPath $nextCliPath -PathType Leaf)) {
         throw "Next.js next-start CLI file was not found: $nextCliPath. Run a production install before packaging."

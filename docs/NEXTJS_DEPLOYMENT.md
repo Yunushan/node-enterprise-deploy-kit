@@ -43,7 +43,7 @@ architecture.
 | Mode | Config value | What gets deployed | Recommended use |
 |---|---|---|---|
 | Standalone | `standalone` | Contents of `.next/standalone`, plus copied static assets | Recommended production service mode |
-| Next start | `next-start` | Full app with `package.json`, `.next`, and `node_modules/next/dist/bin/next` | Compatibility mode when standalone is not possible |
+| Next start | `next-start` | Full app with `package.json`, `.next`, `node_modules/next/package.json`, and `node_modules/next/dist/bin/next` | Compatibility mode when standalone is not possible |
 
 Static export-only sites are not the primary target of this kit. Serve those as
 static files through IIS/Nginx/Apache or a CDN instead of installing a Node.js
@@ -109,12 +109,15 @@ In `standalone` mode, both helpers copy `.next/standalone`, add
 `.next/static`, copy `.next/BUILD_ID`, copy `public` when it exists, block
 obvious private files such as `.env`, private keys, and certificates from the
 staged package, then verify that the archive contains `server.js`,
-`.next/BUILD_ID`, and `.next/static`. In `next-start` mode, they stage
+`.next/BUILD_ID`, `.next/static`, and `node_modules/next/package.json`. In
+`next-start` mode, they stage
 `package.json`, `.next`, production `node_modules`, optional `public`, and
 common Next.js config/lock files, then verify that the archive contains
-`package.json`, `.next/BUILD_ID`, and `node_modules/next/dist/bin/next`. The
-helpers also run the package validator on the produced archive before reporting
-success.
+`package.json`, `.next/BUILD_ID`, `node_modules/next/package.json`, and
+`node_modules/next/dist/bin/next`. The helpers also run the package validator
+on the produced archive before reporting success. The `node_modules/next`
+package metadata is required so post-deploy evidence can prove the installed
+Next.js package version from the active runtime folder.
 
 Unix tar deployment archives are also rejected when they contain symlink or
 hardlink entries. The Unix `next-start` package helper therefore removes
@@ -221,7 +224,8 @@ Use the normal Windows deployment flow with these Next.js-specific fields:
   "PackageExpectedFiles": [
     "server.js",
     ".next/BUILD_ID",
-    ".next/static"
+    ".next/static",
+    "node_modules/next/package.json"
   ],
   "Environment": {
     "NODE_ENV": "production",
@@ -252,6 +256,7 @@ subcommand plus hostname:
     "package.json",
     ".next/BUILD_ID",
     ".next",
+    "node_modules/next/package.json",
     "node_modules/next/dist/bin/next"
   ]
 }
@@ -302,7 +307,7 @@ NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 START_SCRIPT="server.js"
 APP_PORT="3000"
 BIND_ADDRESS="127.0.0.1"
-PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
+PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static node_modules/next/package.json"
 ```
 
 The Unix-like service installer writes the protected runtime env file with
@@ -319,7 +324,7 @@ NEXTJS_DEPLOYMENT_MODE="next-start"
 START_SCRIPT="node_modules/next/dist/bin/next"
 NODE_ARGUMENTS="start -H 127.0.0.1"
 BIND_ADDRESS="127.0.0.1"
-PACKAGE_EXPECTED_FILES="package.json .next/BUILD_ID .next node_modules/next/dist/bin/next"
+PACKAGE_EXPECTED_FILES="package.json .next/BUILD_ID .next node_modules/next/package.json node_modules/next/dist/bin/next"
 ```
 
 You can also start from the committed Unix-like example:
@@ -474,7 +479,8 @@ For `standalone`, the preflight validates:
 - The runtime root has `.next/BUILD_ID`.
 - The runtime root has `.next/static` when static assets are required.
 - The runtime root has `public` when public directory validation is required.
-- The runtime root has `node_modules`, with a warning if missing.
+- The runtime root has `node_modules/next/package.json` so evidence can prove
+  the installed Next.js package version.
 
 For `next-start`, the preflight validates:
 
@@ -484,6 +490,8 @@ For `next-start`, the preflight validates:
 - `package.json` exists.
 - `.next` exists.
 - `node_modules/next` exists.
+- `node_modules/next/package.json` exists so evidence can prove the installed
+  Next.js package version.
 - `node_modules/next/dist/bin/next` exists.
 - `StartCommand` / `START_SCRIPT` points exactly to
   `node_modules/next/dist/bin/next` under the app directory.
@@ -503,9 +511,11 @@ Get-NetTCPConnection -State Listen |
 For `AppFramework=nextjs`, `status.ps1` also prints a safe Next.js runtime
 layout section and raises findings when `server.js`, `.next`, `.next/BUILD_ID`,
 `.next/static`, `node_modules/next`, `node_modules/next/dist/bin/next`, or
-compatible Node.js runtime evidence are missing for the selected mode. To
-collect the same layout information in a machine-readable release evidence
-file, run:
+compatible Node.js runtime evidence are missing for the selected mode. The
+JSON evidence must also include the installed Next.js package version from the
+active runtime folder, so a release claim cannot pass with only a guessed or
+undocumented framework version. To collect the same layout information in a
+machine-readable release evidence file, run:
 
 ```powershell
 .\status.ps1 -ConfigPath .\config\windows\app.config.json -JsonPath .\evidence\windows-nextjs-status.json -FailOnCritical
@@ -537,10 +547,10 @@ The Unix status command checks service state, configured port, HTTP health,
 health-check history, and the Next.js runtime layout without printing raw
 environment values. Its JSON evidence includes `nodeVersion`,
 `minimumNodeVersion`, `nodeVersionSatisfied`, and
-`nextStartScriptIsExpectedCli` for `next-start` services. Use `--json-output`
-for release evidence on Linux, macOS, and BSD hosts. Unix diagnostics include
-a safe Next.js runtime layout section for Linux, macOS, and BSD
-service-manager modes:
+`nextVersion`, plus `nextStartScriptIsExpectedCli` for `next-start` services.
+Use `--json-output` for release evidence on Linux, macOS, and BSD hosts. Unix
+diagnostics include a safe Next.js runtime layout section for Linux, macOS, and
+BSD service-manager modes:
 
 Unix preflight blocks selected reverse-proxy deployments when the matching
 proxy executable is missing, so an `nginx`, Apache/httpd, HAProxy, or Traefik

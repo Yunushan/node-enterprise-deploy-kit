@@ -231,18 +231,52 @@ function Test-NoObviousSecrets {
   $ignoreDirs = @(".git", ".tmp", "node_modules", ".next", "dist", "build", "evidence", "evidence-downloads", "release-evidence")
   $binaryExt = @(".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe")
   $failed = $false
+  $candidateFiles = @()
 
-  Get-ChildItem -Path $RepoRoot -Recurse -File |
-    Where-Object {
-      $path = $_.FullName
-      -not ($ignoreDirs | Where-Object { $path -like "*\$_\*" }) -and
-      $binaryExt -notcontains $_.Extension.ToLowerInvariant()
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if ($git) {
+    Push-Location $RepoRoot
+    try {
+      $candidateFiles = @(& $git.Source ls-files --cached --others --exclude-standard)
+      if ($LASTEXITCODE -ne 0) {
+        throw "git ls-files failed."
+      }
+    }
+    finally {
+      Pop-Location
+    }
+  }
+
+  if (-not $git) {
+    $candidateFiles = Get-ChildItem -Path $RepoRoot -Recurse -File |
+      Where-Object {
+        $path = $_.FullName
+        -not ($ignoreDirs | Where-Object { $path -like "*\$_\*" }) -and
+        $binaryExt -notcontains $_.Extension.ToLowerInvariant()
+      } |
+      ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1) }
+  }
+
+  $candidateFiles |
+    ForEach-Object {
+      $relativePath = $_
+      $fullPath = Join-Path $RepoRoot $relativePath
+      if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        $pathForFilter = "\" + ($relativePath -replace "/", "\")
+        if (-not ($ignoreDirs | Where-Object { $pathForFilter -like "*\$_\*" }) -and
+            $binaryExt -notcontains [System.IO.Path]::GetExtension($relativePath).ToLowerInvariant()) {
+          [PSCustomObject]@{
+            FullName = $fullPath
+            RelativePath = $relativePath
+          }
+        }
+      }
     } |
     ForEach-Object {
       $text = Get-Content -Path $_.FullName -Raw -ErrorAction SilentlyContinue
       foreach ($pattern in $patterns) {
         if ($text -match $pattern) {
-          Write-Host "Potential secret pattern in $($_.FullName.Substring($RepoRoot.Length + 1))"
+          Write-Host "Potential secret pattern in $($_.RelativePath)"
           $failed = $true
           break
         }
@@ -384,6 +418,10 @@ function Test-ReleaseReadinessSummarySelfTest {
   & (Join-Path $ScriptDir "New-ReleaseReadinessSummary.ps1") -SelfTest
 }
 
+function Test-ReleaseReadinessSummaryVerifierSelfTest {
+  & (Join-Path $ScriptDir "Test-ReleaseReadinessSummary.ps1") -SelfTest
+}
+
 function Test-SupportClaimSelfTest {
   & (Join-Path $ScriptDir "Test-SupportClaim.ps1") -SelfTest
 }
@@ -466,6 +504,7 @@ Test-HostEvidenceWorkflow
 Test-SupportEvidenceBundleWorkflow
 Test-ReleaseEvidenceWorkflow
 Test-ReleaseReadinessSummarySelfTest
+Test-ReleaseReadinessSummaryVerifierSelfTest
 Test-SupportClaimSelfTest
 Test-SupportEvidencePlanSelfTest
 Test-HeavyReleaseEvidenceSelfTests

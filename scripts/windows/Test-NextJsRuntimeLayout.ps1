@@ -195,7 +195,8 @@ $staticPath = Join-Path $nextPath "static"
 $publicPath = Join-Path $runtimeRoot "public"
 $nodeModulesPath = Join-Path $runtimeRoot "node_modules"
 $packageJsonPath = Join-Path $AppDirectory "package.json"
-$nextPackagePath = Join-Path $AppDirectory "node_modules\next"
+$nextPackagePath = if ($modeNormalized -eq "standalone") { Join-Path $runtimeRoot "node_modules\next" } else { Join-Path $AppDirectory "node_modules\next" }
+$nextPackageJsonPath = Join-Path $nextPackagePath "package.json"
 
 [pscustomobject]@{
     Mode = $modeNormalized
@@ -219,6 +220,7 @@ $nextPackagePath = Join-Path $AppDirectory "node_modules\next"
     NodeModulesExists = (Test-Path -LiteralPath $nodeModulesPath -PathType Container)
     PackageJsonExists = (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)
     NextPackageExists = (Test-Path -LiteralPath $nextPackagePath -PathType Container)
+    NextPackageJsonExists = (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)
 } | Format-List
 
 if (-not [string]::IsNullOrWhiteSpace($AppDirectory) -and -not (Test-Path -LiteralPath $AppDirectory -PathType Container)) {
@@ -244,8 +246,8 @@ if ($modeNormalized -eq "standalone") {
     if ($RequirePublicDirectory -and -not (Test-Path -LiteralPath $publicPath -PathType Container)) {
         Add-Error "Next.js standalone runtime root is missing public directory: $publicPath"
     }
-    if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
-        Add-Warning "Next.js standalone runtime root has no node_modules directory. Confirm the artifact includes traced dependencies."
+    if (-not (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)) {
+        Add-Error "Next.js standalone runtime root is missing node_modules/next/package.json. Keep Next.js package metadata with the deployed artifact so status evidence can prove the installed Next.js version."
     }
 } elseif ($modeNormalized -eq "next-start") {
     if ([string]::IsNullOrWhiteSpace($StartCommand) -or $StartCommand -match '\s') {
@@ -285,6 +287,9 @@ if ($modeNormalized -eq "standalone") {
     }
     if (-not (Test-Path -LiteralPath $nextPackagePath -PathType Container)) {
         Add-Error "Next.js next-start mode is missing node_modules/next under AppDirectory."
+    }
+    if (-not (Test-Path -LiteralPath $nextPackageJsonPath -PathType Leaf)) {
+        Add-Error "Next.js next-start mode is missing node_modules/next/package.json under AppDirectory."
     }
 }
 

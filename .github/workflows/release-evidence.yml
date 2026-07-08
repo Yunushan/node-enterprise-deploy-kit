@@ -14,6 +14,10 @@ on:
         description: Optional .zip filename inside the downloaded artifact; first .zip is used when empty
         required: false
         default: ''
+      matrix_path:
+        description: Relative repository path to the support matrix used for this release
+        required: true
+        default: config/support-matrix.example.json
       include_service_only:
         description: Include ReverseProxy=none evidence rows in the full-matrix release gate
         required: true
@@ -44,6 +48,7 @@ jobs:
           BUNDLE_FILE: ${{ inputs.bundle_file }}
           INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
           INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: ./scripts/dev/Test-ReleaseEvidenceWorkflowInputs.ps1
 
@@ -61,6 +66,7 @@ jobs:
           BUNDLE_FILE: ${{ inputs.bundle_file }}
           INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
           INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
         run: |
           $ErrorActionPreference = "Stop"
           $artifactRoot = Join-Path (Get-Location) "release-evidence-input"
@@ -74,6 +80,7 @@ jobs:
 
           $readinessArgs = @(
             "-BundlePath", $bundlePath,
+            "-MatrixPath", $env:MATRIX_PATH,
             "-StrictCiRelease",
             "-RequireFinalFullMatrixReleaseClaim",
             "-Format", "Json",
@@ -91,6 +98,11 @@ jobs:
           & ./scripts/dev/New-ReleaseReadinessSummary.ps1 `
             -InputPath "release-readiness.json" `
             -OutputPath "release-readiness-summary.json" `
+            -RequireFinalFullMatrixReleaseClaim
+
+          & ./scripts/dev/Test-ReleaseReadinessSummary.ps1 `
+            -InputPath "release-readiness-summary.json" `
+            -MatrixPath $env:MATRIX_PATH `
             -RequireFinalFullMatrixReleaseClaim
 
           & ./scripts/dev/Write-ReleaseReadinessStepSummary.ps1 `

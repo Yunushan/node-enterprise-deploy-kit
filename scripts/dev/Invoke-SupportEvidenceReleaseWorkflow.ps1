@@ -50,6 +50,10 @@ if ($RequireFinalFullMatrixReleaseClaim -and -not $StrictCiRelease) {
   throw "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease; final full-matrix signoff must use strict CI release checks."
 }
 
+if ($RequireFinalFullMatrixReleaseClaim -and (-not $IncludeServiceOnly -or -not $IncludeFallback)) {
+  throw "-RequireFinalFullMatrixReleaseClaim requires -IncludeServiceOnly and -IncludeFallback; final full-matrix signoff must cover service-only and fallback rows."
+}
+
 function Write-Step {
   param([string]$Message)
   Write-Host ""
@@ -233,6 +237,7 @@ function Invoke-SelfTest {
 
   & (Join-Path $ScriptDir "Test-SupportEvidenceCoverage.ps1") `
     -SelfTest `
+    -SkipExtendedSelfTestChecks `
     -Format Json `
     -OutputPath $coverageJson | Out-Null
 
@@ -347,6 +352,17 @@ function Invoke-SelfTest {
   $requireFinalArgs.RequireFinalFullMatrixReleaseClaim = $true
   Invoke-ExpectReleaseWorkflowFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -StrictCiRelease" -Action {
     & $PSCommandPath @requireFinalArgs | Out-Null
+  }
+
+  $requireFinalScopeArgs = $scriptArgs.Clone()
+  $requireFinalScopeArgs.OutputDirectory = Join-Path $selfTestRoot "require-final-scope-output"
+  $requireFinalScopeArgs.BundleName = "selftest-require-final-scope-evidence"
+  $requireFinalScopeArgs.StrictCiRelease = $true
+  $requireFinalScopeArgs.RequireFinalFullMatrixReleaseClaim = $true
+  $requireFinalScopeArgs.IncludeServiceOnly = $false
+  $requireFinalScopeArgs.IncludeFallback = $false
+  Invoke-ExpectReleaseWorkflowFailure -ExpectedMessage "-RequireFinalFullMatrixReleaseClaim requires -IncludeServiceOnly and -IncludeFallback" -Action {
+    & $PSCommandPath @requireFinalScopeArgs | Out-Null
   }
 
   $strictFailureArgs = $scriptArgs.Clone()
@@ -473,6 +489,15 @@ Invoke-Step "Release readiness summary" {
   }
   if ($RequireFinalFullMatrixReleaseClaim) { $summaryArgs.RequireFinalFullMatrixReleaseClaim = $true }
   & (Join-Path $ScriptDir "New-ReleaseReadinessSummary.ps1") @summaryArgs | Out-Null
+}
+
+Invoke-Step "Release readiness summary verification" {
+  $summaryVerifierArgs = @{
+    InputPath = $readinessSummaryJson
+    MatrixPath = $MatrixPath
+  }
+  if ($RequireFinalFullMatrixReleaseClaim) { $summaryVerifierArgs.RequireFinalFullMatrixReleaseClaim = $true }
+  & (Join-Path $ScriptDir "Test-ReleaseReadinessSummary.ps1") @summaryVerifierArgs | Out-Null
 }
 
 $readiness = Get-Content -LiteralPath $readinessJson -Raw | ConvertFrom-Json

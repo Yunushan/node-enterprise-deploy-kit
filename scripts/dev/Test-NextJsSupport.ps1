@@ -262,9 +262,9 @@ function New-WindowsConfig {
     DiagnosticRetentionDays = 14
   }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start") {
-    $config["PackageExpectedFiles"] = @("package.json", ".next/BUILD_ID", ".next", "node_modules/next/dist/bin/next")
+    $config["PackageExpectedFiles"] = @("package.json", ".next/BUILD_ID", ".next", "node_modules/next/package.json", "node_modules/next/dist/bin/next")
   } else {
-    $config["PackageExpectedFiles"] = @("server.js", ".next/BUILD_ID", ".next/static")
+    $config["PackageExpectedFiles"] = @("server.js", ".next/BUILD_ID", ".next/static", "node_modules/next/package.json")
   }
 
   if (-not $NoEnvironment) {
@@ -314,9 +314,9 @@ function New-UnixEnv {
     $NodeArguments = "start -H 127.0.0.1"
   }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start") {
-    $packageExpectedFiles = "package.json .next/BUILD_ID .next node_modules/next/dist/bin/next"
+    $packageExpectedFiles = "package.json .next/BUILD_ID .next node_modules/next/package.json node_modules/next/dist/bin/next"
   } else {
-    $packageExpectedFiles = "server.js .next/BUILD_ID .next/static"
+    $packageExpectedFiles = "server.js .next/BUILD_ID .next/static node_modules/next/package.json"
   }
   $text = @"
 APP_NAME="example-next-smoke"
@@ -371,6 +371,8 @@ function New-StandaloneLayout {
   }
   Write-Utf8NoBom -Path (Join-Path $AppDirectory ".next\BUILD_ID") -Text "example-build`n"
   New-Directory (Join-Path $AppDirectory "node_modules")
+  New-Directory (Join-Path $AppDirectory "node_modules\next")
+  Write-Utf8NoBom -Path (Join-Path $AppDirectory "node_modules\next\package.json") -Text "{`"name`":`"next`",`"version`":`"0.0.0-test`"}`n"
   Write-Utf8NoBom -Path (Join-Path $AppDirectory "server.js") -Text "console.log('ok');`n"
 }
 
@@ -385,7 +387,9 @@ function New-NextProjectLayout {
   New-Directory $standaloneRoot
   New-Directory $staticRoot
   New-Directory (Join-Path $standaloneRoot "node_modules")
+  New-Directory (Join-Path $standaloneRoot "node_modules\next")
   Write-Utf8NoBom -Path (Join-Path $standaloneRoot "server.js") -Text "console.log('standalone');`n"
+  Write-Utf8NoBom -Path (Join-Path $standaloneRoot "node_modules\next\package.json") -Text "{`"name`":`"next`",`"version`":`"0.0.0-test`"}`n"
   Write-Utf8NoBom -Path (Join-Path $standaloneRoot "package.json") -Text "{`"scripts`":{`"start`":`"node server.js`"}}`n"
   Write-Utf8NoBom -Path (Join-Path $staticRoot "app.js") -Text "console.log('static');`n"
   Write-Utf8NoBom -Path (Join-Path $ProjectDirectory ".next\BUILD_ID") -Text "example-build`n"
@@ -401,6 +405,7 @@ function New-NextStartLayout {
   param(
     [string]$AppDirectory,
     [switch]$WithoutNextPackage,
+    [switch]$WithoutNextPackageJson,
     [switch]$WithoutNextCli
   )
 
@@ -411,7 +416,9 @@ function New-NextStartLayout {
   if (-not $WithoutNextPackage) {
     $nextPackage = Join-Path $AppDirectory "node_modules\next"
     New-Directory $nextPackage
-    Write-Utf8NoBom -Path (Join-Path $nextPackage "package.json") -Text "{`"name`":`"next`",`"version`":`"0.0.0-test`"}`n"
+    if (-not $WithoutNextPackageJson) {
+      Write-Utf8NoBom -Path (Join-Path $nextPackage "package.json") -Text "{`"name`":`"next`",`"version`":`"0.0.0-test`"}`n"
+    }
     $nextCli = Join-Path $nextPackage "dist\bin"
     New-Directory $nextCli
     if (-not $WithoutNextCli) {
@@ -1024,6 +1031,7 @@ try {
     "server.js",
     ".next/BUILD_ID",
     ".next/static/app.js",
+    "node_modules/next/package.json",
     "public/robots.txt"
   )
   Invoke-ExpectPackageValidatorPowerShellSuccess -PackagePath $windowsPackagePath
@@ -1062,6 +1070,7 @@ try {
   Assert-ZipContains -Path $windowsNextStartPackage -ExpectedEntries @(
     "package.json",
     ".next/BUILD_ID",
+    "node_modules/next/package.json",
     "node_modules/next/dist/bin/next"
   )
   Invoke-ExpectPackageValidatorPowerShellSuccess -PackagePath $windowsNextStartPackage -Mode "next-start"
@@ -1069,6 +1078,13 @@ try {
   $windowsBadNextStartPackage = Join-Path $testRoot "packages\next-start-missing-next.zip"
   New-ZipFromDirectory -SourceDirectory $windowsBadNextStartApp -OutputPath $windowsBadNextStartPackage
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsBadNextStartPackage -ExpectedText "node_modules/next" -Mode "next-start"
+
+  $windowsMissingNextPackageJsonApp = Join-Path $testRoot "windows-next-start-missing-next-package-json\app"
+  New-NextStartLayout -AppDirectory $windowsMissingNextPackageJsonApp -WithoutNextPackageJson
+  $windowsMissingNextPackageJsonPackage = Join-Path $testRoot "packages\next-start-missing-next-package-json.zip"
+  New-ZipFromDirectory -SourceDirectory $windowsMissingNextPackageJsonApp -OutputPath $windowsMissingNextPackageJsonPackage
+  Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsMissingNextPackageJsonPackage -ExpectedText "node_modules/next/package.json" -Mode "next-start"
+  Invoke-ExpectPackagePowerShellFailure -ProjectPath $windowsMissingNextPackageJsonApp -OutputPath (Join-Path $testRoot "packages\next-start-helper-missing-next-package-json.zip") -ExpectedText "package metadata" -Mode "next-start"
 
   $windowsMissingNextCliApp = Join-Path $testRoot "windows-next-start-missing-cli\app"
   New-NextStartLayout -AppDirectory $windowsMissingNextCliApp -WithoutNextCli
@@ -1301,6 +1317,7 @@ try {
         "server.js",
         ".next/BUILD_ID",
         ".next/static/app.js",
+        "node_modules/next/package.json",
         "public/robots.txt"
       )
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixPackageOutputRel
@@ -1310,6 +1327,7 @@ try {
       Assert-TarContains -BashPath $bash.Source -ArchivePath $unixNextStartPackage -ExpectedEntries @(
         "package.json",
         ".next/BUILD_ID",
+        "node_modules/next/package.json",
         "node_modules/next/dist/bin/next"
       )
       & $bash.Source "-lc" "if tar -tzf '$unixNextStartPackage' | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then exit 1; fi" | Out-Null
@@ -1321,6 +1339,14 @@ try {
       $unixBadNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next.tar.gz")
       & $bash.Source "-lc" "tar -C '$unixBadNextStartRel/app' -czf '$unixBadNextStartPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixBadNextStartPackage -ExpectedText "node_modules/next" -Mode "next-start"
+
+      $unixMissingNextPackageJsonRoot = Join-Path $testRoot "unix-next-start-missing-next-package-json"
+      $unixMissingNextPackageJsonRel = Get-RepoRelativePath $unixMissingNextPackageJsonRoot
+      New-NextStartLayout -AppDirectory (Join-Path $unixMissingNextPackageJsonRoot "app") -WithoutNextPackageJson
+      $unixMissingNextPackageJsonPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next-package-json.tar.gz")
+      & $bash.Source "-lc" "tar -C '$unixMissingNextPackageJsonRel/app' -czf '$unixMissingNextPackageJsonPackage' ." | Out-Null
+      Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextPackageJsonPackage -ExpectedText "node_modules/next/package.json" -Mode "next-start"
+      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextPackageJsonRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-next-package-json.tar.gz")) -ExpectedText "package metadata" -Mode "next-start"
 
       $unixMissingNextCliRoot = Join-Path $testRoot "unix-next-start-missing-cli"
       $unixMissingNextCliRel = Get-RepoRelativePath $unixMissingNextCliRoot

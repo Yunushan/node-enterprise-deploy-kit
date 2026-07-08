@@ -414,8 +414,8 @@ function Test-NextJsDeploymentLayout($Config) {
         if ($requirePublic -and -not (Test-Path -LiteralPath (Join-Path $standaloneRoot "public") -PathType Container)) {
             Add-Error "Next.js standalone runtime root is missing public directory, but NextjsRequirePublicDirectory is true."
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $standaloneRoot "node_modules") -PathType Container)) {
-            Add-Warning "Next.js standalone runtime root has no node_modules directory. Confirm the standalone artifact includes traced dependencies."
+        if (-not (Test-Path -LiteralPath (Join-Path $standaloneRoot "node_modules\next\package.json") -PathType Leaf)) {
+            Add-Error "Next.js standalone runtime root is missing node_modules/next/package.json. Keep Next.js package metadata with the deployed artifact so status evidence can prove the installed Next.js version."
         }
     } elseif ($mode -eq "next-start") {
         if (-not [System.IO.Path]::IsPathRooted($startCommand) -and -not (Test-SafeRelativeFilePath $startCommand)) {
@@ -425,6 +425,9 @@ function Test-NextJsDeploymentLayout($Config) {
             $expectedStartCommandPath = Get-StartCommandPath -AppDirectory $Config.AppDirectory -StartCommand "node_modules\next\dist\bin\next"
             if (-not (Test-Path -LiteralPath $startCommandPath -PathType Leaf)) {
                 Add-Error "Next.js next-start StartCommand file was not found: $startCommandPath"
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $Config.AppDirectory "node_modules\next\package.json") -PathType Leaf)) {
+                Add-Error "Next.js next-start mode is missing node_modules/next/package.json under AppDirectory."
             }
             if ((Get-NormalizedPathForCompare $startCommandPath) -ine (Get-NormalizedPathForCompare $expectedStartCommandPath)) {
                 Add-Error "Next.js next-start StartCommand must point to node_modules/next/dist/bin/next under AppDirectory."

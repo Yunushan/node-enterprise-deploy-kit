@@ -247,7 +247,12 @@ static_path="${runtime_root%/}/.next/static"
 public_path="${runtime_root%/}/public"
 node_modules_path="${runtime_root%/}/node_modules"
 package_json_path="${APP_DIR%/}/package.json"
-next_package_path="${APP_DIR%/}/node_modules/next"
+if [[ "$MODE" == "standalone" ]]; then
+  next_package_path="${runtime_root%/}/node_modules/next"
+else
+  next_package_path="${APP_DIR%/}/node_modules/next"
+fi
+next_package_json_path="${next_package_path%/}/package.json"
 next_start_expected_script="node_modules/next/dist/bin/next"
 next_start_script_is_expected_cli=""
 if [[ "$MODE" == "next-start" ]]; then
@@ -283,6 +288,7 @@ PublicDirectoryExists=$(path_exists_text "$public_path" dir)
 NodeModulesExists=$(path_exists_text "$node_modules_path" dir)
 PackageJsonExists=$(path_exists_text "$package_json_path" file)
 NextPackageExists=$(path_exists_text "$next_package_path" dir)
+NextPackageJsonExists=$(path_exists_text "$next_package_json_path" file)
 NextStartScriptIsExpectedCli=$next_start_script_is_expected_cli
 SUMMARY
 
@@ -303,7 +309,7 @@ if [[ "$MODE" == "standalone" ]]; then
   if is_true "$REQUIRE_PUBLIC" && [[ ! -d "$public_path" ]]; then
     add_error "Next.js standalone runtime root is missing public directory: $public_path"
   fi
-  [[ -d "$node_modules_path" ]] || add_warning "Next.js standalone runtime root has no node_modules directory. Confirm the artifact includes traced dependencies."
+  [[ -f "$next_package_json_path" ]] || add_error "Next.js standalone runtime root is missing node_modules/next/package.json. Keep Next.js package metadata with the deployed artifact so status evidence can prove the installed Next.js version."
 elif [[ "$MODE" == "next-start" ]]; then
   if [[ -z "$START_SCRIPT" || "$START_SCRIPT" == *" "* ]]; then
     add_error "START_SCRIPT must be a single file path for Next.js next-start validation."
@@ -332,6 +338,7 @@ elif [[ "$MODE" == "next-start" ]]; then
   [[ -d "${APP_DIR%/}/.next" ]] || add_error "Next.js next-start mode is missing .next under APP_DIR."
   [[ -f "${APP_DIR%/}/.next/BUILD_ID" ]] || add_error "Next.js next-start mode is missing .next/BUILD_ID under APP_DIR."
   [[ -d "$next_package_path" ]] || add_error "Next.js next-start mode is missing node_modules/next under APP_DIR."
+  [[ -f "$next_package_json_path" ]] || add_error "Next.js next-start mode is missing node_modules/next/package.json under APP_DIR."
 fi
 
 if [[ "${#warnings[@]}" -gt 0 ]]; then

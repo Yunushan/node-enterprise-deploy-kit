@@ -221,7 +221,9 @@ $releaseEvidenceJobRequirements = @(
   "Test-SupportEvidenceCoverage.ps1 -SelfTest",
   "Import-HostEvidenceArtifacts.ps1 -SelfTest",
   "Invoke-SupportEvidenceReleaseWorkflow.ps1 -SelfTest",
-  "Test-ReleaseSupportReadiness.ps1 -SelfTest"
+  "Test-ReleaseSupportReadiness.ps1 -SelfTest",
+  "New-ReleaseReadinessSummary.ps1 -SelfTest",
+  "Test-ReleaseReadinessSummary.ps1 -SelfTest"
 )
 $ciWorkflowJobBlocks = @{}
 

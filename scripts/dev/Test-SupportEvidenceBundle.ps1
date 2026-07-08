@@ -1,5 +1,6 @@
 param(
   [string]$BundlePath = "",
+  [string]$MatrixPath = "",
   [switch]$SelfTest
 )
 
@@ -258,6 +259,7 @@ function Get-EvidenceCollectionEvidence {
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
   $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
+  $workflowDispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
   return [pscustomobject]@{
     Source = Get-StringValue -Object $collection -Names @("Source", "source")
     Collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
@@ -276,6 +278,10 @@ function Get-EvidenceCollectionEvidence {
       EventName = Get-StringValue -Object $ci -Names @("EventName", "eventName")
       RefName = Get-StringValue -Object $ci -Names @("RefName", "refName")
       Sha = Get-StringValue -Object $ci -Names @("Sha", "sha")
+    }
+    WorkflowDispatch = [pscustomobject]@{
+      SupportMatrixPath = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixPath", "supportMatrixPath", "matrixPath", "matrix_path")).Trim().Replace("\", "/")
+      SupportMatrixSha256 = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixSha256", "supportMatrixSha256", "matrixSha256", "matrix_sha256")).Trim().ToLowerInvariant()
     }
   }
 }
@@ -402,6 +408,106 @@ function Test-DateValueEqual {
 function Test-Sha256Text {
   param([string]$Value)
   return (-not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '^[A-Fa-f0-9]{64}$')
+}
+
+function ConvertTo-RepoRelativePath {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+  $pathText = $Path.Trim()
+  $normalizedInput = $pathText.Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+  if ([System.IO.Path]::IsPathRooted($normalizedInput)) {
+    $fullPath = [System.IO.Path]::GetFullPath($normalizedInput)
+    $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+    $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "MatrixPath override must resolve inside the repository workspace."
+    }
+    return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+  }
+
+  return $pathText.Replace("\", "/")
+}
+
+function Assert-SafeRelativeJsonPath {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    throw "$DisplayName is required and must be a relative .json path inside the repository workspace."
+  }
+
+  $pathText = $Value.Trim()
+  if ($pathText.Length -gt 240) {
+    throw "$DisplayName must be 240 characters or less."
+  }
+  if ($pathText -match '[\x00-\x1F\x7F:*?"<>|]') {
+    throw "$DisplayName must not contain control characters, drive letters, wildcards, or shell metacharacters."
+  }
+  if ($pathText -match '^[A-Za-z]:[\\/]' -or $pathText -match '^[\\/]' -or $pathText -match '^\\\\' -or $pathText -match '^//') {
+    throw "$DisplayName must be a relative path inside the repository workspace."
+  }
+
+  $normalizedPath = $pathText.Replace('\', '/')
+  if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
+    throw "$DisplayName must not contain parent traversal, empty path segments, or a trailing slash."
+  }
+  if ($normalizedPath -notmatch '\.json$') {
+    throw "$DisplayName must be a relative .json path inside the repository workspace."
+  }
+}
+
+function Assert-GitTrackedRepositoryFile {
+  param(
+    [string]$RelativePath,
+    [string]$DisplayName
+  )
+
+  $normalizedPath = $RelativePath.Trim().Replace('\', '/')
+  $trackedPaths = @(& git -C $RepoRoot ls-files -- $normalizedPath)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to verify that $DisplayName is tracked by git."
+  }
+
+  $trackedMatch = @(
+    $trackedPaths | Where-Object {
+      [string]::Equals([string]$_, $normalizedPath, [StringComparison]::OrdinalIgnoreCase)
+    }
+  )
+  if ($trackedMatch.Count -eq 0) {
+    throw "$DisplayName must reference a tracked repository file."
+  }
+}
+
+function Resolve-ManifestMatrixPath {
+  param(
+    [object]$Manifest,
+    [string]$OverridePath = ""
+  )
+
+  $manifestMatrixPath = ConvertTo-RepoRelativePath (Get-StringValue -Object $Manifest -Names @("matrixPath"))
+  Assert-SafeRelativeJsonPath -Value $manifestMatrixPath -DisplayName "support-evidence-manifest.json matrixPath"
+
+  if (-not [string]::IsNullOrWhiteSpace($OverridePath)) {
+    $overrideMatrixPath = ConvertTo-RepoRelativePath $OverridePath
+    Assert-SafeRelativeJsonPath -Value $overrideMatrixPath -DisplayName "MatrixPath"
+    if (-not [string]::Equals($overrideMatrixPath, $manifestMatrixPath, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "MatrixPath override must match support-evidence-manifest.json matrixPath."
+    }
+  }
+
+  Assert-GitTrackedRepositoryFile -RelativePath $manifestMatrixPath -DisplayName "support-evidence-manifest.json matrixPath"
+  $fullMatrixPath = Join-Path $RepoRoot ($manifestMatrixPath -replace '/', '\')
+  if (-not (Test-Path -LiteralPath $fullMatrixPath -PathType Leaf)) {
+    throw "Support matrix not found: $manifestMatrixPath"
+  }
+
+  return [pscustomobject]@{
+    RelativePath = $manifestMatrixPath
+    FullPath = $fullMatrixPath
+  }
 }
 
 function Get-VersionParts {
@@ -544,6 +650,9 @@ function Assert-CollectionCiProvenance {
   if ($Ci.IsCi -and -not $Ci.Provider) {
     throw "$Context collection ci.provider is required when ci.isCi is true."
   }
+  if ($Ci.IsCi -eq $false -and $Ci.Provider) {
+    throw "$Context collection ci.provider must be empty when ci.isCi is false."
+  }
   if ($Ci.Provider -eq "github-actions") {
     if (-not $Ci.WorkflowName) {
       throw "$Context collection ci.workflowName is required for github-actions provenance."
@@ -592,7 +701,10 @@ function Resolve-BundleRoot {
 }
 
 function Test-Bundle {
-  param([string]$Path)
+  param(
+    [string]$Path,
+    [string]$MatrixPathOverride = ""
+  )
 
   $resolved = Resolve-BundleRoot -Path $Path
   try {
@@ -615,6 +727,11 @@ function Test-Bundle {
     $matrixSha256 = Get-StringValue -Object $manifest -Names @("matrixSha256")
     if (-not (Test-Sha256Text -Value $matrixSha256)) {
       throw "support-evidence-manifest.json matrixSha256 is required and must be a SHA256 hash."
+    }
+    $matrixReference = Resolve-ManifestMatrixPath -Manifest $manifest -OverridePath $MatrixPathOverride
+    $currentMatrixSha256 = (Get-FileHash -LiteralPath $matrixReference.FullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($matrixSha256.ToLowerInvariant() -ne $currentMatrixSha256) {
+      throw "support-evidence-manifest.json matrixSha256 must match support-evidence-manifest.json matrixPath."
     }
     $sourceControl = Get-PropertyValue -Object $manifest -Names @("sourceControl")
     if ($null -eq $sourceControl) {
@@ -685,6 +802,9 @@ function Test-Bundle {
     if ($isCi -and -not $ciProvider) {
       throw "ci.provider is required when ci.isCi is true."
     }
+    if ($isCi -eq $false -and $ciProvider) {
+      throw "ci.provider must be empty when ci.isCi is false."
+    }
     if ($ciProvider -eq "github-actions") {
       if (-not $ciWorkflowName) {
         throw "ci.workflowName is required for github-actions provenance."
@@ -728,11 +848,7 @@ function Test-Bundle {
       throw "Manifest summary evidenceFileCount does not match files count."
     }
 
-    $matrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
-    if (-not (Test-Path -LiteralPath $matrixPath -PathType Leaf)) {
-      throw "Support matrix not found: $matrixPath"
-    }
-    $matrixTargetsById = Get-MatrixTargetsById -Path $matrixPath
+    $matrixTargetsById = Get-MatrixTargetsById -Path $matrixReference.FullPath
     $matrixTargetIds = @($matrixTargetsById.Keys | Sort-Object)
     $supportScope = Get-PropertyValue -Object $manifest -Names @("supportScope")
     if ($null -eq $supportScope) {
@@ -786,6 +902,7 @@ function Test-Bundle {
     }
 
     $listedPaths = New-Object System.Collections.Generic.HashSet[string]
+    $listedHashes = @{}
     foreach ($row in $manifestRows) {
       $relative = ([string]$row.path).Replace("\", "/")
       if (-not (Test-RelativeBundlePath -Path $relative)) {
@@ -804,6 +921,10 @@ function Test-Bundle {
       if ($actualHash -ne ([string]$row.sha256).ToLowerInvariant()) {
         throw "SHA256 mismatch for $relative."
       }
+      if ($listedHashes.ContainsKey($actualHash)) {
+        throw "Manifest contains duplicate evidence SHA256 payload: $actualHash appears in '$($listedHashes[$actualHash])' and '$relative'."
+      }
+      $listedHashes[$actualHash] = $relative
       $actualBytes = (Get-Item -LiteralPath $filePath).Length
       if ([int64]$row.bytes -ne $actualBytes) {
         throw "Byte size mismatch for $relative."
@@ -969,6 +1090,8 @@ function Test-Bundle {
       $rowCollectionCiEventName = Get-StringValue -Object $row -Names @("collectionCiEventName")
       $rowCollectionCiRefName = Get-StringValue -Object $row -Names @("collectionCiRefName")
       $rowCollectionCiSha = Get-StringValue -Object $row -Names @("collectionCiSha")
+      $rowCollectionWorkflowDispatchSupportMatrixPath = Get-StringValue -Object $row -Names @("collectionWorkflowDispatchSupportMatrixPath")
+      $rowCollectionWorkflowDispatchSupportMatrixSha256 = Get-StringValue -Object $row -Names @("collectionWorkflowDispatchSupportMatrixSha256")
       $rowHasCollectionCi = (
         $null -ne $rowCollectionCiIsCi -or
         -not [string]::IsNullOrWhiteSpace($rowCollectionCiProvider) -or
@@ -993,9 +1116,17 @@ function Test-Bundle {
           $collection.Ci.IsCi -ne $true -or
           $collection.Ci.Provider -ne "github-actions" -or
           $collection.Ci.WorkflowName -ne "host-evidence" -or
-          $collection.Ci.EventName -ne "workflow_dispatch"
+          $collection.Ci.EventName -ne "workflow_dispatch" -or
+          $collection.WorkflowDispatch.SupportMatrixPath -ne $matrixReference.RelativePath -or
+          $collection.WorkflowDispatch.SupportMatrixSha256 -ne $matrixSha256.ToLowerInvariant()
         )) {
-        throw "Bundle requirement requireHostEvidenceWorkflowCollection is true, but workflow-capable evidence was not collected by the host-evidence workflow for $relative."
+        throw "Bundle requirement requireHostEvidenceWorkflowCollection is true, but workflow-capable evidence was not collected by the host-evidence workflow for the bundle support matrix for $relative."
+      }
+      if ($rowCollectionWorkflowDispatchSupportMatrixPath -ne $collection.WorkflowDispatch.SupportMatrixPath) {
+        throw "collectionWorkflowDispatchSupportMatrixPath manifest mismatch for $relative."
+      }
+      if ($rowCollectionWorkflowDispatchSupportMatrixSha256 -ne $collection.WorkflowDispatch.SupportMatrixSha256) {
+        throw "collectionWorkflowDispatchSupportMatrixSha256 manifest mismatch for $relative."
       }
       if ($rowHasCollectionCi -or $evidenceHasCollectionCi) {
         if ($rowCollectionCiIsCi -ne $collection.Ci.IsCi) {
@@ -1050,6 +1181,12 @@ function Test-Bundle {
     Assert-ArrayEqual -Actual @($manifest.summary.serviceManagers) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "serviceManager") -Name "serviceManagers"
     Assert-ArrayEqual -Actual @($manifest.summary.reverseProxies) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "reverseProxy") -Name "reverseProxies"
     Assert-ArrayEqual -Actual @($manifest.summary.collectors) -Expected (Get-UniqueValues -Rows $manifestRows -PropertyName "collector") -Name "collectors"
+    if ([int]$manifest.summary.uniqueEvidenceSha256Count -ne $listedHashes.Count) {
+      throw "Manifest summary uniqueEvidenceSha256Count does not match unique evidence SHA256 payload count."
+    }
+    if ([int]$manifest.summary.uniqueEvidenceSha256Count -ne $manifestRows.Count) {
+      throw "Manifest summary uniqueEvidenceSha256Count must match evidenceFileCount."
+    }
     $expectedWorkflowCapableEvidenceCount = @($manifestRows | Where-Object { (Get-BooleanValue -Object $_ -Names @("workflowDispatchSupported") -Default $false) -eq $true }).Count
     $expectedLocalCommandOnlyEvidenceCount = @($manifestRows | Where-Object { (Get-BooleanValue -Object $_ -Names @("localCommandOnly") -Default $false) -eq $true }).Count
     if ([int]$supportScope.workflowCapableEvidenceCount -ne $expectedWorkflowCapableEvidenceCount) {
@@ -1079,6 +1216,7 @@ if ($SelfTest) {
   $selfTestZip = Join-Path $selfTestOutputDirectory "selftest-support-evidence.zip"
   Test-Bundle -Path $selfTestRoot
   Test-Bundle -Path $selfTestZip
+  Test-Bundle -Path $selfTestRoot -MatrixPathOverride "config/support-matrix.example.json"
 
   $hashTamperRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-hash-$([Guid]::NewGuid().ToString('N'))"
   Copy-BundleDirectory -Source $selfTestRoot -Destination $hashTamperRoot
@@ -1092,6 +1230,26 @@ if ($SelfTest) {
   Copy-Item -LiteralPath (Join-Path $unlistedRoot "evidence\ubuntu-systemd-nginx.json") -Destination (Join-Path $unlistedRoot "evidence\unlisted-copy.json") -Force
   Invoke-ExpectBundleFailure -ExpectedMessage "not listed in manifest" -Action {
     Test-Bundle -Path $unlistedRoot
+  }
+
+  $duplicateHashRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-duplicate-hash-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $duplicateHashRoot
+  $duplicateHashSourceRelative = "evidence/ubuntu-systemd-nginx.json"
+  $duplicateHashCopyRelative = "evidence/ubuntu-systemd-nginx-copy.json"
+  $duplicateHashSourcePath = Join-Path $duplicateHashRoot ($duplicateHashSourceRelative -replace '/', '\')
+  $duplicateHashCopyPath = Join-Path $duplicateHashRoot ($duplicateHashCopyRelative -replace '/', '\')
+  Copy-Item -LiteralPath $duplicateHashSourcePath -Destination $duplicateHashCopyPath -Force
+  $duplicateHashManifestPath = Join-Path $duplicateHashRoot "support-evidence-manifest.json"
+  $duplicateHashManifest = Get-Content -LiteralPath $duplicateHashManifestPath -Raw | ConvertFrom-Json
+  $duplicateHashRow = @($duplicateHashManifest.files | Where-Object { [string]$_.path -eq $duplicateHashSourceRelative } | Select-Object -First 1)[0] |
+    ConvertTo-Json -Depth 12 |
+    ConvertFrom-Json
+  $duplicateHashRow.path = $duplicateHashCopyRelative
+  $duplicateHashManifest.files = @($duplicateHashManifest.files) + @($duplicateHashRow)
+  $duplicateHashManifest.summary.evidenceFileCount = @($duplicateHashManifest.files).Count
+  ($duplicateHashManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $duplicateHashManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "duplicate evidence SHA256 payload" -Action {
+    Test-Bundle -Path $duplicateHashRoot
   }
 
   $targetMismatchRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-target-$([Guid]::NewGuid().ToString('N'))"
@@ -1146,6 +1304,40 @@ if ($SelfTest) {
     Test-Bundle -Path $missingMatrixRoot
   }
 
+  $staleMatrixRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-stale-matrix-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $staleMatrixRoot
+  $staleMatrixManifestPath = Join-Path $staleMatrixRoot "support-evidence-manifest.json"
+  $staleMatrixManifest = Get-Content -LiteralPath $staleMatrixManifestPath -Raw | ConvertFrom-Json
+  $staleMatrixManifest.matrixSha256 = ("0" * 64)
+  ($staleMatrixManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $staleMatrixManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "matrixSha256 must match" -Action {
+    Test-Bundle -Path $staleMatrixRoot
+  }
+
+  $missingMatrixPathRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-matrix-path-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $missingMatrixPathRoot
+  $missingMatrixPathManifestPath = Join-Path $missingMatrixPathRoot "support-evidence-manifest.json"
+  $missingMatrixPathManifest = Get-Content -LiteralPath $missingMatrixPathManifestPath -Raw | ConvertFrom-Json
+  $missingMatrixPathManifest.PSObject.Properties.Remove("matrixPath")
+  ($missingMatrixPathManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingMatrixPathManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "matrixPath is required" -Action {
+    Test-Bundle -Path $missingMatrixPathRoot
+  }
+
+  $untrackedMatrixPathRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-untracked-matrix-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $untrackedMatrixPathRoot
+  $untrackedMatrixPathManifestPath = Join-Path $untrackedMatrixPathRoot "support-evidence-manifest.json"
+  $untrackedMatrixPathManifest = Get-Content -LiteralPath $untrackedMatrixPathManifestPath -Raw | ConvertFrom-Json
+  $untrackedMatrixPathManifest.matrixPath = "config/not-tracked-support-matrix.json"
+  ($untrackedMatrixPathManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $untrackedMatrixPathManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "matrixPath must reference a tracked repository file" -Action {
+    Test-Bundle -Path $untrackedMatrixPathRoot
+  }
+
+  Invoke-ExpectBundleFailure -ExpectedMessage "MatrixPath override must match" -Action {
+    Test-Bundle -Path $selfTestRoot -MatrixPathOverride "config/not-tracked-support-matrix.json"
+  }
+
   $missingSourceRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-source-$([Guid]::NewGuid().ToString('N'))"
   Copy-BundleDirectory -Source $selfTestRoot -Destination $missingSourceRoot
   $missingSourceManifestPath = Join-Path $missingSourceRoot "support-evidence-manifest.json"
@@ -1164,6 +1356,17 @@ if ($SelfTest) {
   ($missingCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $missingCiManifestPath -Encoding UTF8
   Invoke-ExpectBundleFailure -ExpectedMessage "ci provenance is required" -Action {
     Test-Bundle -Path $missingCiRoot
+  }
+
+  $inconsistentCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-ci-provider-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $selfTestRoot -Destination $inconsistentCiRoot
+  $inconsistentCiManifestPath = Join-Path $inconsistentCiRoot "support-evidence-manifest.json"
+  $inconsistentCiManifest = Get-Content -LiteralPath $inconsistentCiManifestPath -Raw | ConvertFrom-Json
+  $inconsistentCiManifest.ci.isCi = $false
+  $inconsistentCiManifest.ci.provider = "github-actions"
+  ($inconsistentCiManifest | ConvertTo-Json -Depth 8) | Set-Content -Path $inconsistentCiManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "ci.provider must be empty when ci.isCi is false" -Action {
+    Test-Bundle -Path $inconsistentCiRoot
   }
 
   $badCiShaRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-ci-sha-$([Guid]::NewGuid().ToString('N'))"
@@ -1253,6 +1456,28 @@ if ($SelfTest) {
   ($badCollectionCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $badCollectionCiManifestPath -Encoding UTF8
   Invoke-ExpectBundleFailure -ExpectedMessage "collection ci.runId is required for github-actions provenance" -Action {
     Test-Bundle -Path $badCollectionCiRoot
+  }
+
+  $badCollectionCiProviderRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-collection-ci-provider-$([Guid]::NewGuid().ToString('N'))"
+  Copy-BundleDirectory -Source $collectionCiRoot -Destination $badCollectionCiProviderRoot
+  $badCollectionCiProviderFile = Join-Path $badCollectionCiProviderRoot "evidence\ubuntu-systemd-nginx.json"
+  $badCollectionCiProviderEvidence = Get-Content -LiteralPath $badCollectionCiProviderFile -Raw | ConvertFrom-Json
+  $badCollectionCiProviderEvidence.evidenceCollection.ci.isCi = $false
+  $badCollectionCiProviderEvidence.evidenceCollection.ci.provider = "github-actions"
+  ($badCollectionCiProviderEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $badCollectionCiProviderFile -Encoding UTF8
+  $badCollectionCiProviderManifestPath = Join-Path $badCollectionCiProviderRoot "support-evidence-manifest.json"
+  $badCollectionCiProviderManifest = Get-Content -LiteralPath $badCollectionCiProviderManifestPath -Raw | ConvertFrom-Json
+  foreach ($row in @($badCollectionCiProviderManifest.files)) {
+    if ([string]$row.path -eq "evidence/ubuntu-systemd-nginx.json") {
+      $row.sha256 = (Get-FileHash -LiteralPath $badCollectionCiProviderFile -Algorithm SHA256).Hash.ToLowerInvariant()
+      $row.bytes = (Get-Item -LiteralPath $badCollectionCiProviderFile).Length
+      $row.collectionCiIsCi = $false
+      $row.collectionCiProvider = "github-actions"
+    }
+  }
+  ($badCollectionCiProviderManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $badCollectionCiProviderManifestPath -Encoding UTF8
+  Invoke-ExpectBundleFailure -ExpectedMessage "collection ci.provider must be empty when ci.isCi is false" -Action {
+    Test-Bundle -Path $badCollectionCiProviderRoot
   }
 
   $incompleteGithubCiRoot = Join-Path $RepoRoot ".tmp\support-evidence-bundle-negative-github-ci-$([Guid]::NewGuid().ToString('N'))"
@@ -1358,5 +1583,5 @@ if ($SelfTest) {
 if ([string]::IsNullOrWhiteSpace($BundlePath)) {
   throw "BundlePath is required unless -SelfTest is used."
 }
-Test-Bundle -Path $BundlePath
+Test-Bundle -Path $BundlePath -MatrixPathOverride $MatrixPath
 Write-Host "Support evidence bundle verification OK"

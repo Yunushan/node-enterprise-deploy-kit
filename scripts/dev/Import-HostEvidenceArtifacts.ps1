@@ -726,6 +726,7 @@ function New-SelfTestEvidence {
       MinimumNodeVersion = "20.9.0"
       NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
+      NextPackageJsonExists = $true
       RuntimeRootName = "example-next-app"
     }
     ReverseProxy = [ordered]@{

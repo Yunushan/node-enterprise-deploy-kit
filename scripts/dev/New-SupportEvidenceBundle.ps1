@@ -364,6 +364,8 @@ function Get-EvidenceCollectionEvidence {
       ExpectedServiceManager = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
       ExpectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $workflowDispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
       MinimumUptimeHours = Get-IntegerValue -Object $workflowDispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+      SupportMatrixPath = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixPath", "supportMatrixPath", "matrixPath", "matrix_path")).Trim().Replace("\", "/")
+      SupportMatrixSha256 = (Get-StringValue -Object $workflowDispatch -Names @("SupportMatrixSha256", "supportMatrixSha256", "matrixSha256", "matrix_sha256")).Trim().ToLowerInvariant()
     }
   }
 }
@@ -375,7 +377,9 @@ function Test-WorkflowDispatchMatchesEvidence {
     [string]$Mode,
     [string]$ServiceManager,
     [string]$ReverseProxy,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$ExpectedMatrixPath,
+    [string]$ExpectedMatrixSha256
   )
 
   $expectedEvidenceBaseName = "$TargetId-$Mode-$ServiceManager-$ReverseProxy"
@@ -387,6 +391,8 @@ function Test-WorkflowDispatchMatchesEvidence {
   if ([string]$Dispatch.ExpectedReverseProxy -ne $ReverseProxy) { return $false }
   if ($null -eq $Dispatch.MinimumUptimeHours) { return $false }
   if ($RequiredMinimumUptimeHours -gt 0 -and [int]$Dispatch.MinimumUptimeHours -lt $RequiredMinimumUptimeHours) { return $false }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixPath) -and [string]$Dispatch.SupportMatrixPath -ne $ExpectedMatrixPath) { return $false }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedMatrixSha256) -and [string]$Dispatch.SupportMatrixSha256 -ne $ExpectedMatrixSha256) { return $false }
   return $true
 }
 
@@ -540,6 +546,8 @@ function New-SelfTestEvidence {
 
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
   $now = (Get-Date).ToUniversalTime().ToString("o")
+  $selfTestMatrixPath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
+  $selfTestMatrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $windowsCollectionEvidence = [ordered]@{
     Source = "node-enterprise-deploy-kit/status.ps1"
     Collector = "status.ps1"
@@ -552,6 +560,8 @@ function New-SelfTestEvidence {
       ExpectedServiceManager = "winsw"
       ExpectedReverseProxy = "iis"
       MinimumUptimeHours = "72"
+      SupportMatrixPath = $selfTestMatrixPath
+      SupportMatrixSha256 = $selfTestMatrixSha256
     }
     Ci = [ordered]@{
       IsCi = $true
@@ -580,6 +590,8 @@ function New-SelfTestEvidence {
       expectedServiceManager = "systemd"
       expectedReverseProxy = "nginx"
       minimumUptimeHours = "72"
+      supportMatrixPath = $selfTestMatrixPath
+      supportMatrixSha256 = $selfTestMatrixSha256
     }
     ci = [ordered]@{
       isCi = $true
@@ -679,6 +691,7 @@ function New-SelfTestEvidence {
       MinimumNodeVersion = "20.9.0"
       NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
+      NextPackageJsonExists = $true
       RuntimeRootName = "example-next-app"
     }
     ReverseProxy = [ordered]@{
@@ -796,6 +809,7 @@ function New-SelfTestEvidence {
       minimumNodeVersion = "20.9.0"
       nodeVersionSatisfied = $true
       nextVersion = "14.2.3"
+      nextPackageJsonExists = $true
       runtimeRootName = "example-next-app"
     }
     reverseProxy = [ordered]@{
@@ -993,6 +1007,8 @@ if ($files.Count -eq 0) {
 
 $manifestFiles = New-Object System.Collections.Generic.List[object]
 $matrixTargetsById = Get-MatrixTargetsById -Path $MatrixPath
+$matrixRelativePath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
+$matrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
 foreach ($file in $files) {
   $relative = Copy-EvidenceFile -SourcePath $file.FullName -EvidenceRoot $EvidencePath -BundleEvidenceRoot $bundleEvidenceRoot
   $bundleFile = Join-Path $bundleEvidenceRoot ($relative -replace '/', '\')
@@ -1042,6 +1058,8 @@ foreach ($file in $files) {
   $collectionWorkflowDispatchExpectedServiceManager = ""
   $collectionWorkflowDispatchExpectedReverseProxy = ""
   $collectionWorkflowDispatchMinimumUptimeHours = $null
+  $collectionWorkflowDispatchSupportMatrixPath = ""
+  $collectionWorkflowDispatchSupportMatrixSha256 = ""
   $collectionWorkflowDispatchMatchesDimensions = $null
   try {
     $evidence = Get-Content -LiteralPath $bundleFile -Raw | ConvertFrom-Json
@@ -1097,7 +1115,9 @@ foreach ($file in $files) {
     $collectionWorkflowDispatchExpectedServiceManager = $collection.WorkflowDispatch.ExpectedServiceManager
     $collectionWorkflowDispatchExpectedReverseProxy = $collection.WorkflowDispatch.ExpectedReverseProxy
     $collectionWorkflowDispatchMinimumUptimeHours = $collection.WorkflowDispatch.MinimumUptimeHours
-    $collectionWorkflowDispatchMatchesDimensions = Test-WorkflowDispatchMatchesEvidence -Dispatch $collection.WorkflowDispatch -TargetId $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequireMinimumUptimeHours
+    $collectionWorkflowDispatchSupportMatrixPath = $collection.WorkflowDispatch.SupportMatrixPath
+    $collectionWorkflowDispatchSupportMatrixSha256 = $collection.WorkflowDispatch.SupportMatrixSha256
+    $collectionWorkflowDispatchMatchesDimensions = Test-WorkflowDispatchMatchesEvidence -Dispatch $collection.WorkflowDispatch -TargetId $target -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequireMinimumUptimeHours -ExpectedMatrixPath $matrixRelativePath -ExpectedMatrixSha256 $matrixSha256
   } catch {
     $parseError = $_.Exception.Message
   }
@@ -1150,6 +1170,8 @@ foreach ($file in $files) {
     collectionWorkflowDispatchExpectedServiceManager = $collectionWorkflowDispatchExpectedServiceManager
     collectionWorkflowDispatchExpectedReverseProxy = $collectionWorkflowDispatchExpectedReverseProxy
     collectionWorkflowDispatchMinimumUptimeHours = $collectionWorkflowDispatchMinimumUptimeHours
+    collectionWorkflowDispatchSupportMatrixPath = $collectionWorkflowDispatchSupportMatrixPath
+    collectionWorkflowDispatchSupportMatrixSha256 = $collectionWorkflowDispatchSupportMatrixSha256
     collectionWorkflowDispatchMatchesDimensions = $collectionWorkflowDispatchMatchesDimensions
     parseError = $parseError
   }) | Out-Null
@@ -1163,13 +1185,17 @@ $summaryReverseProxies = @(Get-UniqueManifestValues -Rows $manifestRows -Propert
 $summaryCollectors = @(Get-UniqueManifestValues -Rows $manifestRows -PropertyName "collector")
 $workflowCapableEvidenceCount = @($manifestRows | Where-Object { $_.workflowDispatchSupported -eq $true }).Count
 $localCommandOnlyEvidenceCount = @($manifestRows | Where-Object { $_.localCommandOnly -eq $true }).Count
+$uniqueEvidenceSha256Count = @($manifestRows | ForEach-Object { [string]$_.sha256 } | Where-Object { $_ } | Sort-Object -Unique).Count
+if ($uniqueEvidenceSha256Count -ne $manifestRows.Count) {
+  throw "Duplicate evidence payload SHA256 values are not allowed in a support evidence bundle."
+}
 
 $manifest = [ordered]@{
   schemaVersion = 1
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
   bundleName = $safeName
-  matrixPath = Get-RelativePath -BasePath $RepoRoot -Path $MatrixPath
-  matrixSha256 = (Get-FileHash -LiteralPath $MatrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  matrixPath = $matrixRelativePath
+  matrixSha256 = $matrixSha256
   sourceControl = Get-SourceControlProvenance
   ci = Get-CiProvenance
   sourceEvidencePathName = [System.IO.Path]::GetFileName(([System.IO.Path]::GetFullPath($EvidencePath)).TrimEnd('\', '/'))
@@ -1205,6 +1231,7 @@ $manifest = [ordered]@{
   }
   summary = [ordered]@{
     evidenceFileCount = $manifestFiles.Count
+    uniqueEvidenceSha256Count = $uniqueEvidenceSha256Count
     targets = $summaryTargets
     nextJsModes = $summaryNextJsModes
     serviceManagers = $summaryServiceManagers

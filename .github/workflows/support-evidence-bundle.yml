@@ -15,6 +15,10 @@ on:
         description: Optional relative path containing downloaded host-evidence artifacts to import before bundling
         required: false
         default: ''
+      matrix_path:
+        description: Relative repository path to the support matrix used for this release
+        required: true
+        default: config/support-matrix.example.json
       output_directory:
         description: Relative path for generated release evidence output on the runner workspace
         required: true
@@ -89,6 +93,7 @@ jobs:
           FORCE: ${{ inputs.force }}
           INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
           INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
@@ -119,6 +124,7 @@ jobs:
           FORCE: ${{ inputs.force }}
           INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
           INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
@@ -137,6 +143,7 @@ jobs:
           FORCE: ${{ inputs.force }}
           INCLUDE_FALLBACK: ${{ inputs.include_fallback }}
           INCLUDE_SERVICE_ONLY: ${{ inputs.include_service_only }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
           OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
           REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM: ${{ inputs.require_final_full_matrix_release_claim }}
           STRICT_CI_RELEASE: ${{ inputs.strict_ci_release }}
@@ -145,6 +152,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $releaseArgs = @(
             "-EvidencePath", $env:EVIDENCE_PATH,
+            "-MatrixPath", $env:MATRIX_PATH,
             "-OutputDirectory", $env:OUTPUT_DIRECTORY,
             "-BundleName", $env:BUNDLE_NAME
           )
@@ -186,6 +194,15 @@ jobs:
           if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
             throw "Expected redacted release readiness summary JSON was not created."
           }
+          $summaryVerifierArgs = @(
+            "-InputPath", $summaryPath,
+            "-MatrixPath", $env:MATRIX_PATH
+          )
+          if ($env:REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM -eq "true") {
+            $summaryVerifierArgs += "-RequireFinalFullMatrixReleaseClaim"
+          }
+          & ./scripts/dev/Test-ReleaseReadinessSummary.ps1 @summaryVerifierArgs
+
           if ($env:REQUIRE_FINAL_FULL_MATRIX_RELEASE_CLAIM -eq "true") {
             & ./scripts/dev/Write-ReleaseReadinessStepSummary.ps1 `
               -InputPath $summaryPath `

@@ -141,18 +141,36 @@ private release record and publish only redacted readiness summaries.
    `-RequireFinalFullMatrixReleaseClaim` only from a clean, committed,
    CI-controlled final signoff path.
 7. Review the redacted `release-readiness-summary.json`; it must report
-   `ready: true`, `supportScope.kind: full-matrix`, and
+   `ready: true`, a valid `generatedAtUtc`, `supportScope.kind: full-matrix`, and
    `releaseClaim.finalFullMatrixReleaseClaim: true` for a final full-matrix
    claim. Also check `releaseClaim.requirements.coverageComplete: true`,
+   `bundleSupportScope.proofLevel: hardened-real-host-evidence`,
+   `releaseClaim.requirements.nonSyntheticEvidenceRequired: true`,
+   `releaseClaim.requirements.uniqueEvidencePayloadsRequired: true`,
+   `releaseClaim.requirements.maxEvidenceAgeDaysRequired: >0`,
    `releaseClaim.requirements.workflowApplicabilityKnown: true`,
-   `releaseClaim.requirements.runtimeSupportMetadataKnown: true`,
-   `releaseClaim.requirements.strictCiRelease: true`, and
-   `releaseClaim.requirements.warningClean: true`.
+    `releaseClaim.requirements.runtimeSupportMetadataKnown: true`,
+    `releaseClaim.requirements.strictCiRelease: true`,
+    `releaseClaim.requirements.warningClean: true`, and
+    `supportMatrix.sha256`, `supportMatrix.targetCount`,
+    `supportMatrix.requiredMinimumUptimeHours`, and
+    `supportMatrix.runtimeSupportTiers` matching the support matrix file used
+    for review.
+   The final summary verifier also requires `sourceControl.isGitRepository=true`,
+   `sourceControl.commitSha` to be a lowercase 40-character git SHA, and
+   `bundleCi.provider=github-actions`,
+   `bundleCi.workflowName=support-evidence-bundle`,
+   `bundleCi.eventName=workflow_dispatch`,
+   numeric `bundleCi.runId`, numeric `bundleCi.runAttempt`, and
+   `bundleCi.sha` matching `sourceControl.commitSha`.
 8. Keep `evidence/`, `evidence-downloads/`, `release-evidence/`, and full
    support evidence bundles out of git. Store them only in restricted private
    release/change records.
 9. If using `.github/workflows/support-evidence-bundle.yml`, leave
    `upload_private_bundle=false` unless a separate verifier workflow is
    explicitly required and the repository/artifact visibility is acceptable.
+   Keep `matrix_path` set to the committed support matrix used for the release;
+   workflow input validation requires it to be a tracked repository `.json`
+   file.
 10. Record the final commit SHA, CI run URL, redacted readiness summary, and
     private evidence bundle location in the release/change record.

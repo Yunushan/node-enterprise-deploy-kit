@@ -1,5 +1,5 @@
 param(
-  [string]$MatrixPath = "",
+  [string]$MatrixPath = $env:MATRIX_PATH,
   [string]$RunnerLabels = $env:RUNNER_LABELS,
   [string]$Platform = $env:PLATFORM,
   [string]$ConfigPath = $env:CONFIG_PATH,
@@ -21,10 +21,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 if ([string]::IsNullOrWhiteSpace($MatrixPath)) {
-  $MatrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
-}
-if (-not [System.IO.Path]::IsPathRooted($MatrixPath)) {
-  $MatrixPath = Join-Path $RepoRoot $MatrixPath
+  $MatrixPath = "config/support-matrix.example.json"
 }
 
 function Get-NormalizedArray {
@@ -40,6 +37,57 @@ function Get-OptionalPropertyValue {
   if ($null -eq $Object) { return $null }
   if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
   return $null
+}
+
+function Assert-SafeRelativeJsonPath {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    throw "$DisplayName is required and must be a relative .json path inside the repository workspace."
+  }
+  $pathText = $Value.Trim()
+  if ($pathText.Length -gt 240) {
+    throw "$DisplayName must be 240 characters or less."
+  }
+  if ($pathText -match '[\x00-\x1F\x7F:*?"<>|]') {
+    throw "$DisplayName must not contain control characters, drive letters, wildcards, or shell metacharacters."
+  }
+  if ($pathText -match '^[A-Za-z]:[\\/]' -or $pathText -match '^[\\/]' -or $pathText -match '^\\\\' -or $pathText -match '^//') {
+    throw "$DisplayName must be a relative path inside the repository workspace."
+  }
+
+  $normalizedPath = $pathText.Replace('\', '/')
+  if ($normalizedPath -match '(^|/)\.\.(/|$)' -or $normalizedPath -match '/{2,}' -or $normalizedPath.EndsWith('/')) {
+    throw "$DisplayName must not contain parent traversal, empty path segments, or a trailing slash."
+  }
+  if ($normalizedPath -notmatch '\.json$') {
+    throw "$DisplayName must be a relative .json path inside the repository workspace."
+  }
+}
+
+function Assert-GitTrackedFile {
+  param(
+    [string]$Value,
+    [string]$DisplayName
+  )
+
+  $normalizedPath = $Value.Trim().Replace('\', '/')
+  $trackedPaths = @(& git -C $RepoRoot ls-files -- $normalizedPath)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to verify that $DisplayName is tracked by git."
+  }
+
+  $trackedMatch = @(
+    $trackedPaths | Where-Object {
+      [string]::Equals([string]$_, $normalizedPath, [StringComparison]::OrdinalIgnoreCase)
+    }
+  )
+  if ($trackedMatch.Count -eq 0) {
+    throw "$DisplayName must reference a tracked repository file."
+  }
 }
 
 function Assert-SafeRelativeConfigPath {
@@ -79,8 +127,12 @@ function Invoke-HostEvidenceWorkflowInputValidation {
     [string]$UploadRetentionDays
   )
 
-  if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
-    throw "Support matrix not found: $MatrixPath"
+  Assert-SafeRelativeJsonPath -Value $MatrixPath -DisplayName "matrix_path"
+  $matrixRelativePath = $MatrixPath.Trim().Replace('\', '/')
+  Assert-GitTrackedFile -Value $matrixRelativePath -DisplayName "matrix_path"
+  $resolvedMatrixPath = Join-Path $RepoRoot $matrixRelativePath
+  if (-not (Test-Path -LiteralPath $resolvedMatrixPath -PathType Leaf)) {
+    throw "Support matrix not found: $resolvedMatrixPath"
   }
 
   $expectedDimensions = [ordered]@{
@@ -111,7 +163,7 @@ function Invoke-HostEvidenceWorkflowInputValidation {
     throw "expected_reverse_proxy must be one of iis, nginx, apache, haproxy, traefik, or none."
   }
 
-  $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
+  $matrix = Get-Content -LiteralPath $resolvedMatrixPath -Raw | ConvertFrom-Json
   $target = @($matrix.targets | Where-Object { ([string]$_.id).Trim().ToLowerInvariant() -eq $expectedTarget } | Select-Object -First 1)
   if ($target.Count -ne 1) {
     throw "expected_target_id must match a support matrix target id."
@@ -359,6 +411,16 @@ function Invoke-SelfTest {
   Invoke-ExpectValidationFailure -Name "minimum uptime too low" -ExpectedMessage "minimum_uptime_hours must be greater than or equal" -Action {
     $case = $base.Clone()
     $case.MinimumUptimeHours = "1"
+    Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "absolute matrix path" -ExpectedMessage "matrix_path must not contain control characters" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "C:\secret\support-matrix.json"
+    Invoke-HostEvidenceWorkflowInputValidation @case
+  }
+  Invoke-ExpectValidationFailure -Name "untracked matrix path" -ExpectedMessage "matrix_path must reference a tracked repository file" -Action {
+    $case = $base.Clone()
+    $case.MatrixPath = "config/not-tracked-support-matrix.json"
     Invoke-HostEvidenceWorkflowInputValidation @case
   }
   Invoke-ExpectValidationFailure -Name "unsafe config path" -ExpectedMessage "config_path must not contain control characters" -Action {
