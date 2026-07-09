@@ -415,6 +415,12 @@ function Test-NumericText {
   return (([string]$Value).Trim() -match '^[0-9]+$')
 }
 
+function Test-SafeCiRefName {
+  param([string]$Value)
+  $text = ([string]$Value).Trim()
+  return (-not [string]::IsNullOrWhiteSpace($text) -and $text -cmatch '^[A-Za-z0-9._/-]+$')
+}
+
 function Add-OrSetNoteProperty {
   param(
     [object]$Object,
@@ -978,6 +984,30 @@ if ($SelfTest) {
   $missingCollectionCiRoot = Join-Path $selfTestRoot "missing-collection-ci-provenance"
   New-Item -ItemType Directory -Force -Path $missingCollectionCiRoot | Out-Null
   Expand-Archive -LiteralPath $BundlePath -DestinationPath $missingCollectionCiRoot -Force
+  $missingCollectionCiManifestPath = Join-Path $missingCollectionCiRoot "support-evidence-manifest.json"
+  $missingCollectionCiManifest = Get-Content -LiteralPath $missingCollectionCiManifestPath -Raw | ConvertFrom-Json
+  $missingCollectionCiRow = @($missingCollectionCiManifest.files | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  $missingCollectionCiRelative = ([string]$missingCollectionCiRow.path).Replace("/", "\")
+  $missingCollectionCiEvidencePath = Join-Path $missingCollectionCiRoot $missingCollectionCiRelative
+  $missingCollectionCiEvidence = Get-Content -LiteralPath $missingCollectionCiEvidencePath -Raw | ConvertFrom-Json
+  $missingCollectionCiEvidenceCollection = Get-PropertyValue -Object $missingCollectionCiEvidence -Names @("EvidenceCollection", "evidenceCollection")
+  foreach ($ciProperty in @("Ci", "ci")) {
+    if ($missingCollectionCiEvidenceCollection.PSObject.Properties[$ciProperty]) {
+      $missingCollectionCiEvidenceCollection.PSObject.Properties.Remove($ciProperty)
+    }
+  }
+  ($missingCollectionCiEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $missingCollectionCiEvidencePath -Encoding UTF8
+  $missingCollectionCiRow.sha256 = (Get-FileHash -LiteralPath $missingCollectionCiEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $missingCollectionCiRow.bytes = (Get-Item -LiteralPath $missingCollectionCiEvidencePath).Length
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiIsCi" -Value $null
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiProvider" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiWorkflowName" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiRunId" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiRunAttempt" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiEventName" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiRefName" -Value ""
+  Add-OrSetNoteProperty -Object $missingCollectionCiRow -Name "collectionCiSha" -Value ""
+  ($missingCollectionCiManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $missingCollectionCiManifestPath -Encoding UTF8
   Invoke-ExpectReadinessFailure -ExpectedMessage "Collection CI provenance is required" -Action {
     Invoke-SelfTestReadiness -BundlePath $missingCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance
   }
@@ -989,6 +1019,29 @@ if ($SelfTest) {
   $completeCollectionCiManifest = Get-Content -LiteralPath $completeCollectionCiManifestPath -Raw | ConvertFrom-Json
   Set-TestCollectionCiProvenance -BundleRoot $completeCollectionCiRoot -CommitSha $completeCollectionCiManifest.sourceControl.commitSha
   Invoke-SelfTestReadiness -BundlePath $completeCollectionCiRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance -RequireCollectionSourceCommit -RequireHostEvidenceWorkflowCollection
+
+  $unsafeCollectionRefRoot = Join-Path $selfTestRoot "unsafe-collection-ref"
+  New-Item -ItemType Directory -Force -Path $unsafeCollectionRefRoot | Out-Null
+  Expand-Archive -LiteralPath $BundlePath -DestinationPath $unsafeCollectionRefRoot -Force
+  $unsafeCollectionRefManifestPath = Join-Path $unsafeCollectionRefRoot "support-evidence-manifest.json"
+  $unsafeCollectionRefManifest = Get-Content -LiteralPath $unsafeCollectionRefManifestPath -Raw | ConvertFrom-Json
+  Set-TestCollectionCiProvenance -BundleRoot $unsafeCollectionRefRoot -CommitSha $unsafeCollectionRefManifest.sourceControl.commitSha
+  $unsafeCollectionRefManifest = Get-Content -LiteralPath $unsafeCollectionRefManifestPath -Raw | ConvertFrom-Json
+  $unsafeCollectionRefRow = @($unsafeCollectionRefManifest.files | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  $unsafeCollectionRefRelative = ([string]$unsafeCollectionRefRow.path).Replace("/", "\")
+  $unsafeCollectionRefEvidencePath = Join-Path $unsafeCollectionRefRoot $unsafeCollectionRefRelative
+  $unsafeCollectionRefEvidence = Get-Content -LiteralPath $unsafeCollectionRefEvidencePath -Raw | ConvertFrom-Json
+  $unsafeCollectionRefCollection = Get-PropertyValue -Object $unsafeCollectionRefEvidence -Names @("EvidenceCollection", "evidenceCollection")
+  $unsafeCollectionRefCi = Get-PropertyValue -Object $unsafeCollectionRefCollection -Names @("Ci", "ci")
+  Add-OrSetNoteProperty -Object $unsafeCollectionRefCi -Name "refName" -Value ""
+  ($unsafeCollectionRefEvidence | ConvertTo-Json -Depth 12) | Set-Content -Path $unsafeCollectionRefEvidencePath -Encoding UTF8
+  $unsafeCollectionRefRow.sha256 = (Get-FileHash -LiteralPath $unsafeCollectionRefEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $unsafeCollectionRefRow.bytes = (Get-Item -LiteralPath $unsafeCollectionRefEvidencePath).Length
+  Add-OrSetNoteProperty -Object $unsafeCollectionRefRow -Name "collectionCiRefName" -Value ""
+  ($unsafeCollectionRefManifest | ConvertTo-Json -Depth 12) | Set-Content -Path $unsafeCollectionRefManifestPath -Encoding UTF8
+  Invoke-ExpectReadinessFailure -ExpectedMessage "collection ci.refName" -Action {
+    Invoke-SelfTestReadiness -BundlePath $unsafeCollectionRefRoot -IncludeServiceOnly -IncludeFallback -RequireCollectionCiProvenance
+  }
 
   $mismatchCollectionCommitRoot = Join-Path $selfTestRoot "mismatch-collection-commit"
   New-Item -ItemType Directory -Force -Path $mismatchCollectionCommitRoot | Out-Null
@@ -1347,9 +1400,12 @@ try {
     }
 
     $collectionCiIsCi = Get-BooleanValue -Object $row -Names @("collectionCiIsCi") -Default $null
-    $collectionCiProvider = Get-StringValue -Object $row -Names @("collectionCiProvider")
-    $collectionCiWorkflowName = Get-StringValue -Object $row -Names @("collectionCiWorkflowName")
-    $collectionCiEventName = Get-StringValue -Object $row -Names @("collectionCiEventName")
+    $collectionCiProvider = (Get-StringValue -Object $row -Names @("collectionCiProvider")).Trim().ToLowerInvariant()
+    $collectionCiWorkflowName = (Get-StringValue -Object $row -Names @("collectionCiWorkflowName")).Trim()
+    $collectionCiRunId = (Get-StringValue -Object $row -Names @("collectionCiRunId")).Trim()
+    $collectionCiRunAttempt = (Get-StringValue -Object $row -Names @("collectionCiRunAttempt")).Trim()
+    $collectionCiEventName = (Get-StringValue -Object $row -Names @("collectionCiEventName")).Trim().ToLowerInvariant()
+    $collectionCiRefName = (Get-StringValue -Object $row -Names @("collectionCiRefName")).Trim()
     $collectionCiSha = (Get-StringValue -Object $row -Names @("collectionCiSha")).Trim().ToLowerInvariant()
     $collectionWorkflowDispatchMatchesDimensions = Get-BooleanValue -Object $row -Names @("collectionWorkflowDispatchMatchesDimensions") -Default $null
     $collectionWorkflowDispatchMinimumUptimeHours = Get-IntegerValue -Object $row -Names @("collectionWorkflowDispatchMinimumUptimeHours")
@@ -1373,7 +1429,17 @@ try {
       }
     }
     if ($collectionRequirementsApply) {
-      if ($collectionCiIsCi -eq $true -and -not [string]::IsNullOrWhiteSpace($collectionCiProvider)) {
+      $collectionCiShapeValid = (
+        $collectionCiIsCi -eq $true -and
+        $collectionCiProvider -eq "github-actions" -and
+        (Test-SafeCiRefName -Value $collectionCiWorkflowName) -and
+        (Test-NumericText -Value $collectionCiRunId) -and
+        (Test-NumericText -Value $collectionCiRunAttempt) -and
+        $collectionCiEventName -eq "workflow_dispatch" -and
+        (Test-SafeCiRefName -Value $collectionCiRefName) -and
+        (Test-SafeGitShaValue -Value $collectionCiSha)
+      )
+      if ($collectionCiShapeValid) {
         $collectionCiEvidenceCount += 1
       } else {
         $collectionCiMissingCount += 1
@@ -1383,7 +1449,7 @@ try {
       } else {
         $collectionCiSourceMismatchCount += 1
       }
-      if ($collectionCiIsCi -eq $true -and $collectionCiProvider -eq "github-actions" -and $collectionCiWorkflowName -eq "host-evidence" -and $collectionCiEventName -eq "workflow_dispatch") {
+      if ($collectionCiShapeValid -and $collectionCiWorkflowName -eq "host-evidence") {
         $hostEvidenceWorkflowCollectionCount += 1
       } else {
         $hostEvidenceWorkflowMismatchCount += 1
@@ -1416,7 +1482,7 @@ try {
     throw "Workflow collection applicability metadata is required for release readiness. Missing or inconsistent workflow/local-only metadata on $workflowApplicabilityMissingCount evidence file(s)."
   }
   if ($RequireCollectionCiProvenance -and $collectionCiMissingCount -gt 0) {
-    throw "Collection CI provenance is required for workflow-capable evidence with -RequireCollectionCiProvenance. Missing or non-CI collection provenance on $collectionCiMissingCount workflow-capable evidence file(s)."
+    throw "Collection CI provenance is required for workflow-capable evidence with -RequireCollectionCiProvenance. Missing, unsafe, or incomplete CI collection provenance on $collectionCiMissingCount workflow-capable evidence file(s)."
   }
   if ($RequireCollectionSourceCommit -and $collectionCiSourceMismatchCount -gt 0) {
     throw "Collection CI commit SHA must match bundle source-control commit SHA for workflow-capable evidence with -RequireCollectionSourceCommit. Mismatched or missing collection SHA on $collectionCiSourceMismatchCount workflow-capable evidence file(s)."

@@ -120,6 +120,34 @@ function Get-SafePathName {
   return $name
 }
 
+function Normalize-RepositoryRelativePath {
+  param([string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $normalized = $Value.Trim().Replace("\", "/")
+  if ($normalized.StartsWith("./", [StringComparison]::Ordinal)) {
+    $normalized = $normalized.Substring(2)
+  }
+  return $normalized.Trim("/")
+}
+
+function Get-RepositoryRelativePath {
+  param([string]$Path)
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  if ($fullPath.Equals($repoFull, [StringComparison]::OrdinalIgnoreCase)) {
+    return "."
+  }
+
+  $repoPrefix = $repoFull + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Support matrix path must be inside the repository: $Path"
+  }
+
+  return $fullPath.Substring($repoPrefix.Length).Replace("\", "/")
+}
+
 function Expand-ArtifactZip {
   param(
     [string]$ZipPath,
@@ -352,6 +380,8 @@ function Get-EvidenceWorkflowDispatch {
     expectedServiceManager = Normalize-Token (Get-StringValue -Object $dispatch -Names @("ExpectedServiceManager", "expectedServiceManager", "expected_service_manager"))
     expectedReverseProxy = Normalize-ReverseProxy (Get-StringValue -Object $dispatch -Names @("ExpectedReverseProxy", "expectedReverseProxy", "expected_reverse_proxy"))
     minimumUptimeHours = Get-IntegerValue -Object $dispatch -Names @("MinimumUptimeHours", "minimumUptimeHours", "minimum_uptime_hours")
+    supportMatrixPath = Normalize-RepositoryRelativePath (Get-StringValue -Object $dispatch -Names @("SupportMatrixPath", "supportMatrixPath", "matrixPath", "matrix_path"))
+    supportMatrixSha256 = (Get-StringValue -Object $dispatch -Names @("SupportMatrixSha256", "supportMatrixSha256", "matrixSha256", "matrix_sha256")).Trim().ToLowerInvariant()
   }
 }
 
@@ -372,7 +402,9 @@ function Assert-HostEvidenceWorkflowCollection {
     [string]$Mode,
     [string]$ServiceManager,
     [string]$ReverseProxy,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$ExpectedMatrixPath,
+    [string]$ExpectedMatrixSha256
   )
 
   if ($AllowLocalCollection -and -not (Test-TargetWorkflowDispatchSupported -Target $Target)) {
@@ -398,6 +430,11 @@ function Assert-HostEvidenceWorkflowCollection {
   }
   if ($ci.runAttempt -notmatch '^\d+$') {
     $issues.Add("evidenceCollection.ci.runAttempt must be numeric") | Out-Null
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$ci.refName)) {
+    $issues.Add("evidenceCollection.ci.refName is required") | Out-Null
+  } elseif ($ci.refName -notmatch '^[A-Za-z0-9._/-]+$') {
+    $issues.Add("evidenceCollection.ci.refName contains unsupported characters") | Out-Null
   }
   if ($ci.sha -notmatch '^[a-fA-F0-9]{40}$') {
     $issues.Add("evidenceCollection.ci.sha must be a 40-character git SHA") | Out-Null
@@ -426,6 +463,24 @@ function Assert-HostEvidenceWorkflowCollection {
     $issues.Add("evidenceCollection.workflowDispatch.minimumUptimeHours is required") | Out-Null
   } elseif ([int]$dispatch.minimumUptimeHours -lt $RequiredMinimumUptimeHours) {
     $issues.Add("evidenceCollection.workflowDispatch.minimumUptimeHours must be at least support matrix requiredMinimumUptimeHours") | Out-Null
+  }
+  $expectedMatrixPathValue = Normalize-RepositoryRelativePath $ExpectedMatrixPath
+  if (-not [string]::IsNullOrWhiteSpace($expectedMatrixPathValue)) {
+    if ([string]::IsNullOrWhiteSpace([string]$dispatch.supportMatrixPath)) {
+      $issues.Add("evidenceCollection.workflowDispatch.supportMatrixPath is required") | Out-Null
+    } elseif ([string]$dispatch.supportMatrixPath -ne $expectedMatrixPathValue) {
+      $issues.Add("evidenceCollection.workflowDispatch.supportMatrixPath must match imported support matrix path") | Out-Null
+    }
+  }
+  $expectedMatrixSha256Value = ([string]$ExpectedMatrixSha256).Trim().ToLowerInvariant()
+  if (-not [string]::IsNullOrWhiteSpace($expectedMatrixSha256Value)) {
+    if ($expectedMatrixSha256Value -notmatch '^[a-f0-9]{64}$') {
+      $issues.Add("expected support matrix SHA256 must be a valid SHA256 hash") | Out-Null
+    } elseif ([string]::IsNullOrWhiteSpace([string]$dispatch.supportMatrixSha256)) {
+      $issues.Add("evidenceCollection.workflowDispatch.supportMatrixSha256 is required") | Out-Null
+    } elseif ([string]$dispatch.supportMatrixSha256 -ne $expectedMatrixSha256Value) {
+      $issues.Add("evidenceCollection.workflowDispatch.supportMatrixSha256 must match imported support matrix SHA256") | Out-Null
+    }
   }
   if ($issues.Count -gt 0) {
     throw "Imported workflow artifact must prove controlled host-evidence workflow collection: $SourceFile. $($issues -join '; '). -AllowLocalCollection only bypasses this check for support matrix rows marked localCommandOnly."
@@ -508,7 +563,9 @@ function Invoke-HostEvidenceValidation {
     [string]$Mode,
     [string]$ServiceManager,
     [string]$ReverseProxy,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$ExpectedMatrixPath,
+    [string]$ExpectedMatrixSha256
   )
 
   if ($SkipValidation) { return }
@@ -535,6 +592,8 @@ function Invoke-HostEvidenceValidation {
   if ((-not $AllowLocalCollection) -or (Test-TargetWorkflowDispatchSupported -Target $Target)) {
     $validationArgs.RequireCiCollection = $true
     $validationArgs.RequireHostEvidenceWorkflowCollection = $true
+    $validationArgs.ExpectedMatrixPath = $ExpectedMatrixPath
+    $validationArgs.ExpectedMatrixSha256 = $ExpectedMatrixSha256
   }
 
   & (Join-Path $ScriptDir "Test-HostEvidence.ps1") @validationArgs | Out-Null
@@ -544,7 +603,9 @@ function Import-OneEvidenceFile {
   param(
     [string]$SourceFile,
     [object]$Matrix,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$ExpectedMatrixPath,
+    [string]$ExpectedMatrixSha256
   )
 
   $evidence = Get-Content -LiteralPath $SourceFile -Raw | ConvertFrom-Json
@@ -569,9 +630,9 @@ function Import-OneEvidenceFile {
     throw "Evidence target '$targetId' is not declared in the support matrix."
   }
   $kind = Resolve-EvidenceKind -Target $target -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy
-  Assert-HostEvidenceWorkflowCollection -Evidence $evidence -Target $target -SourceFile $SourceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  Assert-HostEvidenceWorkflowCollection -Evidence $evidence -Target $target -SourceFile $SourceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -ExpectedMatrixPath $ExpectedMatrixPath -ExpectedMatrixSha256 $ExpectedMatrixSha256
 
-  Invoke-HostEvidenceValidation -SourceFile $SourceFile -Target $target -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  Invoke-HostEvidenceValidation -SourceFile $SourceFile -Target $target -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -ExpectedMatrixPath $ExpectedMatrixPath -ExpectedMatrixSha256 $ExpectedMatrixSha256
 
   $destinationFile = Get-CanonicalEvidenceFile -TargetId $targetId -Mode $mode -ServiceManager $serviceManager -ReverseProxy $reverseProxy -Kind $kind
   $sourceHash = Get-Sha256 -Path $SourceFile
@@ -609,10 +670,18 @@ function Import-OneEvidenceFile {
 function New-SelfTestEvidence {
   param(
     [string]$Path,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$SupportMatrixPath = "",
+    [string]$SupportMatrixSha256 = ""
   )
 
   New-Item -ItemType Directory -Path $Path -Force | Out-Null
+  if ([string]::IsNullOrWhiteSpace($SupportMatrixPath)) {
+    $SupportMatrixPath = Get-RepositoryRelativePath -Path $MatrixPath
+  }
+  if ([string]::IsNullOrWhiteSpace($SupportMatrixSha256)) {
+    $SupportMatrixSha256 = Get-Sha256 -Path $MatrixPath
+  }
   $requiredMinimumUptimeSeconds = [int64]$RequiredMinimumUptimeHours * 3600
   $status = [ordered]@{
     EvidenceSchemaVersion = 1
@@ -628,6 +697,8 @@ function New-SelfTestEvidence {
         ExpectedServiceManager = "winsw"
         ExpectedReverseProxy = "iis"
         MinimumUptimeHours = [string]$RequiredMinimumUptimeHours
+        SupportMatrixPath = $SupportMatrixPath
+        SupportMatrixSha256 = $SupportMatrixSha256
       }
       Ci = [ordered]@{
         IsCi = $true
@@ -789,10 +860,12 @@ function Set-ObjectProperty {
 function New-LocalCommandOnlySelfTestEvidence {
   param(
     [string]$Path,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$SupportMatrixPath = "",
+    [string]$SupportMatrixSha256 = ""
   )
 
-  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -SupportMatrixPath $SupportMatrixPath -SupportMatrixSha256 $SupportMatrixSha256
   $windowsArtifactDirectory = Join-Path $Path "windows-server-2022-standalone-winsw-iis"
   $windowsStatusPath = Join-Path $windowsArtifactDirectory "status.json"
   $status = Get-Content -LiteralPath $windowsStatusPath -Raw | ConvertFrom-Json
@@ -869,10 +942,18 @@ function New-LocalCommandOnlySelfTestEvidence {
 function New-FallbackServiceOnlySelfTestEvidence {
   param(
     [string]$Path,
-    [int]$RequiredMinimumUptimeHours
+    [int]$RequiredMinimumUptimeHours,
+    [string]$SupportMatrixPath = "",
+    [string]$SupportMatrixSha256 = ""
   )
 
-  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours
+  New-SelfTestEvidence -Path $Path -RequiredMinimumUptimeHours $RequiredMinimumUptimeHours -SupportMatrixPath $SupportMatrixPath -SupportMatrixSha256 $SupportMatrixSha256
+  if ([string]::IsNullOrWhiteSpace($SupportMatrixPath)) {
+    $SupportMatrixPath = Get-RepositoryRelativePath -Path $MatrixPath
+  }
+  if ([string]::IsNullOrWhiteSpace($SupportMatrixSha256)) {
+    $SupportMatrixSha256 = Get-Sha256 -Path $MatrixPath
+  }
   $sourceArtifactDirectory = Join-Path $Path "windows-server-2022-standalone-winsw-iis"
   $sourceStatusPath = Join-Path $sourceArtifactDirectory "status.json"
   $status = Get-Content -LiteralPath $sourceStatusPath -Raw | ConvertFrom-Json
@@ -891,6 +972,8 @@ function New-FallbackServiceOnlySelfTestEvidence {
     ExpectedServiceManager = "pm2"
     ExpectedReverseProxy = "none"
     MinimumUptimeHours = [string]$RequiredMinimumUptimeHours
+    SupportMatrixPath = $SupportMatrixPath
+    SupportMatrixSha256 = $SupportMatrixSha256
   }
   $status.ServiceDefinition = [ordered]@{
     Checked = $true
@@ -920,6 +1003,8 @@ function Invoke-SelfTest {
   & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
   $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
   $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
+  $matrixRelativePath = Get-RepositoryRelativePath -Path $MatrixPath
+  $matrixSha256 = Get-Sha256 -Path $MatrixPath
   New-SelfTestEvidence -Path $artifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
 
   $firstResult = @(& $PSCommandPath -ArtifactPath $artifactRoot -EvidencePath $importRoot -MatrixPath $MatrixPath -PassThru)
@@ -1026,6 +1111,23 @@ function Invoke-SelfTest {
     throw "Host evidence import self-test failed: malformed workflow CI metadata should be rejected even with -SkipValidation."
   }
 
+  $missingWorkflowRefArtifactRoot = Join-Path $selfTestRoot "missing-workflow-ref-artifacts"
+  $missingWorkflowRefImportRoot = Join-Path $selfTestRoot "missing-workflow-ref-evidence"
+  New-SelfTestEvidence -Path $missingWorkflowRefArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $missingWorkflowRefStatusPath = Join-Path $missingWorkflowRefArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $missingWorkflowRefStatus = Get-Content -LiteralPath $missingWorkflowRefStatusPath -Raw | ConvertFrom-Json
+  $missingWorkflowRefStatus.EvidenceCollection.Ci.RefName = ""
+  $missingWorkflowRefStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $missingWorkflowRefStatusPath -Encoding UTF8
+  $failedMissingWorkflowRef = $false
+  try {
+    & $PSCommandPath -ArtifactPath $missingWorkflowRefArtifactRoot -EvidencePath $missingWorkflowRefImportRoot -MatrixPath $MatrixPath -SkipValidation -PassThru | Out-Null
+  } catch {
+    $failedMissingWorkflowRef = ($_.Exception.Message -match "evidenceCollection\.ci\.refName is required")
+  }
+  if (-not $failedMissingWorkflowRef) {
+    throw "Host evidence import self-test failed: missing workflow refName should be rejected even with -SkipValidation."
+  }
+
   $badWorkflowDispatchArtifactRoot = Join-Path $selfTestRoot "bad-workflow-dispatch-artifacts"
   $badWorkflowDispatchImportRoot = Join-Path $selfTestRoot "bad-workflow-dispatch-evidence"
   New-SelfTestEvidence -Path $badWorkflowDispatchArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
@@ -1041,6 +1143,23 @@ function Invoke-SelfTest {
   }
   if (-not $failedBadWorkflowDispatch) {
     throw "Host evidence import self-test failed: mismatched workflow dispatch metadata should be rejected even with -SkipValidation."
+  }
+
+  $badWorkflowMatrixArtifactRoot = Join-Path $selfTestRoot "bad-workflow-matrix-artifacts"
+  $badWorkflowMatrixImportRoot = Join-Path $selfTestRoot "bad-workflow-matrix-evidence"
+  New-SelfTestEvidence -Path $badWorkflowMatrixArtifactRoot -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -SupportMatrixPath $matrixRelativePath -SupportMatrixSha256 $matrixSha256
+  $badWorkflowMatrixStatusPath = Join-Path $badWorkflowMatrixArtifactRoot "windows-server-2022-standalone-winsw-iis\status.json"
+  $badWorkflowMatrixStatus = Get-Content -LiteralPath $badWorkflowMatrixStatusPath -Raw | ConvertFrom-Json
+  $badWorkflowMatrixStatus.EvidenceCollection.WorkflowDispatch.SupportMatrixSha256 = ("0" * 64)
+  $badWorkflowMatrixStatus | ConvertTo-Json -Depth 10 | Set-Content -Path $badWorkflowMatrixStatusPath -Encoding UTF8
+  $failedBadWorkflowMatrix = $false
+  try {
+    & $PSCommandPath -ArtifactPath $badWorkflowMatrixArtifactRoot -EvidencePath $badWorkflowMatrixImportRoot -MatrixPath $MatrixPath -SkipValidation -PassThru | Out-Null
+  } catch {
+    $failedBadWorkflowMatrix = ($_.Exception.Message -match "workflowDispatch\.supportMatrixSha256 must match imported support matrix SHA256")
+  }
+  if (-not $failedBadWorkflowMatrix) {
+    throw "Host evidence import self-test failed: mismatched workflow support matrix SHA256 should be rejected even with -SkipValidation."
   }
 
   $localOnlyArtifactRoot = Join-Path $selfTestRoot "local-only-artifacts"
@@ -1089,13 +1208,15 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
 & (Join-Path $ScriptDir "Test-SupportMatrix.ps1") -MatrixPath $MatrixPath | Out-Null
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $requiredMinimumUptimeHours = Get-MatrixRequiredMinimumUptimeHours -Matrix $matrix
+$matrixRelativePath = Get-RepositoryRelativePath -Path $MatrixPath
+$matrixSha256 = Get-Sha256 -Path $MatrixPath
 $sourceFiles = @(Get-ArtifactStatusFiles -Path $ArtifactPath)
 if ($sourceFiles.Count -eq 0) {
   throw "No status.json files were found under ArtifactPath: $ArtifactPath"
 }
 
 $results = foreach ($sourceFile in $sourceFiles) {
-  Import-OneEvidenceFile -SourceFile $sourceFile.FullName -Matrix $matrix -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  Import-OneEvidenceFile -SourceFile $sourceFile.FullName -Matrix $matrix -RequiredMinimumUptimeHours $requiredMinimumUptimeHours -ExpectedMatrixPath $matrixRelativePath -ExpectedMatrixSha256 $matrixSha256
 }
 
 if ($PassThru) {

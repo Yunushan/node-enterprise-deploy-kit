@@ -889,6 +889,7 @@ function Get-EvidenceCollectionEvidence {
 
   $collection = Get-PropertyValue -Object $Evidence -Names @("EvidenceCollection", "evidenceCollection")
   $workflowDispatch = Get-PropertyValue -Object $collection -Names @("WorkflowDispatch", "workflowDispatch")
+  $ci = Get-PropertyValue -Object $collection -Names @("Ci", "ci")
   return [pscustomobject]@{
     source = Get-StringValue -Object $collection -Names @("Source", "source")
     collector = Get-StringValue -Object $collection -Names @("Collector", "collector")
@@ -898,6 +899,14 @@ function Get-EvidenceCollectionEvidence {
     synthetic = Get-BooleanValue -Object $collection -Names @("Synthetic", "synthetic") -Default $null
     mock = Get-BooleanValue -Object $collection -Names @("Mock", "mock") -Default $null
     sample = Get-BooleanValue -Object $collection -Names @("Sample", "sample") -Default $null
+    ciIsCi = Get-BooleanValue -Object $ci -Names @("IsCi", "isCi") -Default $null
+    ciProvider = (Get-StringValue -Object $ci -Names @("Provider", "provider")).Trim().ToLowerInvariant()
+    ciWorkflowName = (Get-StringValue -Object $ci -Names @("WorkflowName", "workflowName")).Trim().ToLowerInvariant()
+    ciRunId = (Get-StringValue -Object $ci -Names @("RunId", "runId")).Trim()
+    ciRunAttempt = (Get-StringValue -Object $ci -Names @("RunAttempt", "runAttempt")).Trim()
+    ciEventName = (Get-StringValue -Object $ci -Names @("EventName", "eventName")).Trim().ToLowerInvariant()
+    ciRefName = (Get-StringValue -Object $ci -Names @("RefName", "refName")).Trim()
+    ciSha = (Get-StringValue -Object $ci -Names @("Sha", "sha")).Trim().ToLowerInvariant()
     workflowDispatchEvidenceName = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("EvidenceName", "evidenceName"))
     workflowDispatchExpectedTargetId = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedTargetId", "expectedTargetId", "expected_target_id"))
     workflowDispatchExpectedNextJsMode = Normalize-Token (Get-StringValue -Object $workflowDispatch -Names @("ExpectedNextJsMode", "expectedNextJsMode", "expected_nextjs_mode"))
@@ -1065,6 +1074,14 @@ function Get-EvidenceRecords {
         critical = Get-IntegerValue -Object $evidence -Names @("Critical", "critical")
         warnings = Get-IntegerValue -Object $evidence -Names @("Warnings", "warnings")
         liveEvidenceCollection = Test-LiveEvidenceCollection -Collection $collection
+        collectionCiIsCi = $collection.ciIsCi
+        collectionCiProvider = $collection.ciProvider
+        collectionCiWorkflowName = $collection.ciWorkflowName
+        collectionCiRunId = $collection.ciRunId
+        collectionCiRunAttempt = $collection.ciRunAttempt
+        collectionCiEventName = $collection.ciEventName
+        collectionCiRefName = $collection.ciRefName
+        collectionCiSha = $collection.ciSha
         workflowDispatchEvidenceName = $collection.workflowDispatchEvidenceName
         workflowDispatchExpectedTargetId = $collection.workflowDispatchExpectedTargetId
         workflowDispatchExpectedNextJsMode = $collection.workflowDispatchExpectedNextJsMode
@@ -1103,6 +1120,14 @@ function Get-EvidenceRecords {
         critical = $null
         warnings = $null
         liveEvidenceCollection = $false
+        collectionCiIsCi = $null
+        collectionCiProvider = ""
+        collectionCiWorkflowName = ""
+        collectionCiRunId = ""
+        collectionCiRunAttempt = ""
+        collectionCiEventName = ""
+        collectionCiRefName = ""
+        collectionCiSha = ""
         workflowDispatchEvidenceName = ""
         workflowDispatchExpectedTargetId = ""
         workflowDispatchExpectedNextJsMode = ""
@@ -1161,6 +1186,26 @@ function Test-RecordHealthy {
     return $false
   }
   return $true
+}
+
+function Test-RecordWorkflowCiMatches {
+  param(
+    [object]$Record,
+    [object]$Entry
+  )
+
+  if ($Entry.workflowDispatchSupported -ne $true) { return $true }
+  return (
+    $Record.collectionCiIsCi -eq $true -and
+    [string]$Record.collectionCiProvider -eq "github-actions" -and
+    [string]$Record.collectionCiWorkflowName -eq "host-evidence" -and
+    [string]$Record.collectionCiEventName -eq "workflow_dispatch" -and
+    [string]$Record.collectionCiRunId -match '^[0-9]+$' -and
+    [string]$Record.collectionCiRunAttempt -match '^[0-9]+$' -and
+    -not [string]::IsNullOrWhiteSpace([string]$Record.collectionCiRefName) -and
+    [string]$Record.collectionCiRefName -match '^[A-Za-z0-9._/-]+$' -and
+    [string]$Record.collectionCiSha -match '^[a-f0-9]{40}$'
+  )
 }
 
 function Test-RecordWorkflowDispatchMatches {
@@ -1552,6 +1597,16 @@ function New-SelfTestEvidence {
       }
     }
     if ($entry.workflowDispatchSupported -eq $true) {
+      $collection["ci"] = [ordered]@{
+        isCi = $true
+        provider = "github-actions"
+        workflowName = "host-evidence"
+        runId = "123456789"
+        runAttempt = "1"
+        eventName = "workflow_dispatch"
+        refName = "main"
+        sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
       $collection["workflowDispatch"] = [ordered]@{
         evidenceName = [string]$entry.workflowInputs.evidence_name
         expectedTargetId = $targetId
@@ -1900,6 +1955,7 @@ foreach ($entry in $expectedEntries) {
     $_.nextJsMode -eq $entry.nextJsMode -and
     $_.serviceManager -eq $entry.serviceManager -and
     $_.reverseProxy -eq $entry.reverseProxy -and
+    (Test-RecordWorkflowCiMatches -Record $_ -Entry $entry) -and
     (Test-RecordWorkflowDispatchMatches -Record $_ -Entry $entry)
   })
 
@@ -2152,6 +2208,26 @@ if ($SelfTest -and -not $SkipExtendedSelfTestChecks) {
     })
   if ($missingWorkflowDispatchRow.Count -ne 1) {
     throw "Support evidence coverage self-test failed: workflow-dispatch-mismatched evidence was counted as covering ubuntu."
+  }
+
+  $workflowCiMismatchEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-ci-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $workflowCiMismatchEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+  $workflowCiMismatchFile = Join-Path $workflowCiMismatchEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
+  $workflowCiMismatchEvidence = Get-Content -LiteralPath $workflowCiMismatchFile -Raw | ConvertFrom-Json
+  $workflowCiMismatchEvidence.evidenceCollection.ci.refName = ""
+  $workflowCiMismatchEvidence | ConvertTo-Json -Depth 12 | Set-Content -Path $workflowCiMismatchFile -Encoding UTF8
+  $workflowCiMismatchJsonPath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-ci-$([Guid]::NewGuid().ToString('N')).json"
+  & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $workflowCiMismatchEvidencePath -Format Json -OutputPath $workflowCiMismatchJsonPath | Out-Null
+  $workflowCiMismatchJson = Get-Content -LiteralPath $workflowCiMismatchJsonPath -Raw | ConvertFrom-Json
+  $missingWorkflowCiRow = @($workflowCiMismatchJson.missing | Where-Object {
+      $_.kind -eq "strict" -and
+      $_.targetId -eq "ubuntu" -and
+      $_.nextJsMode -eq "standalone" -and
+      $_.serviceManager -eq "systemd" -and
+      $_.reverseProxy -eq "nginx"
+    })
+  if ($missingWorkflowCiRow.Count -ne 1) {
+    throw "Support evidence coverage self-test failed: workflow-ci-mismatched evidence was counted as covering ubuntu."
   }
 
   $workflowMatrixMismatchEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-workflow-matrix-$([Guid]::NewGuid().ToString('N'))"
