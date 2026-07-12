@@ -26,10 +26,11 @@ write_file() {
 
 new_standalone_layout() {
   local app_dir="$1"
-  mkdir -p "$app_dir/.next/static" "$app_dir/node_modules"
+  mkdir -p "$app_dir/.next/static" "$app_dir/node_modules/next"
   write_file "$app_dir/server.js" "console.log('standalone');"
   write_file "$app_dir/.next/static/app.js" "console.log('static');"
   write_file "$app_dir/.next/BUILD_ID" "example-build"
+  write_file "$app_dir/node_modules/next/package.json" '{"name":"next","version":"0.0.0-test"}'
 }
 
 new_next_start_layout() {
@@ -45,9 +46,10 @@ new_next_start_layout() {
 
 new_next_project_layout() {
   local project_dir="$1"
-  mkdir -p "$project_dir/.next/standalone/node_modules" "$project_dir/.next/static" "$project_dir/public"
+  mkdir -p "$project_dir/.next/standalone/node_modules/next" "$project_dir/.next/static" "$project_dir/public"
   write_file "$project_dir/.next/standalone/server.js" "console.log('standalone');"
   write_file "$project_dir/.next/standalone/package.json" '{"scripts":{"start":"node server.js"}}'
+  write_file "$project_dir/.next/standalone/node_modules/next/package.json" '{"name":"next","version":"0.0.0-test"}'
   write_file "$project_dir/.next/static/app.js" "console.log('static');"
   write_file "$project_dir/.next/BUILD_ID" "example-build"
   write_file "$project_dir/public/robots.txt" "User-agent: *"

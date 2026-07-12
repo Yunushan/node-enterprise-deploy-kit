@@ -173,6 +173,24 @@ function Get-CoverageReport {
 }
 
 function Invoke-SelfTest {
+  # The self-test verifies missing CI provenance. Do not inherit the caller's GitHub Actions metadata.
+  $ciEnvironmentVariableNames = @(
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITHUB_WORKFLOW",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_EVENT_NAME",
+    "GITHUB_REF_NAME",
+    "GITHUB_SHA"
+  )
+  $originalCiEnvironment = @{}
+  foreach ($name in $ciEnvironmentVariableNames) {
+    $originalCiEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+    [Environment]::SetEnvironmentVariable($name, $null, "Process")
+  }
+
+  try {
   $selfTestRoot = Join-Path $RepoRoot ".tmp\support-evidence-release-workflow-selftest-$([Guid]::NewGuid().ToString('N'))"
   New-OutputDirectory -Path $selfTestRoot
   $coverageJson = Join-Path $selfTestRoot "generated-coverage.json"
@@ -372,6 +390,11 @@ function Invoke-SelfTest {
   $strictFailureArgs.StrictCiRelease = $true
   Invoke-ExpectStrictReleaseFailure -Action {
     & $PSCommandPath @strictFailureArgs | Out-Null
+  }
+  } finally {
+    foreach ($name in $ciEnvironmentVariableNames) {
+      [Environment]::SetEnvironmentVariable($name, $originalCiEnvironment[$name], "Process")
+    }
   }
 }
 
