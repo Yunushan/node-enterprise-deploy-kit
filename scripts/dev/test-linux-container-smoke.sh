@@ -46,12 +46,16 @@ case "$PLATFORM_CASE" in
     apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils
     ;;
   rhel|oracle-linux|centos|centos-stream|rocky|almalinux|fedora)
+    curl_package="curl"
+    case "$PLATFORM_CASE" in
+      rhel|oracle-linux|centos|centos-stream|rocky|almalinux) curl_package="curl-minimal" ;;
+    esac
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
+      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates "$curl_package" xz
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
+      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates "$curl_package" xz
     elif command -v microdnf >/dev/null 2>&1; then
-      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
+      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates "$curl_package" xz
     else
       echo "No dnf, yum, or microdnf package manager found for $PLATFORM_CASE." >&2
       exit 1
@@ -163,6 +167,7 @@ run_container_smoke() {
     if [[ "$real_nextjs" == "true" ]]; then
       require_contains "$container_script" "install_real_nextjs_node" "container script"
       require_contains "$container_script" "node scripts/dev/test-real-nextjs-integration.mjs" "container script"
+      require_contains "$container_script" 'curl_package="curl-minimal"' "container script"
       echo "Linux container real Next.js dry-run OK: $platform ($image)"
     else
       echo "Linux container smoke dry-run OK: $platform ($image)"
