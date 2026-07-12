@@ -141,7 +141,7 @@ Before collecting release evidence, generate a collection pack from the current
 support matrix. It writes the checklist, reviewable workflow dispatch commands,
 a guarded dispatcher, a guarded artifact downloader keyed by expected evidence
 names, JSON/CSV manifests for expected workflow artifacts and local-command-only
-rows, a pre-release staging audit, a guarded release-gate script, and a README
+rows, a JSON/Markdown collection-progress report, a pre-release staging audit, a guarded release-gate script, and a README
 that keeps the download/import/bundle sequence together:
 
 ```powershell
@@ -160,7 +160,7 @@ CI-controlled final signoff path. The downloader prints `gh run list` and exact
 `gh run download --name <evidence_name>` commands, then downloads into
 per-evidence folders when run with `-RunId ... -Run`. The pack still requires
 real downloaded workflow artifacts and local-command-only evidence before
-release readiness can pass. Run the generated
+release readiness can pass. Run the generated `Get-HostEvidenceCollectionProgress.ps1` to write per-target coverage plus a durable inventory of missing and invalid rows while collection is underway, then run
 `Test-HostEvidenceCollectionStaging.ps1` before the release script to fail on
 missing downloaded `status.json` artifacts, local-only evidence files, or
 evidence whose target/mode/service/proxy identity does not match the matrix row.

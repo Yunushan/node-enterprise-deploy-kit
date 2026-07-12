@@ -468,6 +468,13 @@ service definition still matches `NODE_BIN`, `APP_DIR`, `START_SCRIPT`, and
 System V script, or BSD rc script cannot silently count as current deployment
 proof.
 
+The CI workflow also creates a temporary real `next@latest` application on
+Ubuntu, Windows Server 2022, and macOS 15. It builds the application, packages
+both deployment modes with the platform helper, extracts the package, and
+checks that the resulting runtime serves HTTP. This complements the layout and
+service-template checks, but it does not replace self-hosted host evidence for
+release signoff.
+
 For `standalone`, the preflight validates:
 
 - `AppFramework` / `APP_FRAMEWORK` is `nextjs`.

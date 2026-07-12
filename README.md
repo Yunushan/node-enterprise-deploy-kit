@@ -218,7 +218,7 @@ For the least ambiguous real-host evidence handoff, generate a collection pack.
 It writes the matrix checklist, reviewable workflow dispatch commands, a guarded
 dispatcher script, a guarded artifact downloader keyed by expected evidence
 names, JSON/CSV manifests for expected workflow artifacts and local-command-only
-rows, a pre-release staging audit, a guarded release-gate script, and a README
+rows, a JSON/Markdown collection-progress report, a pre-release staging audit, a guarded release-gate script, and a README
 that carries the artifact download/import/bundle sequence in one local
 directory:
 
@@ -237,7 +237,7 @@ the generated dispatcher and artifact downloader without `-Run` first, and use
 CI-controlled final signoff path. The downloader prints `gh run list` and exact
 `gh run download --name <evidence_name>` commands, then downloads into
 per-evidence folders when run with `-RunId ... -Run`. The pack does not make
-synthetic claims; run the generated `Test-HostEvidenceCollectionStaging.ps1`
+synthetic claims; use the generated `Get-HostEvidenceCollectionProgress.ps1` to show per-target coverage and exact missing or invalid rows while collection is underway, then run `Test-HostEvidenceCollectionStaging.ps1`
 before the release script to fail on missing downloaded `status.json` artifacts,
 local-command-only evidence files, or evidence whose target/mode/service/proxy
 identity does not match the matrix row. Add `-ValidateWithHostEvidence` to make
@@ -966,6 +966,13 @@ sudo bash scripts/linux/uninstall-node-service.sh config/linux/app.env
 ## Supported Platforms
 
 This project is a deployment kit, not a vendor support guarantee. Current Next.js requires Node.js `20.9.0` or newer, and Node runtime support is platform-specific. Use current vendor-supported systems where possible; the machine-readable support matrix marks legacy or non-official Node runtime targets separately from production-recommended rows.
+
+CI also builds a temporary real `next@latest` project on Ubuntu, Windows Server
+2022, and macOS 15. It packages both `standalone` and `next-start` modes with
+this kit, extracts them, and verifies each package serves an HTTP response.
+This hosted integration coverage is stronger than a synthetic layout test, but
+it does not replace the self-hosted real-host evidence required for a final
+support claim.
 
 ### Windows targets
 

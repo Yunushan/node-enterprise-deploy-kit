@@ -691,8 +691,10 @@ function New-StagingAuditScript {
   $lines.Add("  presentLocalOnlyEvidenceCount = `$presentLocalOnlyEvidence.Count") | Out-Null
   $lines.Add("  missingLocalOnlyEvidenceCount = `$missingLocalOnlyEvidence.Count") | Out-Null
   $lines.Add("  invalidLocalOnlyEvidenceCount = `$invalidLocalOnlyEvidence.Count") | Out-Null
+  $lines.Add("  presentWorkflowArtifacts = @(`$presentWorkflowArtifacts.ToArray())") | Out-Null
   $lines.Add("  missingWorkflowArtifacts = @(`$missingWorkflowArtifacts.ToArray())") | Out-Null
   $lines.Add("  invalidWorkflowArtifacts = @(`$invalidWorkflowArtifacts.ToArray())") | Out-Null
+  $lines.Add("  presentLocalOnlyEvidence = @(`$presentLocalOnlyEvidence.ToArray())") | Out-Null
   $lines.Add("  missingLocalOnlyEvidence = @(`$missingLocalOnlyEvidence.ToArray())") | Out-Null
   $lines.Add("  invalidLocalOnlyEvidence = @(`$invalidLocalOnlyEvidence.ToArray())") | Out-Null
   $lines.Add("}") | Out-Null
@@ -713,6 +715,110 @@ function New-StagingAuditScript {
   $lines -join [Environment]::NewLine | Set-Content -Path $Path -Encoding UTF8
 }
 
+function New-CollectionProgressScript {
+  param(
+    [string]$Path,
+    [string]$StagingAuditScript,
+    [string]$ArtifactPath,
+    [string]$EvidencePath
+  )
+
+  $stagingAuditScriptName = Split-Path -Leaf $StagingAuditScript
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add("param(") | Out-Null
+  $lines.Add("  [string]`$ArtifactPath = $(Quote-PowerShellArgument $ArtifactPath),") | Out-Null
+  $lines.Add("  [string]`$EvidencePath = $(Quote-PowerShellArgument $EvidencePath),") | Out-Null
+  $lines.Add("  [string]`$OutputDirectory = (Join-Path `$PSScriptRoot 'progress'),") | Out-Null
+  $lines.Add("  [switch]`$ValidateWithHostEvidence,") | Out-Null
+  $lines.Add("  [string]`$HostEvidenceValidatorPath = `"`",") | Out-Null
+  $lines.Add("  [switch]`$PassThru") | Out-Null
+  $lines.Add(")") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("Set-StrictMode -Version Latest") | Out-Null
+  $lines.Add("`$ErrorActionPreference = `"Stop`"") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("`$stagingAuditScript = Join-Path `$PSScriptRoot $(Quote-PowerShellArgument $stagingAuditScriptName)") | Out-Null
+  $lines.Add("if (-not (Test-Path -LiteralPath `$stagingAuditScript -PathType Leaf)) { throw `"Staging audit script was not found: `$stagingAuditScript`" }") | Out-Null
+  $lines.Add("`$auditArguments = @{ ArtifactPath = `$ArtifactPath; EvidencePath = `$EvidencePath; ReportOnly = `$true; PassThru = `$true }") | Out-Null
+  $lines.Add("if (`$ValidateWithHostEvidence) { `$auditArguments.ValidateWithHostEvidence = `$true }") | Out-Null
+  $lines.Add("if (-not [string]::IsNullOrWhiteSpace(`$HostEvidenceValidatorPath)) { `$auditArguments.HostEvidenceValidatorPath = `$HostEvidenceValidatorPath }") | Out-Null
+  $lines.Add("`$audit = & `$stagingAuditScript @auditArguments") | Out-Null
+  $lines.Add("`$expectedCount = [int]`$audit.expectedWorkflowArtifactCount + [int]`$audit.expectedLocalOnlyEvidenceCount") | Out-Null
+  $lines.Add("`$presentCount = [int]`$audit.presentWorkflowArtifactCount + [int]`$audit.presentLocalOnlyEvidenceCount") | Out-Null
+  $lines.Add("`$missingCount = [int]`$audit.missingWorkflowArtifactCount + [int]`$audit.missingLocalOnlyEvidenceCount") | Out-Null
+  $lines.Add("`$invalidCount = [int]`$audit.invalidWorkflowArtifactCount + [int]`$audit.invalidLocalOnlyEvidenceCount") | Out-Null
+  $lines.Add("function New-RowState {") | Out-Null
+  $lines.Add("  param([object]`$Row, [string]`$CollectionPath, [string]`$Status)") | Out-Null
+  $lines.Add("  `$evidence = if (`$Row.PSObject.Properties['evidenceName']) { [string]`$Row.evidenceName } else { [string]`$Row.evidenceFile }") | Out-Null
+  $lines.Add("  `$reason = if (`$Row.PSObject.Properties['reason']) { [string]`$Row.reason } else { `"`" }") | Out-Null
+  $lines.Add("  [pscustomobject]@{ targetId = [string]`$Row.targetId; nextJsMode = [string]`$Row.nextJsMode; serviceManager = [string]`$Row.serviceManager; reverseProxy = [string]`$Row.reverseProxy; collectionPath = `$CollectionPath; status = `$Status; evidence = `$evidence; reason = `$reason }") | Out-Null
+  $lines.Add("}") | Out-Null
+  $lines.Add("`$rowStates = @(") | Out-Null
+  $lines.Add("  @(`$audit.presentWorkflowArtifacts | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'workflow-artifact' -Status 'present' })") | Out-Null
+  $lines.Add("  @(`$audit.missingWorkflowArtifacts | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'workflow-artifact' -Status 'missing' })") | Out-Null
+  $lines.Add("  @(`$audit.invalidWorkflowArtifacts | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'workflow-artifact' -Status 'invalid' })") | Out-Null
+  $lines.Add("  @(`$audit.presentLocalOnlyEvidence | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'local-command-only' -Status 'present' })") | Out-Null
+  $lines.Add("  @(`$audit.missingLocalOnlyEvidence | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'local-command-only' -Status 'missing' })") | Out-Null
+  $lines.Add("  @(`$audit.invalidLocalOnlyEvidence | ForEach-Object { New-RowState -Row `$_ -CollectionPath 'local-command-only' -Status 'invalid' })") | Out-Null
+  $lines.Add(")") | Out-Null
+  $lines.Add("`$targetSummary = @(`$rowStates | Group-Object targetId | Sort-Object Name | ForEach-Object { [pscustomobject]@{ targetId = [string]`$_.Name; expected = @(`$_.Group).Count; present = @(`$_.Group | Where-Object { `$_.status -eq 'present' }).Count; missing = @(`$_.Group | Where-Object { `$_.status -eq 'missing' }).Count; invalid = @(`$_.Group | Where-Object { `$_.status -eq 'invalid' }).Count } })") | Out-Null
+  $lines.Add("`$unresolved = @(`$rowStates | Where-Object { `$_.status -ne 'present' })") | Out-Null
+  $lines.Add("`$report = [ordered]@{") | Out-Null
+  $lines.Add("  schemaVersion = 1") | Out-Null
+  $lines.Add("  generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')") | Out-Null
+  $lines.Add("  complete = (`$missingCount -eq 0 -and `$invalidCount -eq 0)") | Out-Null
+  $lines.Add("  validationWithHostEvidence = [bool]`$ValidateWithHostEvidence") | Out-Null
+  $lines.Add("  expectedCount = `$expectedCount") | Out-Null
+  $lines.Add("  presentCount = `$presentCount") | Out-Null
+  $lines.Add("  missingCount = `$missingCount") | Out-Null
+  $lines.Add("  invalidCount = `$invalidCount") | Out-Null
+  $lines.Add("  workflowArtifacts = [ordered]@{ expected = [int]`$audit.expectedWorkflowArtifactCount; present = [int]`$audit.presentWorkflowArtifactCount; missing = [int]`$audit.missingWorkflowArtifactCount; invalid = [int]`$audit.invalidWorkflowArtifactCount }") | Out-Null
+  $lines.Add("  localOnlyEvidence = [ordered]@{ expected = [int]`$audit.expectedLocalOnlyEvidenceCount; present = [int]`$audit.presentLocalOnlyEvidenceCount; missing = [int]`$audit.missingLocalOnlyEvidenceCount; invalid = [int]`$audit.invalidLocalOnlyEvidenceCount }") | Out-Null
+  $lines.Add("  targetSummary = @(`$targetSummary)") | Out-Null
+  $lines.Add("  unresolvedRows = @(`$unresolved)") | Out-Null
+  $lines.Add("}") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("New-Item -ItemType Directory -Path `$OutputDirectory -Force | Out-Null") | Out-Null
+  $lines.Add("`$jsonPath = Join-Path `$OutputDirectory 'host-evidence-collection-progress.json'") | Out-Null
+  $lines.Add("`$markdownPath = Join-Path `$OutputDirectory 'host-evidence-collection-progress.md'") | Out-Null
+  $lines.Add("`$report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath `$jsonPath -Encoding UTF8") | Out-Null
+  $lines.Add("`$markdown = New-Object System.Collections.Generic.List[string]") | Out-Null
+  $lines.Add("`$markdown.Add('# Host Evidence Collection Progress') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('- Generated: {0}' -f `$report.generatedAtUtc)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('- Complete: {0}' -f `$report.complete)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('- Full host validation: {0}' -f `$report.validationWithHostEvidence)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('| Collection path | Expected | Present | Missing | Invalid |') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('|---|---:|---:|---:|---:|') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('| Workflow artifacts | {0} | {1} | {2} | {3} |' -f `$report.workflowArtifacts.expected, `$report.workflowArtifacts.present, `$report.workflowArtifacts.missing, `$report.workflowArtifacts.invalid)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('| Local-command-only evidence | {0} | {1} | {2} | {3} |' -f `$report.localOnlyEvidence.expected, `$report.localOnlyEvidence.present, `$report.localOnlyEvidence.missing, `$report.localOnlyEvidence.invalid)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add(('| Total | {0} | {1} | {2} | {3} |' -f `$report.expectedCount, `$report.presentCount, `$report.missingCount, `$report.invalidCount)) | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('## Target Coverage') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('| Target | Expected | Present | Missing | Invalid |') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('|---|---:|---:|---:|---:|') | Out-Null") | Out-Null
+  $lines.Add("foreach (`$target in `$report.targetSummary) { `$markdown.Add(('| {0} | {1} | {2} | {3} | {4} |' -f `$target.targetId, `$target.expected, `$target.present, `$target.missing, `$target.invalid)) | Out-Null }") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('## Unresolved Rows') | Out-Null") | Out-Null
+  $lines.Add("`$markdown.Add('') | Out-Null") | Out-Null
+  $lines.Add("if (`$report.unresolvedRows.Count -eq 0) { `$markdown.Add('All expected real-host evidence rows are present and valid.') | Out-Null } else {") | Out-Null
+  $lines.Add("  `$markdown.Add('| Target | Mode | Service | Proxy | Evidence | Reason |') | Out-Null") | Out-Null
+  $lines.Add("  `$markdown.Add('|---|---|---|---|---|---|') | Out-Null") | Out-Null
+  $lines.Add("  foreach (`$row in `$report.unresolvedRows) {") | Out-Null
+  $lines.Add("    `$reason = ([string]`$row.reason).Replace('|', '\\|')") | Out-Null
+  $lines.Add("    `$markdown.Add(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f `$row.targetId, `$row.nextJsMode, `$row.serviceManager, `$row.reverseProxy, `$row.evidence, `$reason)) | Out-Null") | Out-Null
+  $lines.Add("  }") | Out-Null
+  $lines.Add("}") | Out-Null
+  $lines.Add("`$markdown -join [Environment]::NewLine | Set-Content -LiteralPath `$markdownPath -Encoding UTF8") | Out-Null
+  $lines.Add("Write-Host (`"Host evidence collection progress written: `$jsonPath`" )") | Out-Null
+  $lines.Add("Write-Host (`"Host evidence collection progress written: `$markdownPath`" )") | Out-Null
+  $lines.Add("if (`$PassThru) { [pscustomobject]@{ jsonPath = `$jsonPath; markdownPath = `$markdownPath; report = `$report } }") | Out-Null
+
+  $lines -join [Environment]::NewLine | Set-Content -Path $Path -Encoding UTF8
+}
+
 function New-Readme {
   param(
     [string]$Path,
@@ -726,6 +832,7 @@ function New-Readme {
     [string]$LocalOnlyJson,
     [string]$LocalOnlyCsv,
     [string]$StagingAuditScript,
+    [string]$ProgressScript,
     [string]$ReleaseScript,
     [string]$EvidencePath,
     [string]$ArtifactPath,
@@ -745,6 +852,7 @@ function New-Readme {
   $localOnlyJsonName = Split-Path -Leaf $LocalOnlyJson
   $localOnlyCsvName = Split-Path -Leaf $LocalOnlyCsv
   $stagingAuditScriptName = Split-Path -Leaf $StagingAuditScript
+  $progressScriptName = Split-Path -Leaf $ProgressScript
   $releaseScriptName = Split-Path -Leaf $ReleaseScript
   $artifactDisplayPath = Get-DisplayPath (Resolve-OutputRelativePath $ArtifactPath)
   $evidenceDisplayPath = Get-DisplayPath (Resolve-OutputRelativePath $EvidencePath)
@@ -764,6 +872,7 @@ function New-Readme {
   $lines.Add(("- {0}{1}{0} / {0}{2}{0}: expected workflow artifact names and canonical destinations." -f $tick, $workflowArtifactsJsonName, $workflowArtifactsCsvName)) | Out-Null
   $lines.Add(("- {0}{1}{0} / {0}{2}{0}: local-command-only rows that must be collected outside GitHub Actions." -f $tick, $localOnlyJsonName, $localOnlyCsvName)) | Out-Null
   $lines.Add(("- {0}{1}{0}: pre-release staging audit for downloaded {0}status.json{0} artifacts, local-only evidence files, and matrix-row identity." -f $tick, $stagingAuditScriptName)) | Out-Null
+  $lines.Add(("- {0}{1}{0}: writes JSON and Markdown progress reports with exact missing or invalid real-host rows." -f $tick, $progressScriptName)) | Out-Null
   $lines.Add(("- {0}{1}{0}: guarded release gate; imports artifacts, checks coverage, bundles evidence, and writes detailed readiness plus redacted summary JSON when run with {0}-Run{0}." -f $tick, $releaseScriptName)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("## Operator Sequence") | Out-Null
@@ -792,7 +901,16 @@ function New-Readme {
   $lines.Add(("   The downloader prints {0}gh run list{0} and exact {0}gh run download --name <evidence_name>{0} commands when run without {0}-Run{0}. Downloaded artifacts are placed in per-evidence folders listed in {0}{1}{0} so the importer can match them back to matrix rows." -f $tick, $workflowArtifactsCsvName)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add(("6. Collect local-command-only rows listed in {0}{1}{0} on their hosts with the commands from {0}{2}{0}, then place the validated files under {0}{3}{0}." -f $tick, $localOnlyCsvName, $planMarkdownName, $evidenceDisplayPath)) | Out-Null
-  $lines.Add("7. Audit the staged evidence before running release readiness:") | Out-Null
+  $lines.Add("7. Write a collection progress report while evidence is still arriving:") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("${fence}powershell") | Out-Null
+  $lines.Add("& $(Quote-PowerShellArgument $ProgressScript)") | Out-Null
+  $lines.Add("& $(Quote-PowerShellArgument $ProgressScript) -ValidateWithHostEvidence") | Out-Null
+  $lines.Add($fence) | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("   The report writes JSON and Markdown files under the pack's progress directory. Use its unresolved-row table to dispatch or collect the exact missing host/mode/service/proxy combination.") | Out-Null
+  $lines.Add("") | Out-Null
+  $lines.Add("8. Audit the staged evidence before running release readiness:") | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("${fence}powershell") | Out-Null
   $lines.Add("& $(Quote-PowerShellArgument $StagingAuditScript)") | Out-Null
@@ -802,7 +920,7 @@ function New-Readme {
   $lines.Add("") | Out-Null
   $lines.Add(("   Use {0}-ReportOnly{0} for a baseline inventory while collection is still in progress. Without {0}-ReportOnly{0}, the audit fails on missing downloaded {0}status.json{0} artifacts, missing local-only evidence files, or evidence whose target/mode/service/proxy identity does not match the matrix row. Add {0}-ValidateWithHostEvidence{0} to run {0}Test-HostEvidence.ps1{0} against each staged row before the release gate, including uptime, Next.js, reverse-proxy, collector SHA256, and workflow provenance checks. The audit auto-resolves the validator from the repository root or the default {0}evidence\collection-pack{0} location; pass {0}-HostEvidenceValidatorPath{0} if the pack was copied elsewhere." -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
-  $lines.Add(("8. Run the release gate. It imports downloaded artifacts, refuses incomplete coverage, creates the bundle, and writes {0}release-readiness.json{0} plus {0}release-readiness-summary.json{0}:" -f $tick)) | Out-Null
+  $lines.Add(("9. Run the release gate. It imports downloaded artifacts, refuses incomplete coverage, creates the bundle, and writes {0}release-readiness.json{0} plus {0}release-readiness-summary.json{0}:" -f $tick)) | Out-Null
   $lines.Add("") | Out-Null
   $lines.Add("${fence}powershell") | Out-Null
   $lines.Add("& $(Quote-PowerShellArgument $ReleaseScript) -Run") | Out-Null
@@ -847,6 +965,7 @@ function Invoke-SelfTest {
       $result.localOnlyJson,
       $result.localOnlyCsv,
       $result.stagingAuditScript,
+      $result.progressScript,
       $result.releaseScript,
       $result.readme
     )) {
@@ -898,6 +1017,20 @@ function Invoke-SelfTest {
   if ($parseErrors.Count -gt 0) {
     $messages = @($parseErrors | ForEach-Object { $_.Message }) -join "; "
     throw "Support evidence collection pack self-test failed: generated staging audit script parse errors: $messages"
+  }
+
+  $progressScriptText = Get-Content -LiteralPath $result.progressScript -Raw
+  foreach ($expected in @("host-evidence-collection-progress.json", "host-evidence-collection-progress.md", "unresolvedRows", "targetSummary", "Target Coverage", "ValidateWithHostEvidence")) {
+    if (-not $progressScriptText.Contains($expected)) {
+      throw "Support evidence collection pack self-test failed: progress script is missing '$expected'."
+    }
+  }
+  $tokens = $null
+  $parseErrors = $null
+  [System.Management.Automation.Language.Parser]::ParseFile($result.progressScript, [ref]$tokens, [ref]$parseErrors) | Out-Null
+  if ($parseErrors.Count -gt 0) {
+    $messages = @($parseErrors | ForEach-Object { $_.Message }) -join "; "
+    throw "Support evidence collection pack self-test failed: generated progress script parse errors: $messages"
   }
 
   $releaseScriptText = Get-Content -LiteralPath $result.releaseScript -Raw
@@ -1010,6 +1143,19 @@ function Invoke-SelfTest {
     throw "Support evidence collection pack self-test failed: staging audit did not detect missing local-only evidence."
   }
 
+  $progressOutputDirectory = Join-Path $selfTestRoot "progress"
+  $progress = & $result.progressScript `
+    -ArtifactPath $stagingArtifactRoot `
+    -EvidencePath $stagingEvidenceRoot `
+    -OutputDirectory $progressOutputDirectory `
+    -PassThru
+  if (-not (Test-Path -LiteralPath $progress.jsonPath -PathType Leaf) -or -not (Test-Path -LiteralPath $progress.markdownPath -PathType Leaf)) {
+    throw "Support evidence collection pack self-test failed: progress script did not write both report formats."
+  }
+  if ($progress.report.expectedCount -ne ($stagingAudit.expectedWorkflowArtifactCount + $stagingAudit.expectedLocalOnlyEvidenceCount) -or $progress.report.unresolvedRows.Count -lt 1 -or $progress.report.targetSummary.Count -ne 3) {
+    throw "Support evidence collection pack self-test failed: progress report did not preserve the staged evidence inventory."
+  }
+
   $firstWorkflowEvidence.supportTargetId = "mismatched-target"
   $firstWorkflowEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $firstWorkflowStatusPath -Encoding UTF8
   $firstLocalOnlyEvidenceJson.nextJsRuntime.mode = "mismatched-mode"
@@ -1045,6 +1191,7 @@ $workflowArtifactsCsv = Join-Path $OutputDirectory "expected-workflow-artifacts.
 $localOnlyJson = Join-Path $OutputDirectory "local-command-only-evidence.json"
 $localOnlyCsv = Join-Path $OutputDirectory "local-command-only-evidence.csv"
 $stagingAuditScript = Join-Path $OutputDirectory "Test-HostEvidenceCollectionStaging.ps1"
+$progressScript = Join-Path $OutputDirectory "Get-HostEvidenceCollectionProgress.ps1"
 $releaseScript = Join-Path $OutputDirectory "Invoke-SupportEvidenceRelease.ps1"
 $readme = Join-Path $OutputDirectory "README.md"
 
@@ -1099,6 +1246,12 @@ New-StagingAuditScript `
   -EvidencePath $EvidencePath `
   -MatrixPath (Get-DisplayPath -Path $MatrixPath)
 
+New-CollectionProgressScript `
+  -Path $progressScript `
+  -StagingAuditScript $stagingAuditScript `
+  -ArtifactPath $ArtifactPath `
+  -EvidencePath $EvidencePath
+
 New-ReleaseCommandScript `
   -Path $releaseScript `
   -EvidencePath $EvidencePath `
@@ -1119,6 +1272,7 @@ New-Readme `
   -LocalOnlyJson $localOnlyJson `
   -LocalOnlyCsv $localOnlyCsv `
   -StagingAuditScript $stagingAuditScript `
+  -ProgressScript $progressScript `
   -ReleaseScript $releaseScript `
   -EvidencePath $EvidencePath `
   -ArtifactPath $ArtifactPath `
@@ -1137,6 +1291,7 @@ $result = [pscustomobject]@{
   localOnlyJson = $localOnlyJson
   localOnlyCsv = $localOnlyCsv
   stagingAuditScript = $stagingAuditScript
+  progressScript = $progressScript
   releaseScript = $releaseScript
   readme = $readme
 }
@@ -1151,6 +1306,7 @@ if (-not $Quiet) {
   Write-Host "Workflow artifacts: $workflowArtifactsCsv"
   Write-Host "Local-only rows: $localOnlyCsv"
   Write-Host "Staging audit: $stagingAuditScript"
+  Write-Host "Collection progress: $progressScript"
   Write-Host "Release gate: $releaseScript"
 }
 

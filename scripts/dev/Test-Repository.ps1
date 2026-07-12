@@ -321,6 +321,10 @@ function Test-NextJsSupport {
   & (Join-Path $ScriptDir "Test-NextJsSupport.ps1")
 }
 
+function Test-RealNextJsIntegrationWorkflow {
+  & (Join-Path $ScriptDir "Test-RealNextJsIntegrationWorkflow.ps1")
+}
+
 function Test-ReactSupport {
   & (Join-Path $ScriptDir "Test-ReactSupport.ps1")
 }
@@ -492,6 +496,7 @@ Test-PlatformMatrix
 Test-LinuxContainerSmokeSelfTest
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
+Test-RealNextJsIntegrationWorkflow
 Test-ReactSupport
 Test-StaticIisSupport
 Test-NextJsRuntimeSmoke

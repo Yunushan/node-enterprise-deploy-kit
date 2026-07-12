@@ -27,6 +27,7 @@ The verifier checks:
 - React static package validation plus Windows/Unix preflight success/failure behavior
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
 - Local Node.js runtime smoke coverage for standalone and next-start Next.js services using the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract
+- Hosted real Next.js integration coverage on Ubuntu, Windows Server 2022, and macOS 15: builds `next@latest`, packages both modes, extracts each package, and verifies live HTTP output
 - release package hygiene and required release files, including the validated Windows/Unix `next-start`, macOS, and BSD examples
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
@@ -89,13 +90,13 @@ The pack writes `support-evidence-plan.md`, `support-evidence-plan.json`,
 `host-evidence-dispatch.md`, a guarded `Invoke-HostEvidenceDispatch.ps1`, a
 guarded `Invoke-HostEvidenceArtifactDownload.ps1`,
 `expected-workflow-artifacts.json/csv`, `local-command-only-evidence.json/csv`,
-a pre-release `Test-HostEvidenceCollectionStaging.ps1`, a guarded
+a JSON/Markdown `Get-HostEvidenceCollectionProgress.ps1`, a pre-release `Test-HostEvidenceCollectionStaging.ps1`, a guarded
 `Invoke-SupportEvidenceRelease.ps1`, and a generated README with the artifact
 download/import/bundle sequence. Review the dispatcher and downloader output
 before running either script with `-Run`. The downloader prints
 `gh run list` and exact `gh run download --name <evidence_name>` commands, then
 downloads into per-evidence folders when run with `-RunId ... -Run`. Use
-the generated staging audit before the release script to fail on missing
+the generated progress report to see per-target coverage and exact missing or invalid rows, then use the staging audit before the release script to fail on missing
 downloaded `status.json` artifacts, local-only evidence files, or evidence whose
 target/mode/service/proxy identity does not match the matrix row. Add
 `-ValidateWithHostEvidence` when staging should also run

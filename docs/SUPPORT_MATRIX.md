@@ -51,12 +51,12 @@ To generate the release-specific evidence operator pack from the matrix:
 The pack preserves the exact matrix filters in a checklist, workflow dispatch
 commands, a guarded dispatcher, a guarded artifact downloader keyed by expected
 evidence names, JSON/CSV manifests for expected workflow artifacts and
-local-command-only evidence rows, a pre-release staging audit, a guarded
+local-command-only evidence rows, a JSON/Markdown collection-progress report, a pre-release staging audit, a guarded
 release-gate script, and a generated README. The downloader prints `gh run list`
 and exact
 `gh run download --name <evidence_name>` commands, then downloads into
 per-evidence folders when run with `-RunId ... -Run`. It is a handoff artifact
-for collecting real host evidence; run the generated staging audit before the
+for collecting real host evidence; use the generated progress report to identify per-target coverage and exact missing or invalid rows, then run the staging audit before the
 release script to fail on missing downloaded `status.json` artifacts, missing
 local-command-only host evidence, or evidence whose target/mode/service/proxy
 identity does not match the matrix row. Add `-ValidateWithHostEvidence` to run

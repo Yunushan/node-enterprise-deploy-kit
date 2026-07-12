@@ -133,3 +133,20 @@ jobs:
           bash scripts/dev/test-platform-matrix.sh --case macos
           bash scripts/dev/lint-shell-basic.sh
           bash scripts/dev/test-unix-nextjs-support.sh
+
+  real-nextjs-integration:
+    name: real-nextjs-integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-2022
+          - macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build, package, and run a real Next.js application
+        shell: bash
+        run: node scripts/dev/test-real-nextjs-integration.mjs
