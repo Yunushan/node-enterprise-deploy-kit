@@ -68,7 +68,7 @@ case "$PLATFORM_CASE" in
     fi
     ;;
   alpine)
-    apk add --no-cache bash nodejs tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
+    apk add --no-cache bash nodejs npm tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
     ;;
   *)
     echo "Unsupported PLATFORM_CASE=$PLATFORM_CASE" >&2
@@ -175,6 +175,7 @@ run_container_smoke() {
       require_contains "$container_script" "node scripts/dev/test-real-nextjs-integration.mjs" "container script"
       require_contains "$container_script" 'curl_package="curl-minimal"' "container script"
       require_contains "$container_script" 'if ! command -v curl >/dev/null 2>&1; then' "container script"
+      require_contains "$container_script" "apk add --no-cache bash nodejs npm" "container script"
       echo "Linux container real Next.js dry-run OK: $platform ($image)"
     else
       echo "Linux container smoke dry-run OK: $platform ($image)"
