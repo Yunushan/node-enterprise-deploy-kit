@@ -38,23 +38,35 @@ foreach ($expected in @(
     "real-nextjs-integration (`${{ matrix.os }})",
     "ubuntu-latest",
     "windows-2022",
+    "windows-2025",
     "macos-15",
     "node scripts/dev/test-real-nextjs-integration.mjs",
-    "actions/checkout@v7"
+    "actions/checkout@v7",
+    "real-windows-service-nextjs:",
+    "real-windows-service-nextjs (`${{ matrix.os }})",
+    "RUN_WINSW_SERVICE_INTEGRATION: `"true`""
   )) {
   Assert-Contains -Text $workflow -Expected $expected -Context ".github/workflows/ci.yml"
 }
 
 foreach ($expected in @(
     "next@`${nextVersion}",
-    "await verifyMode(projectPath, 'standalone')",
-    "await verifyMode(projectPath, 'next-start')",
+    "await verifyMode(standaloneProjectPath, 'standalone')",
+    "await verifyMode(nextStartProjectPath, 'next-start')",
     "Real Next.js `${mode} package/runtime integration OK.",
     "New-NextJsStandalonePackage.ps1",
     "package-nextjs-standalone.sh",
     "node_modules', 'next', 'package.json",
+    "launchd-runner.sh.tpl",
+    "verifyUnixManagedRunner",
+    "RUN_WINSW_SERVICE_INTEGRATION",
+    "verifyWindowsWinSwService",
+    "Install-NodeService.ps1",
+    "Uninstall-NodeService.ps1",
     "waitForPage",
     "fs.rm(testRoot",
+    "NEXTJS_INTEGRATION_TEMP_ROOT",
+    "os.tmpdir()",
     "NEXT_TELEMETRY_DISABLED"
   )) {
   Assert-Contains -Text $script -Expected $expected -Context "scripts/dev/test-real-nextjs-integration.mjs"

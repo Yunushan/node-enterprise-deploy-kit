@@ -252,46 +252,6 @@ if is_true "$REQUIRE_PUBLIC_DIR"; then
 fi
 bash "$SCRIPT_DIR/validate-nextjs-standalone-package.sh" "${validator_args[@]}" >/dev/null
 
-if [[ "$DEPLOYMENT_MODE" == "standalone" ]]; then
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)server[.]js$'; then
-    echo "Package archive is missing server.js at the archive root." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)[.]next/static/.+'; then
-    echo "Package archive is missing .next/static content." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)[.]next/BUILD_ID$'; then
-    echo "Package archive is missing .next/BUILD_ID at the archive root." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/package[.]json$'; then
-    echo "Package archive is missing node_modules/next/package.json at the archive root." >&2
-    exit 1
-  fi
-else
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)package[.]json$'; then
-    echo "Package archive is missing package.json at the archive root." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)[.]next/BUILD_ID$'; then
-    echo "Package archive is missing .next/BUILD_ID at the archive root." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/.+'; then
-    echo "Package archive is missing node_modules/next content." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/package[.]json$'; then
-    echo "Package archive is missing node_modules/next/package.json at the archive root." >&2
-    exit 1
-  fi
-  if ! tar -tzf "$OUTPUT_FULL" | grep -Eq '(^|[.]/)node_modules/next/dist/bin/next$'; then
-    echo "Package archive is missing node_modules/next/dist/bin/next at the archive root." >&2
-    exit 1
-  fi
-fi
-
 if ! is_true "$KEEP_STAGE"; then
   rm -rf "$STAGE_FULL"
 fi

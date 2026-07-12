@@ -122,6 +122,32 @@ jobs:
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}"
 
+  linux-container-real-nextjs:
+    name: linux-container-real-nextjs (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        platform:
+          - ubuntu
+          - debian
+          - linux-mint
+          - rhel
+          - oracle-linux
+          - centos
+          - centos-stream
+          - rocky
+          - almalinux
+          - fedora
+          - alpine
+    steps:
+      - uses: actions/checkout@v7
+      - name: Linux container real Next.js package/runtime integration
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}" --real-nextjs
+
   macos-checks:
     runs-on: macos-15
     timeout-minutes: 60
@@ -144,9 +170,28 @@ jobs:
         os:
           - ubuntu-latest
           - windows-2022
+          - windows-2025
           - macos-15
     steps:
       - uses: actions/checkout@v7
       - name: Build, package, and run a real Next.js application
         shell: bash
+        run: node scripts/dev/test-real-nextjs-integration.mjs
+
+  real-windows-service-nextjs:
+    name: real-windows-service-nextjs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build, package, and run real Next.js through WinSW
+        shell: pwsh
+        env:
+          RUN_WINSW_SERVICE_INTEGRATION: "true"
         run: node scripts/dev/test-real-nextjs-integration.mjs

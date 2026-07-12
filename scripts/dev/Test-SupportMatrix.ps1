@@ -211,6 +211,7 @@ $staticVerificationJobRequirements = @{
   "windows-checks" = @("timeout-minutes:", "Test-Repository.ps1", "-SkipShellSyntax", "-SkipReleaseEvidenceSelfTests", "windows-2022", "windows-2025")
   "linux-family-static-checks" = @("timeout-minutes:", "test-platform-matrix.sh", '${{ matrix.platform }}')
   "linux-container-smoke" = @("timeout-minutes:", "test-linux-container-smoke.sh", '${{ matrix.platform }}', "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora", "alpine")
+  "linux-container-real-nextjs" = @("timeout-minutes:", "test-linux-container-smoke.sh", "--real-nextjs", '${{ matrix.platform }}', "ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora", "alpine")
   "macos-checks" = @("timeout-minutes:", "test-platform-matrix.sh --case macos", "test-unix-nextjs-support.sh")
 }
 $releaseEvidenceJobRequirements = @(
@@ -415,6 +416,9 @@ foreach ($target in $targets) {
       }
       if ($staticVerification -notcontains "linux-container-smoke") {
         Add-Issue $issues "$id must include linux-container-smoke for target or target-family Linux userland CI coverage."
+      }
+      if ($staticVerification -notcontains "linux-container-real-nextjs") {
+        Add-Issue $issues "$id must include linux-container-real-nextjs for real Next.js package/runtime coverage in its target or target-family Linux userland."
       }
       if ($evidenceTargets -notcontains "linux") {
         Add-Issue $issues "$id evidenceTargets must include linux."

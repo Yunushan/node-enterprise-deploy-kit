@@ -6,12 +6,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/dev/test-linux-container-smoke.sh --platform <name> [--image <image>] [--dry-run]
+Usage: scripts/dev/test-linux-container-smoke.sh --platform <name> [--image <image>] [--real-nextjs] [--dry-run]
        scripts/dev/test-linux-container-smoke.sh --self-test
 
 Runs the Unix deployment and Next.js smoke checks inside a target or
 target-family Linux container. This is intended for CI on hosted Ubuntu runners
-where Docker is available.
+where Docker is available. --real-nextjs additionally builds, packages, and
+runs a temporary real Next.js application in the container.
 EOF
 }
 
@@ -42,22 +43,22 @@ case "$PLATFORM_CASE" in
   ubuntu|debian|linux-mint)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates
+    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils
     ;;
   rhel|oracle-linux|centos|centos-stream|rocky|almalinux|fedora)
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates
+      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates
+      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
     elif command -v microdnf >/dev/null 2>&1; then
-      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates
+      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates curl xz
     else
       echo "No dnf, yum, or microdnf package manager found for $PLATFORM_CASE." >&2
       exit 1
     fi
     ;;
   alpine)
-    apk add --no-cache bash nodejs tar gzip zip unzip coreutils findutils procps ca-certificates
+    apk add --no-cache bash nodejs tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
     ;;
   *)
     echo "Unsupported PLATFORM_CASE=$PLATFORM_CASE" >&2
@@ -71,6 +72,59 @@ rm -rf "$TEST_ROOT"
 bash scripts/dev/lint-shell-basic.sh
 bash scripts/dev/test-platform-matrix.sh --case "$PLATFORM_CASE"
 bash scripts/dev/test-unix-nextjs-support.sh
+
+install_real_nextjs_node() {
+  local node_version node_platform node_archive node_root checksum_line
+  node_version="${REAL_NEXTJS_NODE_VERSION:-24.17.0}"
+  case "$node_version" in
+    v*) ;;
+    *) node_version="v$node_version" ;;
+  esac
+
+  if [ "$PLATFORM_CASE" = "alpine" ]; then
+    echo "Using the signed Alpine nodejs package for real Next.js coverage."
+    node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 20 || (major === 20 && minor < 9)) { console.error(`Alpine nodejs package ${process.versions.node} is below the Next.js minimum of 20.9.0.`); process.exit(1); }'
+    return
+  fi
+
+  case "$(uname -m)" in
+    x86_64|amd64) node_platform="linux-x64" ;;
+    *)
+      echo "Real Next.js container coverage currently requires an x86_64 Linux runner." >&2
+      exit 1
+      ;;
+  esac
+
+  node_archive="node-${node_version}-${node_platform}.tar.xz"
+  node_root="/tmp/node-enterprise-deploy-kit-node-${node_version}-${node_platform}"
+  rm -rf "$node_root"
+  mkdir -p "$node_root"
+  curl --fail --location --retry 3 --silent --show-error \
+    "https://nodejs.org/dist/${node_version}/${node_archive}" \
+    --output "$node_root/$node_archive"
+  curl --fail --location --retry 3 --silent --show-error \
+    "https://nodejs.org/dist/${node_version}/SHASUMS256.txt" \
+    --output "$node_root/SHASUMS256.txt"
+  checksum_line="$(grep -F "  $node_archive" "$node_root/SHASUMS256.txt" || true)"
+  if [ -z "$checksum_line" ]; then
+    echo "Official Node.js checksum was not found for $node_archive." >&2
+    exit 1
+  fi
+  (
+    cd "$node_root"
+    printf '%s\n' "$checksum_line" | sha256sum -c -
+    tar -xJf "$node_archive"
+  )
+  export PATH="$node_root/node-${node_version}-${node_platform}/bin:$PATH"
+}
+
+if [ "${RUN_REAL_NEXTJS:-false}" = "true" ]; then
+  install_real_nextjs_node
+  node --version
+  export NODE_OPTIONS="--dns-result-order=ipv4first --use-system-ca"
+  export NEXTJS_INTEGRATION_TEMP_ROOT="/tmp/node-enterprise-deploy-kit-real-nextjs-$PLATFORM_CASE"
+  node scripts/dev/test-real-nextjs-integration.mjs
+fi
 CONTAINER
 }
 
@@ -92,7 +146,7 @@ resolve_image() {
 }
 
 run_container_smoke() {
-  local platform="$1" image_override="$2" dry_run="$3"
+  local platform="$1" image_override="$2" dry_run="$3" real_nextjs="$4"
   local image container_script docker_bin
 
   if ! image="$(resolve_image "$platform" "$image_override")"; then
@@ -106,7 +160,13 @@ run_container_smoke() {
     require_contains "$container_script" "bash scripts/dev/test-platform-matrix.sh --case" "container script"
     require_contains "$container_script" "bash scripts/dev/test-unix-nextjs-support.sh" "container script"
     require_contains "$container_script" 'export TEST_ROOT="/tmp/node-enterprise-deploy-kit-unix-nextjs-support-$PLATFORM_CASE"' "container script"
-    echo "Linux container smoke dry-run OK: $platform ($image)"
+    if [[ "$real_nextjs" == "true" ]]; then
+      require_contains "$container_script" "install_real_nextjs_node" "container script"
+      require_contains "$container_script" "node scripts/dev/test-real-nextjs-integration.mjs" "container script"
+      echo "Linux container real Next.js dry-run OK: $platform ($image)"
+    else
+      echo "Linux container smoke dry-run OK: $platform ($image)"
+    fi
     return 0
   fi
 
@@ -119,27 +179,32 @@ run_container_smoke() {
   echo "==> Linux container smoke: $platform ($image)"
   "$docker_bin" run --rm \
     -e PLATFORM_CASE="$platform" \
+    -e RUN_REAL_NEXTJS="$real_nextjs" \
     -v "$REPO_ROOT:/repo" \
     -w /repo \
     "$image" \
     sh -lc "$container_script"
 
-  echo "Linux container smoke OK: $platform"
+  if [[ "$real_nextjs" == "true" ]]; then
+    echo "Linux container real Next.js OK: $platform"
+  else
+    echo "Linux container smoke OK: $platform"
+  fi
 }
 
 run_self_test() {
   local platform output status
 
   for platform in ubuntu debian linux-mint rhel oracle-linux centos centos-stream rocky almalinux fedora alpine; do
-    output="$(run_container_smoke "$platform" "" true)"
+    output="$(run_container_smoke "$platform" "" true false)"
     require_contains "$output" "Linux container smoke dry-run OK: $platform" "dry-run output"
   done
 
-  output="$(run_container_smoke "ubuntu" "example/custom:local" true)"
+  output="$(run_container_smoke "ubuntu" "example/custom:local" true false)"
   require_contains "$output" "example/custom:local" "image override dry-run output"
 
   set +e
-  output="$(run_container_smoke "solaris" "" true 2>&1)"
+  output="$(run_container_smoke "solaris" "" true false 2>&1)"
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
@@ -148,6 +213,9 @@ run_self_test() {
   fi
   require_contains "$output" "Unsupported Linux container smoke platform: solaris" "unsupported platform output"
 
+  output="$(run_container_smoke "ubuntu" "" true true)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: ubuntu" "real Next.js dry-run output"
+
   echo "Linux container smoke self-test OK"
 }
 
@@ -155,6 +223,7 @@ platform_case=""
 image_override=""
 dry_run="false"
 self_test="false"
+real_nextjs="false"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -176,6 +245,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --dry-run)
       dry_run="true"
+      shift
+      ;;
+    --real-nextjs)
+      real_nextjs="true"
       shift
       ;;
     --self-test)
@@ -205,4 +278,4 @@ if [[ -z "$platform_case" ]]; then
   exit 2
 fi
 
-run_container_smoke "$platform_case" "$image_override" "$dry_run"
+run_container_smoke "$platform_case" "$image_override" "$dry_run" "$real_nextjs"

@@ -157,7 +157,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["ubuntu", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -175,7 +175,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["debian", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -193,7 +193,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["linux-mint", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -211,7 +211,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["rhel", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -229,7 +229,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["oracle-linux", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -247,7 +247,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["centos", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -265,7 +265,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["centos-stream", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -283,7 +283,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["rocky", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -301,7 +301,7 @@
       "serviceManagers": ["systemd", "systemv"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["almalinux", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -319,7 +319,7 @@
       "serviceManagers": ["systemd"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["fedora", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {
@@ -337,7 +337,7 @@
       "serviceManagers": ["openrc"],
       "reverseProxies": ["nginx", "apache", "haproxy", "traefik", "none"],
       "nextjsModes": ["standalone", "next-start"],
-      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke"],
+      "staticVerification": ["basic-checks", "linux-family-static-checks", "linux-container-smoke", "linux-container-real-nextjs"],
       "evidenceTargets": ["alpine", "linux"],
       "minimumClaimLevel": "real-host-verified",
       "nodeRuntimeSupport": {

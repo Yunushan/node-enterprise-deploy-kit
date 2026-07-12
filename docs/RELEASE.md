@@ -26,8 +26,10 @@ The verifier checks:
 - Next.js standalone and `next-start` package-helper output plus standalone/next-start preflight success/failure behavior on Windows and Unix-like configs
 - React static package validation plus Windows/Unix preflight success/failure behavior
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
+- Hosted Linux target-family real Next.js container coverage for Ubuntu, Debian, Linux Mint, RHEL/UBI, Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine: checksum-verified Node.js on glibc, signed Alpine `apk` Node.js, `next@latest`, both package modes, extraction, and live HTTP output
 - Local Node.js runtime smoke coverage for standalone and next-start Next.js services using the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract
-- Hosted real Next.js integration coverage on Ubuntu, Windows Server 2022, and macOS 15: builds `next@latest`, packages both modes, extracts each package, and verifies live HTTP output
+- Hosted real Next.js integration coverage on Ubuntu, Windows Server 2022, Windows Server 2025, and macOS 15: builds `next@latest`, packages both modes, extracts each package, verifies live HTTP output, and uses the rendered launchd runner on Unix
+- Hosted Windows Server 2022/2025 WinSW integration: starts both real Next.js package modes as checksum-verified temporary Windows services, probes HTTP, and uninstalls each service
 - release package hygiene and required release files, including the validated Windows/Unix `next-start`, macOS, and BSD examples
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes
 - machine-readable support matrix coverage for Windows clients, Windows Server, Linux, and macOS targets
@@ -506,14 +508,21 @@ and Alpine:
 bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
 ```
 
+The real framework package/runtime variant is:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
+```
+
 The wrapper has a no-Docker self-test for local repository verification:
 
 ```bash
 bash scripts/dev/test-linux-container-smoke.sh --self-test
 ```
 
-That job catches shell, package-manager, archive, and Node.js runtime
-differences in public target or target-family containers. It does not replace
+Those jobs catch shell, package-manager, archive, Node.js runtime, and real
+Next.js package/runtime differences in public target or target-family
+containers. They do not replace
 the real-host evidence bundle required for a final support claim.
 
 To build application artifacts for a Next.js standalone app, use the package

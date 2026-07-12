@@ -416,14 +416,23 @@ For representative Linux userland coverage on a Docker-capable CI host:
 bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
 ```
 
+Use `--real-nextjs` to download a checksum-verified Node.js runtime in glibc
+containers (or use Alpine's signed `apk` Node.js package), build `next@latest`,
+package both `standalone` and `next-start`, extract the artifacts, and verify
+each one serves HTTP:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
+```
+
 To check the wrapper logic without Docker/network access:
 
 ```bash
 bash scripts/dev/test-linux-container-smoke.sh --self-test
 ```
 
-CI runs the container smoke command for Ubuntu, Debian, Linux Mint, RHEL/UBI,
-Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine.
+CI runs both container modes for Ubuntu, Debian, Linux Mint, RHEL/UBI, Oracle
+Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine.
 Real-host release claims still require collected status evidence from the exact
 platform rows in the support matrix.
 
@@ -469,9 +478,13 @@ System V script, or BSD rc script cannot silently count as current deployment
 proof.
 
 The CI workflow also creates a temporary real `next@latest` application on
-Ubuntu, Windows Server 2022, and macOS 15. It builds the application, packages
+Ubuntu, Windows Server 2022, Windows Server 2025, and macOS 15. It builds the application, packages
 both deployment modes with the platform helper, extracts the package, and
-checks that the resulting runtime serves HTTP. This complements the layout and
+checks that the resulting runtime serves HTTP. Unix runs use the rendered
+launchd runner, exercising the managed `PORT`, `HOST`, and `HOSTNAME`
+environment contract. Windows Server 2022 and 2025 runners also start the
+same packages through a temporary checksum-verified WinSW service and remove
+it after the HTTP check. This complements the layout and
 service-template checks, but it does not replace self-hosted host evidence for
 release signoff.
 

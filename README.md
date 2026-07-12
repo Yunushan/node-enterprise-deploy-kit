@@ -129,6 +129,15 @@ Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine:
 bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
 ```
 
+The companion real-runtime job downloads a checksum-verified Node.js binary in
+glibc containers (and uses Alpine's signed `apk` Node.js package), builds
+`next@latest`, packages both deployment modes, extracts the archive, and checks
+live HTTP output:
+
+```bash
+bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
+```
+
 To validate the container smoke wrapper locally without Docker pulls:
 
 ```bash
@@ -968,8 +977,14 @@ sudo bash scripts/linux/uninstall-node-service.sh config/linux/app.env
 This project is a deployment kit, not a vendor support guarantee. Current Next.js requires Node.js `20.9.0` or newer, and Node runtime support is platform-specific. Use current vendor-supported systems where possible; the machine-readable support matrix marks legacy or non-official Node runtime targets separately from production-recommended rows.
 
 CI also builds a temporary real `next@latest` project on Ubuntu, Windows Server
-2022, and macOS 15. It packages both `standalone` and `next-start` modes with
+2022, Windows Server 2025, and macOS 15. It packages both `standalone` and `next-start` modes with
 this kit, extracts them, and verifies each package serves an HTTP response.
+On Unix runners, the test starts the extracted package through the rendered
+launchd runner so the managed `PORT`, `HOST`, and `HOSTNAME` environment
+contract is exercised as well.
+Pinned Windows Server 2022 and 2025 runners also run both modes through a
+temporary checksum-verified WinSW service and uninstall it after the HTTP
+check succeeds or fails.
 This hosted integration coverage is stronger than a synthetic layout test, but
 it does not replace the self-hosted real-host evidence required for a final
 support claim.
