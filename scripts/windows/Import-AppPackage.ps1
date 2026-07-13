@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PackageProvenanceFileName = ".node-enterprise-package.json"
-$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v1"
+$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 
 function Resolve-ConfigRelativePath {
     param(
@@ -265,6 +265,16 @@ function Get-WindowsArchitecture {
     }
 }
 
+function Get-NodeModuleAbi {
+    param([string]$NodeExecutable)
+
+    $abi = (& $NodeExecutable -p "process.versions.modules" 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $abi -notmatch '^[0-9]+$') {
+        throw "Node.js executable could not report a valid native module ABI: $NodeExecutable"
+    }
+    return $abi
+}
+
 function Get-RequiredProvenanceString {
     param($Provenance, [string]$Name)
     if (-not $Provenance.PSObject.Properties[$Name]) {
@@ -309,10 +319,12 @@ function Test-NextJsPackageProvenanceIfNeeded {
     $sourcePlatform = Normalize-Name (Get-RequiredProvenanceString $provenance "buildPlatform")
     $sourceArchitecture = Normalize-Name (Get-RequiredProvenanceString $provenance "buildArchitecture")
     $sourceLibc = Normalize-Name (Get-RequiredProvenanceString $provenance "buildLibc")
+    $sourceNodeModuleAbi = Get-RequiredProvenanceString $provenance "nodeModuleAbi"
     $nextVersion = Get-RequiredProvenanceString $provenance "nextVersion"
     $nextBuildId = Get-RequiredProvenanceString $provenance "nextBuildId"
     $targetMode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "standalone")
     $targetArchitecture = Get-WindowsArchitecture
+    $targetNodeModuleAbi = Get-NodeModuleAbi (Get-ConfigString $Config "NodeExe" "node")
 
     if ($schema -ne $PackageProvenanceSchema) { throw "Unsupported Next.js package provenance schema: $schema" }
     if ($sourceFramework -notin @("next", "nextjs", "next-js")) { throw "Next.js package provenance appFramework must be nextjs." }
@@ -320,6 +332,8 @@ function Test-NextJsPackageProvenanceIfNeeded {
     if ($sourcePlatform -ne "windows") { throw "Next.js package was built for '$sourcePlatform', but this importer targets Windows." }
     if ($sourceArchitecture -ne $targetArchitecture) { throw "Next.js package architecture '$sourceArchitecture' does not match Windows target architecture '$targetArchitecture'." }
     if ($sourceLibc -ne "not-applicable") { throw "Next.js Windows package provenance buildLibc must be not-applicable." }
+    if ($sourceNodeModuleAbi -notmatch '^[0-9]+$') { throw "Next.js package provenance nodeModuleAbi must be numeric." }
+    if ($sourceNodeModuleAbi -ne $targetNodeModuleAbi) { throw "Next.js package Node native module ABI '$sourceNodeModuleAbi' does not match target Node ABI '$targetNodeModuleAbi'. Rebuild the package with the target Node major version." }
     if ($required -and $targetArchitecture -eq "unknown") { throw "Cannot enforce Next.js package provenance because the Windows target architecture is unknown." }
 
     Remove-Item -LiteralPath $markerPath -Force
@@ -328,6 +342,7 @@ function Test-NextJsPackageProvenanceIfNeeded {
         buildPlatform = $sourcePlatform
         buildArchitecture = $sourceArchitecture
         buildLibc = $sourceLibc
+        nodeModuleAbi = $sourceNodeModuleAbi
         nextVersion = $nextVersion
         nextBuildId = $nextBuildId
     }

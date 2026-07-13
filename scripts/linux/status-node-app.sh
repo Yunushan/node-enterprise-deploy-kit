@@ -196,6 +196,7 @@ DEPLOYMENT_IDENTITY_PACKAGE_PROVENANCE_SCHEMA=""
 DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM=""
 DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE=""
 DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC=""
+DEPLOYMENT_IDENTITY_PACKAGE_NODE_MODULE_ABI=""
 DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION=""
 DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID=""
 NODE_RUNTIME_VERSION=""
@@ -524,6 +525,7 @@ update_deployment_identity() {
     DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM="$(deployment_manifest_package_provenance_value buildPlatform 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE="$(deployment_manifest_package_provenance_value buildArchitecture 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC="$(deployment_manifest_package_provenance_value buildLibc 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_NODE_MODULE_ABI="$(deployment_manifest_package_provenance_value nodeModuleAbi 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION="$(deployment_manifest_package_provenance_value nextVersion 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID="$(deployment_manifest_package_provenance_value nextBuildId 2>/dev/null || echo "")"
   fi
@@ -1548,6 +1550,7 @@ write_json_output() {
     printf '      "buildPlatform": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM")"
     printf '      "buildArchitecture": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE")"
     printf '      "buildLibc": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC")"
+    printf '      "nodeModuleAbi": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NODE_MODULE_ABI")"
     printf '      "nextVersion": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION")"
     printf '      "nextBuildId": "%s"\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID")"
     printf '    }\n'
@@ -1846,6 +1849,7 @@ echo "PackageImportedAtUtc=$DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC"
 echo "PackageBuildPlatform=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM"
 echo "PackageBuildArchitecture=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE"
 echo "PackageBuildLibc=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC"
+echo "PackageNodeModuleAbi=$DEPLOYMENT_IDENTITY_PACKAGE_NODE_MODULE_ABI"
 echo "PackageNextVersion=$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION"
 
 echo

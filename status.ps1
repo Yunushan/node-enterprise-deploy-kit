@@ -473,6 +473,7 @@ function Get-SafePackageProvenanceEvidence($Provenance) {
         BuildPlatform = [string](Get-ObjectPropertyValue $Provenance "buildPlatform" "")
         BuildArchitecture = [string](Get-ObjectPropertyValue $Provenance "buildArchitecture" "")
         BuildLibc = [string](Get-ObjectPropertyValue $Provenance "buildLibc" "")
+        NodeModuleAbi = [string](Get-ObjectPropertyValue $Provenance "nodeModuleAbi" "")
         NextVersion = [string](Get-ObjectPropertyValue $Provenance "nextVersion" "")
         NextBuildId = [string](Get-ObjectPropertyValue $Provenance "nextBuildId" "")
     }

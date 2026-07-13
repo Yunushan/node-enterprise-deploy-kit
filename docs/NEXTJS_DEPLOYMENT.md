@@ -166,22 +166,23 @@ or database clients can make a package built on one operating system or CPU
 architecture unsuitable for another. The kit packaging helpers therefore add a
 safe `.node-enterprise-package.json` marker to every Next.js package. It stores
 only the package mode, build OS family, CPU architecture, Linux libc family
-when applicable, Next.js version, and Next.js build ID. It does not contain
+when applicable, Node native-module ABI, Next.js version, and Next.js build ID. It does not contain
 paths, hostnames, environment variables, credentials, or application data.
 
 Set `NextjsRequirePackageProvenance: true` on Windows or
 `NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"` on Unix-like targets to require the
 marker. The importer verifies the mode and target compatibility before it stops
-the service or replaces the active application directory. Linux targets also
-compare `glibc` and `musl`. The marker is removed from the extracted release
+the service or replaces the active application directory. Importers also compare
+the Node native-module ABI, and Linux targets compare `glibc` and `musl`. The marker is removed from the extracted release
 before the application is made live; the safe verified values are retained in
 `.node-enterprise-deploy.json` for deployment evidence.
 
 Build the package on the same operating-system family and CPU architecture as
 the target. In particular, do not package a Linux runtime on Windows or macOS,
-and do not use a glibc-built artifact on an Alpine/musl target. Existing legacy
-packages remain accepted by default; enable the setting above to make the
-compatibility proof mandatory.
+and do not use a glibc-built artifact on an Alpine/musl target. Likewise, rebuild
+an artifact with the same Node major version used by the target when it includes
+native dependencies. The current marker schema is v2; with strict provenance
+enabled, rebuild older v1 packages so Node ABI compatibility can be verified.
 
 `status.ps1` and `scripts/linux/status-node-app.sh --json-output` expose the
 verified package provenance from the active deployment manifest, allowing a

@@ -20,13 +20,14 @@ param(
     [string]$StageDirectory = "",
     [switch]$RequirePublicDirectory,
     [switch]$NoPublic,
-    [switch]$KeepStage
+    [switch]$KeepStage,
+    [string]$NodeExe = "node"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PackageProvenanceFileName = ".node-enterprise-package.json"
-$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v1"
+$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 
 function Resolve-FullPath {
     param([string]$Path)
@@ -167,12 +168,23 @@ function Get-WindowsArchitecture {
     }
 }
 
+function Get-NodeModuleAbi {
+    param([string]$NodeExecutable)
+
+    $abi = (& $NodeExecutable -p "process.versions.modules" 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $abi -notmatch '^[0-9]+$') {
+        throw "Node.js executable could not report a valid native module ABI: $NodeExecutable"
+    }
+    return $abi
+}
+
 function Write-PackageProvenance {
     param(
         [string]$Root,
         [string]$Mode,
         [string]$NextPackageJsonPath,
-        [string]$BuildIdPath
+        [string]$BuildIdPath,
+        [string]$NodeExecutable
     )
 
     $nextMetadata = Get-Content -LiteralPath $NextPackageJsonPath -Raw | ConvertFrom-Json
@@ -189,6 +201,7 @@ function Write-PackageProvenance {
         buildPlatform = "windows"
         buildArchitecture = Get-WindowsArchitecture
         buildLibc = "not-applicable"
+        nodeModuleAbi = Get-NodeModuleAbi $NodeExecutable
         nextVersion = $nextVersion
         nextBuildId = $buildId
     }
@@ -313,7 +326,8 @@ if ($PSCmdlet.ShouldProcess($stageRoot, "Stage Next.js standalone package")) {
         -Root $stageRoot `
         -Mode $modeNormalized `
         -NextPackageJsonPath $stageNextPackageJsonPath `
-        -BuildIdPath (Join-Path $stageRoot ".next\BUILD_ID")
+        -BuildIdPath (Join-Path $stageRoot ".next\BUILD_ID") `
+        -NodeExecutable $NodeExe
 
     Assert-NoBlockedArtifactFiles -Root $stageRoot
 }

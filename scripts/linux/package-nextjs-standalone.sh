@@ -9,8 +9,9 @@ STAGE_DIR=""
 REQUIRE_PUBLIC_DIR="false"
 NO_PUBLIC="false"
 KEEP_STAGE="false"
+NODE_BIN="node"
 PACKAGE_PROVENANCE_FILE_NAME=".node-enterprise-package.json"
-PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v1"
+PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 
 usage() {
   cat <<'USAGE'
@@ -26,6 +27,7 @@ Options:
   --require-public          Fail when public/ is missing.
   --no-public               Do not copy public/ even when it exists.
   --keep-stage              Keep the staging directory after packaging.
+  --node-bin PATH           Node.js executable used to record the native module ABI. Defaults to node.
   -h, --help                Show this help.
 USAGE
 }
@@ -59,6 +61,10 @@ while [[ "$#" -gt 0 ]]; do
     --keep-stage)
       KEEP_STAGE="true"
       shift
+      ;;
+    --node-bin)
+      NODE_BIN="${2:?--node-bin requires a value}"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -182,8 +188,22 @@ next_version_from_package_json() {
   printf '%s\n' "$version"
 }
 
+node_module_abi() {
+  local abi
+  abi="$("$NODE_BIN" -p 'process.versions.modules' 2>/dev/null)" || {
+    echo "Node.js executable could not report its native module ABI: $NODE_BIN" >&2
+    exit 1
+  }
+  abi="${abi//$'\r'/}"
+  [[ "$abi" =~ ^[0-9]+$ ]] || {
+    echo "Node.js executable returned an invalid native module ABI: $abi" >&2
+    exit 1
+  }
+  printf '%s\n' "$abi"
+}
+
 write_package_provenance() {
-  local root="$1" mode="$2" next_package_json="$3" build_id_path="$4" next_version build_id
+  local root="$1" mode="$2" next_package_json="$3" build_id_path="$4" next_version build_id node_abi
   next_version="$(next_version_from_package_json "$next_package_json")" || {
     echo "Next.js package provenance requires a non-empty Next.js version." >&2
     exit 1
@@ -193,6 +213,7 @@ write_package_provenance() {
     echo "Next.js package provenance requires a non-empty BUILD_ID." >&2
     exit 1
   }
+  node_abi="$(node_module_abi)"
 
   {
     printf '{\n'
@@ -202,6 +223,7 @@ write_package_provenance() {
     printf '  "buildPlatform": "%s",\n' "$(json_escape "$(package_platform)")"
     printf '  "buildArchitecture": "%s",\n' "$(json_escape "$(package_architecture)")"
     printf '  "buildLibc": "%s",\n' "$(json_escape "$(package_libc)")"
+    printf '  "nodeModuleAbi": "%s",\n' "$(json_escape "$node_abi")"
     printf '  "nextVersion": "%s",\n' "$(json_escape "$next_version")"
     printf '  "nextBuildId": "%s"\n' "$(json_escape "$build_id")"
     printf '}\n'

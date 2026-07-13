@@ -387,7 +387,7 @@ function New-UnixEnv {
   $relativeRoot = ConvertTo-ForwardSlashPath $RelativeRoot
   $nodeBinPath = Join-Path (Split-Path -Parent $Path) "fake-node.sh"
   $nodeBinRelative = "$relativeRoot/fake-node.sh"
-  Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v20.11.1`n  exit 0`nfi`nexit 0`n"
+  Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v20.11.1`n  exit 0`nfi`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 0`n"
   $bashForChmod = Get-Command bash -ErrorAction SilentlyContinue
   if ($bashForChmod) {
     & $bashForChmod.Source "-lc" "chmod +x '$nodeBinRelative'" | Out-Null
@@ -772,10 +772,15 @@ function Invoke-ExpectPackageBashFailure {
     [string]$ProjectPath,
     [string]$OutputPath,
     [string]$ExpectedText,
-    [string]$Mode = "standalone"
+    [string]$Mode = "standalone",
+    [string]$NodeBin = ""
   )
 
-  $output = & $BashPath "scripts/linux/package-nextjs-standalone.sh" "--project-path" $ProjectPath "--output-path" $OutputPath "--mode" $Mode 2>&1
+  $arguments = @("scripts/linux/package-nextjs-standalone.sh", "--project-path", $ProjectPath, "--output-path", $OutputPath, "--mode", $Mode)
+  if (-not [string]::IsNullOrWhiteSpace($NodeBin)) {
+    $arguments += @("--node-bin", $NodeBin)
+  }
+  $output = & $BashPath @arguments 2>&1
   $outputText = ($output | Out-String)
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package helper failure, but command succeeded."
@@ -1219,6 +1224,10 @@ try {
   if ($windowsImportManifestEvidence.packageProvenance.buildPlatform -ne "windows") {
     throw "Windows deployment manifest should include verified Windows package provenance."
   }
+  $currentNodeAbi = (& node -p "process.versions.modules" | Out-String).Trim()
+  if ($windowsImportManifestEvidence.packageProvenance.nodeModuleAbi -ne $currentNodeAbi) {
+    throw "Windows deployment manifest should include the verified target Node native module ABI."
+  }
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsPackagePath
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsImportRoot
 
@@ -1231,6 +1240,16 @@ try {
   $windowsWrongPlatformPackage = Join-Path $testRoot "packages\wrong-platform.zip"
   New-ZipFromDirectory -SourceDirectory $windowsWrongPlatformRoot -OutputPath $windowsWrongPlatformPackage
   Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsWrongPlatformPackage -ExpectedText "built for 'linux'"
+
+  $windowsWrongNodeAbiRoot = Join-Path $testRoot "windows-package-wrong-node-abi"
+  Expand-Archive -LiteralPath $windowsPackagePath -DestinationPath $windowsWrongNodeAbiRoot -Force
+  $windowsWrongNodeAbiMarker = Join-Path $windowsWrongNodeAbiRoot ".node-enterprise-package.json"
+  $windowsWrongNodeAbiProvenance = Get-Content -LiteralPath $windowsWrongNodeAbiMarker -Raw | ConvertFrom-Json
+  $windowsWrongNodeAbiProvenance.nodeModuleAbi = "0"
+  Write-Utf8NoBom -Path $windowsWrongNodeAbiMarker -Text (($windowsWrongNodeAbiProvenance | ConvertTo-Json -Depth 10) + "`n")
+  $windowsWrongNodeAbiPackage = Join-Path $testRoot "packages\wrong-node-abi.zip"
+  New-ZipFromDirectory -SourceDirectory $windowsWrongNodeAbiRoot -OutputPath $windowsWrongNodeAbiPackage
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsWrongNodeAbiPackage -ExpectedText "native module ABI '0' does not match target Node ABI"
 
   $windowsMissingProvenanceRoot = Join-Path $testRoot "windows-package-missing-provenance"
   New-StandaloneLayout -AppDirectory $windowsMissingProvenanceRoot
@@ -1253,6 +1272,9 @@ try {
     }
     if ($windowsImportStatusEvidence.DeploymentIdentity.PackageProvenance.BuildPlatform -ne "windows") {
       throw "Windows status JSON should include the verified package build platform."
+    }
+    if ($windowsImportStatusEvidence.DeploymentIdentity.PackageProvenance.NodeModuleAbi -ne $currentNodeAbi) {
+      throw "Windows status JSON should include the verified package Node native module ABI."
     }
     Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsPackagePath
     Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsImportRoot
@@ -1418,9 +1440,13 @@ try {
       $unixPackageRoot = Join-Path $testRoot "unix-package-project"
       $unixPackageRel = Get-RepoRelativePath $unixPackageRoot
       New-NextProjectLayout -ProjectDirectory $unixPackageRoot -WithPublic
+      $unixPackageNode = Join-Path $unixPackageRoot "package-node.sh"
+      $unixPackageNodeRel = "$unixPackageRel/package-node.sh"
+      Write-Utf8NoBom -Path $unixPackageNode -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 1`n"
+      & $bash.Source "-lc" "chmod +x '$unixPackageNodeRel'" | Out-Null
       $unixPackageOutput = Join-Path $testRoot "packages\example-next.tar.gz"
       $unixPackageOutputRel = Get-RepoRelativePath $unixPackageOutput
-      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" $unixPackageRel "--output-path" $unixPackageOutputRel | Out-Null
+      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" $unixPackageRel "--output-path" $unixPackageOutputRel "--node-bin" $unixPackageNodeRel | Out-Null
       Assert-TarContains -BashPath $bash.Source -ArchivePath $unixPackageOutputRel -ExpectedEntries @(
         "server.js",
         ".next/BUILD_ID",
@@ -1431,7 +1457,7 @@ try {
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixPackageOutputRel
 
       $unixNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start.tar.gz")
-      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" "$unixNextStartRel/app" "--output-path" $unixNextStartPackage "--mode" "next-start" | Out-Null
+      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" "$unixNextStartRel/app" "--output-path" $unixNextStartPackage "--mode" "next-start" "--node-bin" $unixPackageNodeRel | Out-Null
       Assert-TarContains -BashPath $bash.Source -ArchivePath $unixNextStartPackage -ExpectedEntries @(
         "package.json",
         ".next/BUILD_ID",
@@ -1454,7 +1480,7 @@ try {
       $unixMissingNextPackageJsonPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next-package-json.tar.gz")
       & $bash.Source "-lc" "tar -C '$unixMissingNextPackageJsonRel/app' -czf '$unixMissingNextPackageJsonPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextPackageJsonPackage -ExpectedText "node_modules/next/package.json" -Mode "next-start"
-      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextPackageJsonRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-next-package-json.tar.gz")) -ExpectedText "package metadata" -Mode "next-start"
+      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextPackageJsonRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-next-package-json.tar.gz")) -ExpectedText "package metadata" -Mode "next-start" -NodeBin $unixPackageNodeRel
 
       $unixMissingNextCliRoot = Join-Path $testRoot "unix-next-start-missing-cli"
       $unixMissingNextCliRel = Get-RepoRelativePath $unixMissingNextCliRoot
@@ -1462,7 +1488,7 @@ try {
       $unixMissingNextCliPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-cli.tar.gz")
       & $bash.Source "-lc" "tar -C '$unixMissingNextCliRel/app' -czf '$unixMissingNextCliPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextCliPackage -ExpectedText "node_modules/next/dist/bin/next" -Mode "next-start"
-      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextCliRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-cli.tar.gz")) -ExpectedText "next-start CLI file" -Mode "next-start"
+      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextCliRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-cli.tar.gz")) -ExpectedText "next-start CLI file" -Mode "next-start" -NodeBin $unixPackageNodeRel
 
       $unixUnsafeLinkRoot = Join-Path $testRoot "unix-validator-unsafe-link"
       $unixUnsafeLinkRel = Get-RepoRelativePath $unixUnsafeLinkRoot
@@ -1477,7 +1503,7 @@ try {
         $unixUnsafeHelperRel = Get-RepoRelativePath $unixUnsafeHelperRoot
         New-NextProjectLayout -ProjectDirectory $unixUnsafeHelperRoot
         & $bash.Source "-lc" "ln -s /etc/passwd '$unixUnsafeHelperRel/.next/standalone/unsafe-link'" | Out-Null
-        Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath $unixUnsafeHelperRel -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\unsafe-helper.tar.gz")) -ExpectedText "Unsafe tar link entry"
+        Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath $unixUnsafeHelperRel -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\unsafe-helper.tar.gz")) -ExpectedText "Unsafe tar link entry" -NodeBin $unixPackageNodeRel
       } else {
         Write-Host "Skipping unsafe symlink package check; this shell cannot create real symlinks."
       }
@@ -1514,7 +1540,7 @@ try {
       $unixBlockedPackageRel = Get-RepoRelativePath $unixBlockedPackageRoot
       New-NextProjectLayout -ProjectDirectory $unixBlockedPackageRoot
       Write-Utf8NoBom -Path (Join-Path $unixBlockedPackageRoot ".next\standalone\.env.production") -Text "SECRET_VALUE=placeholder`n"
-      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath $unixBlockedPackageRel -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\blocked.tar.gz")) -ExpectedText "blocked private file"
+      Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath $unixBlockedPackageRel -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\blocked.tar.gz")) -ExpectedText "blocked private file" -NodeBin $unixPackageNodeRel
     }
     finally {
       Pop-Location

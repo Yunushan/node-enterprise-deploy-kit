@@ -38,11 +38,12 @@ NEXTJS_DEPLOYMENT_MODE_NORMALIZED="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-s
 REACT_DOCUMENT_ROOT_NORMALIZED="${REACT_DOCUMENT_ROOT:-build}"
 NEXTJS_REQUIRE_PACKAGE_PROVENANCE="${NEXTJS_REQUIRE_PACKAGE_PROVENANCE:-false}"
 PACKAGE_PROVENANCE_FILE_NAME=".node-enterprise-package.json"
-PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v1"
+PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 PACKAGE_PROVENANCE_SCHEMA_VALUE=""
 PACKAGE_PROVENANCE_BUILD_PLATFORM=""
 PACKAGE_PROVENANCE_BUILD_ARCHITECTURE=""
 PACKAGE_PROVENANCE_BUILD_LIBC=""
+PACKAGE_PROVENANCE_NODE_MODULE_ABI=""
 PACKAGE_PROVENANCE_NEXT_VERSION=""
 PACKAGE_PROVENANCE_NEXT_BUILD_ID=""
 
@@ -183,6 +184,20 @@ target_libc() {
   printf '%s\n' "unknown"
 }
 
+target_node_module_abi() {
+  local abi node_bin="${NODE_BIN:-node}"
+  abi="$("$node_bin" -p 'process.versions.modules' 2>/dev/null)" || {
+    echo "Node.js executable could not report its native module ABI: $node_bin" >&2
+    exit 1
+  }
+  abi="${abi//$'\r'/}"
+  [[ "$abi" =~ ^[0-9]+$ ]] || {
+    echo "Node.js executable returned an invalid native module ABI: $abi" >&2
+    exit 1
+  }
+  printf '%s\n' "$abi"
+}
+
 provenance_json_value() {
   local file="$1" key="$2"
   awk -F'"' -v key="$key" '$2 == key { print $4; exit }' "$file"
@@ -215,18 +230,20 @@ validate_nextjs_package_provenance_if_needed() {
     return 0
   fi
 
-  local schema source_framework source_mode source_platform source_architecture source_libc package_next_version package_next_build_id current_platform current_architecture current_libc
+  local schema source_framework source_mode source_platform source_architecture source_libc source_node_module_abi package_next_version package_next_build_id current_platform current_architecture current_libc current_node_module_abi
   schema="$(require_provenance_value "$marker_path" "schema")"
   source_framework="$(normalize_name "$(require_provenance_value "$marker_path" "appFramework")")"
   source_mode="$(normalize_name "$(require_provenance_value "$marker_path" "nextjsMode")")"
   source_platform="$(normalize_name "$(require_provenance_value "$marker_path" "buildPlatform")")"
   source_architecture="$(normalize_name "$(require_provenance_value "$marker_path" "buildArchitecture")")"
   source_libc="$(normalize_name "$(require_provenance_value "$marker_path" "buildLibc")")"
+  source_node_module_abi="$(require_provenance_value "$marker_path" "nodeModuleAbi")"
   package_next_version="$(require_provenance_value "$marker_path" "nextVersion")"
   package_next_build_id="$(require_provenance_value "$marker_path" "nextBuildId")"
   current_platform="$(target_platform)"
   current_architecture="$(target_architecture)"
   current_libc="$(target_libc)"
+  current_node_module_abi="$(target_node_module_abi)"
 
   [[ "$schema" == "$PACKAGE_PROVENANCE_SCHEMA" ]] || { echo "Unsupported Next.js package provenance schema: $schema" >&2; exit 1; }
   [[ "$source_framework" == "nextjs" || "$source_framework" == "next" || "$source_framework" == "next-js" ]] || { echo "Next.js package provenance appFramework must be nextjs." >&2; exit 1; }
@@ -241,6 +258,8 @@ validate_nextjs_package_provenance_if_needed() {
     echo "Next.js package provenance buildLibc must be not-applicable on $current_platform." >&2
     exit 1
   fi
+  [[ "$source_node_module_abi" =~ ^[0-9]+$ ]] || { echo "Next.js package provenance nodeModuleAbi must be numeric." >&2; exit 1; }
+  [[ "$source_node_module_abi" == "$current_node_module_abi" ]] || { echo "Next.js package Node native module ABI '$source_node_module_abi' does not match target Node ABI '$current_node_module_abi'. Rebuild the package with the target Node major version." >&2; exit 1; }
   if [[ "$required" == true && ( "$current_platform" == "unknown" || "$current_architecture" == "unknown" || ( "$current_platform" == "linux" && "$current_libc" == "unknown" ) ) ]]; then
     echo "Cannot enforce Next.js package provenance because target platform, architecture, or Linux libc is unknown." >&2
     exit 1
@@ -250,6 +269,7 @@ validate_nextjs_package_provenance_if_needed() {
   PACKAGE_PROVENANCE_BUILD_PLATFORM="$source_platform"
   PACKAGE_PROVENANCE_BUILD_ARCHITECTURE="$source_architecture"
   PACKAGE_PROVENANCE_BUILD_LIBC="$source_libc"
+  PACKAGE_PROVENANCE_NODE_MODULE_ABI="$source_node_module_abi"
   PACKAGE_PROVENANCE_NEXT_VERSION="$package_next_version"
   PACKAGE_PROVENANCE_NEXT_BUILD_ID="$package_next_build_id"
   rm -f -- "$marker_path"
@@ -334,6 +354,7 @@ write_deployment_manifest() {
       printf '    "buildPlatform": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_PLATFORM")"
       printf '    "buildArchitecture": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_ARCHITECTURE")"
       printf '    "buildLibc": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_LIBC")"
+      printf '    "nodeModuleAbi": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_NODE_MODULE_ABI")"
       printf '    "nextVersion": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_NEXT_VERSION")"
       printf '    "nextBuildId": "%s"\n' "$(json_escape "$PACKAGE_PROVENANCE_NEXT_BUILD_ID")"
       printf '  },\n'

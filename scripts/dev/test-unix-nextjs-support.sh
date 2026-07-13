@@ -55,19 +55,28 @@ new_next_project_layout() {
   write_file "$project_dir/public/robots.txt" "User-agent: *"
 }
 
+write_fake_node() {
+  local node_bin="$1"
+  write_file "$node_bin" '#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  echo "v20.11.1"
+  exit 0
+fi
+if [ "${1:-}" = "-p" ] && [ "${2:-}" = "process.versions.modules" ]; then
+  echo "115"
+  exit 0
+fi
+exit 0'
+  chmod 0755 "$node_bin"
+}
+
 write_env() {
   local path="$1" root="$2" port="$3" mode="${4:-standalone}" start_script="${5:-server.js}" service_manager="${6:-launchd}" node_arguments="${7:-}"
   local node_bin="$root/fake-node"
   if [[ "$mode" == "next-start" && -z "$node_arguments" ]]; then
     node_arguments="start -H 127.0.0.1"
   fi
-  write_file "$node_bin" '#!/bin/sh
-if [ "${1:-}" = "--version" ]; then
-  echo "v20.11.1"
-  exit 0
-fi
-exit 0'
-  chmod 0755 "$node_bin"
+  write_fake_node "$node_bin"
   cat > "$path" <<EOF
 APP_NAME="example-next-smoke"
 APP_DISPLAY_NAME="Example Next Smoke"
@@ -964,12 +973,15 @@ expect_failure "next-start missing host arg runtime layout" "requires NODE_ARGUM
 
 PACKAGE_PROJECT="$TEST_ROOT/package-project"
 PACKAGE_PATH="$TEST_ROOT/package/example-next.tar.gz"
+PACKAGE_NODE_BIN="$TEST_ROOT/package-node"
 new_next_project_layout "$PACKAGE_PROJECT"
-expect_success "package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$PACKAGE_PATH"
+write_fake_node "$PACKAGE_NODE_BIN"
+expect_success "package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$PACKAGE_PATH" --node-bin "$PACKAGE_NODE_BIN"
 expect_success "package validator" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$PACKAGE_PATH"
 PACKAGE_PROVENANCE="$(tar -xOzf "$PACKAGE_PATH" ./.node-enterprise-package.json)"
-[[ "$PACKAGE_PROVENANCE" == *'"schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v1"'* ]] || { echo "Next.js package helper output is missing provenance schema." >&2; exit 1; }
+[[ "$PACKAGE_PROVENANCE" == *'"schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v2"'* ]] || { echo "Next.js package helper output is missing provenance schema." >&2; exit 1; }
 [[ "$PACKAGE_PROVENANCE" == *'"buildPlatform": "linux"'* ]] || { echo "Next.js package helper output must identify the Linux build platform." >&2; exit 1; }
+[[ "$PACKAGE_PROVENANCE" == *'"nodeModuleAbi": "115"'* ]] || { echo "Next.js package helper output must identify the Node native module ABI." >&2; exit 1; }
 
 PROVENANCE_STATUS_ROOT="$TEST_ROOT/provenance-status"
 mkdir -p "$PROVENANCE_STATUS_ROOT"
@@ -978,10 +990,11 @@ write_env "$PROVENANCE_STATUS_ROOT/app.env" "$PROVENANCE_STATUS_ROOT" 39222 "sta
 write_file "$PROVENANCE_STATUS_ROOT/app/.node-enterprise-deploy.json" '{
   "schema": "node-enterprise-deploy-kit/import-manifest/v1",
   "packageProvenance": {
-    "schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v1",
+    "schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v2",
     "buildPlatform": "linux",
     "buildArchitecture": "x64",
     "buildLibc": "glibc",
+    "nodeModuleAbi": "115",
     "nextVersion": "0.0.0-test",
     "nextBuildId": "example-build"
   }
@@ -990,6 +1003,7 @@ PROVENANCE_STATUS_JSON="$PROVENANCE_STATUS_ROOT/status.json"
 expect_success "package provenance status evidence" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$PROVENANCE_STATUS_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$PROVENANCE_STATUS_JSON"
 assert_contains "$PROVENANCE_STATUS_JSON" '"packageProvenance": {'
 assert_contains "$PROVENANCE_STATUS_JSON" '"buildPlatform": "linux"'
+assert_contains "$PROVENANCE_STATUS_JSON" '"nodeModuleAbi": "115"'
 
 STRICT_PROVENANCE_ROOT="$TEST_ROOT/strict-package-provenance"
 mkdir -p "$STRICT_PROVENANCE_ROOT"
@@ -1014,6 +1028,16 @@ mv "$WRONG_PLATFORM_MARKER.tmp" "$WRONG_PLATFORM_MARKER"
 tar -C "$WRONG_PLATFORM_ROOT" -czf "$WRONG_PLATFORM_PACKAGE" .
 expect_failure "strict package provenance mismatch" "built for 'windows'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE"
 
+WRONG_NODE_ABI_ROOT="$TEST_ROOT/package/wrong-node-abi"
+WRONG_NODE_ABI_PACKAGE="$TEST_ROOT/package/wrong-node-abi.tar.gz"
+mkdir -p "$WRONG_NODE_ABI_ROOT"
+tar -xzf "$PACKAGE_PATH" -C "$WRONG_NODE_ABI_ROOT"
+WRONG_NODE_ABI_MARKER="$WRONG_NODE_ABI_ROOT/.node-enterprise-package.json"
+sed 's/"nodeModuleAbi": "[0-9][0-9]*"/"nodeModuleAbi": "0"/' "$WRONG_NODE_ABI_MARKER" > "$WRONG_NODE_ABI_MARKER.tmp"
+mv "$WRONG_NODE_ABI_MARKER.tmp" "$WRONG_NODE_ABI_MARKER"
+tar -C "$WRONG_NODE_ABI_ROOT" -czf "$WRONG_NODE_ABI_PACKAGE" .
+expect_failure "strict package provenance Node ABI mismatch" "native module ABI '0' does not match target Node ABI" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_NODE_ABI_PACKAGE"
+
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   IMPORT_ROOT="$TEST_ROOT/import-ok"
   mkdir -p "$IMPORT_ROOT"
@@ -1032,6 +1056,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   assert_contains "$IMPORT_MANIFEST" '"packageName": "example-next.tar.gz"'
   assert_contains "$IMPORT_MANIFEST" '"nextBuildId": "example-build"'
   assert_contains "$IMPORT_MANIFEST" '"buildPlatform": "linux"'
+  assert_contains "$IMPORT_MANIFEST" '"nodeModuleAbi": "115"'
   if [[ -e "$IMPORT_ROOT/app/.node-enterprise-package.json" ]]; then
     echo "Unix package provenance marker must not be copied into APP_DIR." >&2
     exit 1
@@ -1053,7 +1078,7 @@ else
 fi
 
 NEXT_START_PACKAGE="$TEST_ROOT/package/next-start.tar.gz"
-expect_success "next-start package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$NEXT_START_ROOT/app" --output-path "$NEXT_START_PACKAGE" --mode next-start
+expect_success "next-start package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$NEXT_START_ROOT/app" --output-path "$NEXT_START_PACKAGE" --mode next-start --node-bin "$PACKAGE_NODE_BIN"
 if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)package[.]json$'; then
   echo "Next-start package helper output is missing package.json." >&2
   exit 1
@@ -1096,7 +1121,7 @@ if ln -s /etc/passwd "$UNSAFE_LINK_ROOT/unsafe-link" 2>/dev/null && [[ -L "$UNSA
   UNSAFE_HELPER_PROJECT="$TEST_ROOT/package-helper-unsafe-link"
   new_next_project_layout "$UNSAFE_HELPER_PROJECT"
   ln -s /etc/passwd "$UNSAFE_HELPER_PROJECT/.next/standalone/unsafe-link"
-  expect_failure "unsafe link package helper" "Unsafe tar link entry" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$UNSAFE_HELPER_PROJECT" --output-path "$TEST_ROOT/package/unsafe-helper.tar.gz"
+  expect_failure "unsafe link package helper" "Unsafe tar link entry" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$UNSAFE_HELPER_PROJECT" --output-path "$TEST_ROOT/package/unsafe-helper.tar.gz" --node-bin "$PACKAGE_NODE_BIN"
 else
   echo "Skipping unsafe symlink package check; this shell cannot create real symlinks."
 fi
@@ -1104,7 +1129,7 @@ fi
 BLOCKED_PROJECT="$TEST_ROOT/package-blocked"
 new_next_project_layout "$BLOCKED_PROJECT"
 write_file "$BLOCKED_PROJECT/.next/standalone/.env.production" "SECRET_VALUE=placeholder"
-expect_failure "blocked package helper" "blocked private file" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$BLOCKED_PROJECT" --output-path "$TEST_ROOT/package/blocked.tar.gz"
+expect_failure "blocked package helper" "blocked private file" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$BLOCKED_PROJECT" --output-path "$TEST_ROOT/package/blocked.tar.gz" --node-bin "$PACKAGE_NODE_BIN"
 
 test_static_service_manager_status "bsdrc" 39203 "cron"
 

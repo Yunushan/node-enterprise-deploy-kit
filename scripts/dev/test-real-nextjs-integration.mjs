@@ -249,31 +249,23 @@ async function verifyPackageProvenance(extractedPath, mode, expectedNextVersion)
   const markerPath = path.join(extractedPath, '.node-enterprise-package.json');
   await assertExists(markerPath, `${mode} package provenance marker`);
   const provenance = JSON.parse(await fs.readFile(markerPath, 'utf8'));
-  const expectedKeys = [
-    'appFramework',
-    'buildArchitecture',
-    'buildLibc',
-    'buildPlatform',
-    'nextBuildId',
-    'nextVersion',
-    'nextjsMode',
-    'schema'
-  ];
-  const actualKeys = Object.keys(provenance).sort();
-  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
-    throw new Error(`${mode} package provenance must contain only safe documented fields.`);
-  }
   const buildId = (await fs.readFile(path.join(extractedPath, '.next', 'BUILD_ID'), 'utf8')).trim();
   const expected = {
-    schema: 'node-enterprise-deploy-kit/nextjs-package-provenance/v1',
+    schema: 'node-enterprise-deploy-kit/nextjs-package-provenance/v2',
     appFramework: 'nextjs',
     nextjsMode: mode,
     buildPlatform: expectedBuildPlatform(),
     buildArchitecture: expectedBuildArchitecture(),
     buildLibc: expectedBuildLibc(),
+    nodeModuleAbi: process.versions.modules,
     nextVersion: expectedNextVersion,
     nextBuildId: buildId
   };
+  const expectedKeys = Object.keys(expected).sort();
+  const actualKeys = Object.keys(provenance).sort();
+  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`${mode} package provenance must contain only safe documented fields.`);
+  }
   for (const [key, value] of Object.entries(expected)) {
     if (provenance[key] !== value) {
       throw new Error(`${mode} package provenance ${key} mismatch: expected '${value}', got '${provenance[key]}'.`);
@@ -387,6 +379,7 @@ async function verifyImportedPackageProvenance(importedPath, expectedProvenance,
     buildPlatform: expectedProvenance.buildPlatform,
     buildArchitecture: expectedProvenance.buildArchitecture,
     buildLibc: expectedProvenance.buildLibc,
+    nodeModuleAbi: expectedProvenance.nodeModuleAbi,
     nextVersion: expectedProvenance.nextVersion,
     nextBuildId: expectedProvenance.nextBuildId
   };

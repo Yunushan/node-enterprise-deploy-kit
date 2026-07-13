@@ -10,6 +10,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: Install CI tooling
         shell: bash
         run: |
@@ -64,6 +68,10 @@ jobs:
           - windows-2025
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: Windows repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax -SkipReleaseEvidenceSelfTests
@@ -153,6 +161,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: macOS Unix/Next.js verification
         shell: bash
         run: |
@@ -176,6 +188,10 @@ jobs:
           - macos-15
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: Build, package, and run a real Next.js application
         shell: bash
         run: node scripts/dev/test-real-nextjs-integration.mjs
@@ -192,6 +208,10 @@ jobs:
           - windows-2025
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: Build, package, and run real Next.js through WinSW
         shell: pwsh
         env:
