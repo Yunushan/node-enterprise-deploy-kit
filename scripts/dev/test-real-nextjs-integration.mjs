@@ -12,6 +12,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const nextVersion = process.env.NEXTJS_INTEGRATION_NEXT_VERSION || 'latest';
 const keepTestRoot = process.env.KEEP_REAL_NEXTJS_INTEGRATION === 'true';
 const runWindowsServiceIntegration = process.env.RUN_WINSW_SERVICE_INTEGRATION === 'true';
+const runLaunchdServiceIntegration = process.env.RUN_LAUNCHD_SERVICE_INTEGRATION === 'true';
 const testRootBase = process.env.NEXTJS_INTEGRATION_TEMP_ROOT
   || (process.platform === 'win32' ? path.join(repoRoot, '.tmp') : os.tmpdir());
 const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.platform}-${Date.now()}`);
@@ -143,7 +144,16 @@ async function writeFixture(projectPath, standalone) {
 
 async function buildProject(projectPath, standalone) {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const env = { ...process.env, NEXT_TELEMETRY_DISABLED: '1', npm_config_fund: 'false', npm_config_audit: 'false' };
+  const env = {
+    ...process.env,
+    NEXT_TELEMETRY_DISABLED: '1',
+    npm_config_fund: 'false',
+    npm_config_audit: 'false',
+    npm_config_fetch_retries: '1',
+    npm_config_fetch_retry_mintimeout: '1000',
+    npm_config_fetch_retry_maxtimeout: '5000',
+    npm_config_fetch_timeout: '30000'
+  };
 
   await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, 'react@latest', 'react-dom@latest'], { cwd: projectPath, env });
   await run(npm, ['run', 'build'], { cwd: projectPath, env });
@@ -185,6 +195,208 @@ async function extractPackage(packagePath, destination) {
     await run('pwsh', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${packagePath.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`]);
   } else {
     await run('tar', ['-xzf', packagePath, '-C', destination]);
+  }
+}
+
+async function verifyNpmRegistryAccess() {
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const env = {
+    ...process.env,
+    npm_config_fetch_retries: '0',
+    npm_config_fetch_timeout: '20000'
+  };
+  try {
+    await run(npm, ['ping', '--fetch-retries=0', '--fetch-timeout=20000'], { env });
+  } catch {
+    throw new Error('Cannot reach the configured npm registry with a trusted TLS certificate. Check the host CA trust chain, HTTPS inspection policy, or npm registry configuration before running real Next.js integration.');
+  }
+}
+
+function expectedBuildPlatform() {
+  switch (process.platform) {
+    case 'win32': return 'windows';
+    case 'darwin': return 'macos';
+    case 'linux': return 'linux';
+    case 'freebsd': return 'freebsd';
+    case 'openbsd': return 'openbsd';
+    case 'netbsd': return 'netbsd';
+    default: return 'unknown';
+  }
+}
+
+function expectedBuildArchitecture() {
+  switch (process.arch) {
+    case 'x64': return 'x64';
+    case 'arm64': return 'arm64';
+    case 'ia32': return 'x86';
+    default: return 'unknown';
+  }
+}
+
+function expectedBuildLibc() {
+  if (process.platform !== 'linux') {
+    return 'not-applicable';
+  }
+  const report = process.report?.getReport?.();
+  return report?.header?.glibcVersionRuntime ? 'glibc' : 'musl';
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\\"'\\\"'")}'`;
+}
+
+async function verifyPackageProvenance(extractedPath, mode, expectedNextVersion) {
+  const markerPath = path.join(extractedPath, '.node-enterprise-package.json');
+  await assertExists(markerPath, `${mode} package provenance marker`);
+  const provenance = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+  const expectedKeys = [
+    'appFramework',
+    'buildArchitecture',
+    'buildLibc',
+    'buildPlatform',
+    'nextBuildId',
+    'nextVersion',
+    'nextjsMode',
+    'schema'
+  ];
+  const actualKeys = Object.keys(provenance).sort();
+  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`${mode} package provenance must contain only safe documented fields.`);
+  }
+  const buildId = (await fs.readFile(path.join(extractedPath, '.next', 'BUILD_ID'), 'utf8')).trim();
+  const expected = {
+    schema: 'node-enterprise-deploy-kit/nextjs-package-provenance/v1',
+    appFramework: 'nextjs',
+    nextjsMode: mode,
+    buildPlatform: expectedBuildPlatform(),
+    buildArchitecture: expectedBuildArchitecture(),
+    buildLibc: expectedBuildLibc(),
+    nextVersion: expectedNextVersion,
+    nextBuildId: buildId
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (provenance[key] !== value) {
+      throw new Error(`${mode} package provenance ${key} mismatch: expected '${value}', got '${provenance[key]}'.`);
+    }
+  }
+  return provenance;
+}
+
+async function runAsRoot(command, args) {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    await run(command, args);
+    return;
+  }
+  await run('sudo', ['--non-interactive', command, ...args]);
+}
+
+async function getUnixPrimaryGroup() {
+  const child = spawn('id', ['-gn'], { cwd: repoRoot, env: process.env, windowsHide: true });
+  let output = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  child.stderr.pipe(process.stderr);
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      const group = output.trim();
+      if (code !== 0 || !group) {
+        reject(new Error('Could not determine the invoking Unix user primary group for launchd integration.'));
+        return;
+      }
+      resolve(group);
+    });
+  });
+}
+
+async function restoreTestDirectoryOwnership(directoryPath) {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function' || process.getuid() === 0) {
+    return;
+  }
+  const uid = process.getuid();
+  const gid = typeof process.getgid === 'function' ? process.getgid() : uid;
+  // The Unix importer correctly requires root; this disposable CI app must then be runnable by the invoking test user.
+  await runAsRoot('chown', ['-R', `${uid}:${gid}`, directoryPath]);
+}
+
+async function importPackage(packagePath, mode) {
+  const importedPath = path.join(testRoot, `imported-${mode}`);
+  const backupPath = path.join(testRoot, `imported-${mode}-backups`);
+  await fs.rm(importedPath, { recursive: true, force: true });
+
+  if (process.platform === 'win32') {
+    const configPath = path.join(testRoot, `import-${mode}.config.json`);
+    const expectedFiles = mode === 'standalone'
+      ? ['server.js', '.next/BUILD_ID', '.next/static', 'node_modules/next/package.json']
+      : ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next/package.json', 'node_modules/next/dist/bin/next'];
+    await fs.writeFile(configPath, JSON.stringify({
+      AppName: `NodeDeployKitRealNextImport${Date.now()}${mode}`,
+      AppFramework: 'nextjs',
+      NextjsDeploymentMode: mode,
+      NextjsRequirePackageProvenance: true,
+      AppDirectory: importedPath,
+      BackupDirectory: backupPath,
+      PackageExpectedFiles: expectedFiles,
+      PackageStripSingleTopLevelDirectory: true,
+      StartCommand: mode === 'standalone' ? 'server.js' : path.join('node_modules', 'next', 'dist', 'bin', 'next')
+    }, null, 2));
+    await run('pwsh', [
+      '-NoProfile',
+      '-File', path.join(repoRoot, 'scripts', 'windows', 'Import-AppPackage.ps1'),
+      '-ConfigPath', configPath,
+      '-PackagePath', packagePath
+    ]);
+  } else {
+    const configPath = path.join(testRoot, `import-${mode}.env`);
+    const expectedFiles = mode === 'standalone'
+      ? 'server.js .next/BUILD_ID .next/static node_modules/next/package.json'
+      : 'package.json .next/BUILD_ID .next node_modules/next/package.json node_modules/next/dist/bin/next';
+    await fs.writeFile(configPath, [
+      `APP_NAME=${shellQuote(`node-deploy-kit-real-next-import-${mode}`)}`,
+      'APP_RUNTIME="node"',
+      'APP_FRAMEWORK="nextjs"',
+      `NEXTJS_DEPLOYMENT_MODE=${shellQuote(mode)}`,
+      'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"',
+      `APP_DIR=${shellQuote(importedPath)}`,
+      `BACKUP_DIR=${shellQuote(backupPath)}`,
+      `PACKAGE_PATH=${shellQuote(packagePath)}`,
+      `PACKAGE_EXPECTED_FILES=${shellQuote(expectedFiles)}`,
+      'PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"',
+      'SERVICE_MANAGER="none"'
+    ].join('\n') + '\n');
+    await runAsRoot('bash', [path.join(repoRoot, 'scripts', 'linux', 'import-app-package.sh'), configPath, packagePath]);
+    await restoreTestDirectoryOwnership(importedPath);
+  }
+
+  await assertExists(path.join(importedPath, '.node-enterprise-deploy.json'), `${mode} imported deployment manifest`);
+  try {
+    await fs.access(path.join(importedPath, '.node-enterprise-package.json'));
+    throw new Error(`${mode} package provenance marker must not remain in the imported app directory.`);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  return importedPath;
+}
+
+async function verifyImportedPackageProvenance(importedPath, expectedProvenance, mode) {
+  const manifest = JSON.parse(await fs.readFile(path.join(importedPath, '.node-enterprise-deploy.json'), 'utf8'));
+  const expectedManifestProvenance = {
+    schema: expectedProvenance.schema,
+    buildPlatform: expectedProvenance.buildPlatform,
+    buildArchitecture: expectedProvenance.buildArchitecture,
+    buildLibc: expectedProvenance.buildLibc,
+    nextVersion: expectedProvenance.nextVersion,
+    nextBuildId: expectedProvenance.nextBuildId
+  };
+  const expectedKeys = Object.keys(expectedManifestProvenance).sort();
+  const actualKeys = Object.keys(manifest.packageProvenance || {}).sort();
+  if (
+    JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys) ||
+    JSON.stringify(manifest.packageProvenance) !== JSON.stringify(expectedManifestProvenance)
+  ) {
+    throw new Error(`${mode} import manifest does not preserve verified package provenance.`);
   }
 }
 
@@ -289,8 +501,72 @@ async function verifyWindowsWinSwService(runtimePath, mode, port) {
   }
 }
 
+async function verifyMacosLaunchdService(runtimePath, mode, port) {
+  const serviceName = `node-deploy-kit-real-next-${Date.now()}-${mode}`;
+  const serviceRoot = path.join(testRoot, `launchd-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.env');
+  const logDirectory = path.join(serviceRoot, 'logs');
+  const backupDirectory = path.join(serviceRoot, 'backups');
+  const environmentFile = path.join(serviceRoot, 'runtime.env');
+  const runnerScript = path.join(serviceRoot, 'runner.sh');
+  const serviceUser = os.userInfo().username;
+  const serviceGroup = await getUnixPrimaryGroup();
+  const startScript = mode === 'standalone'
+    ? 'server.js'
+    : path.join('node_modules', 'next', 'dist', 'bin', 'next');
+  const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
+
+  await fs.mkdir(serviceRoot, { recursive: true });
+  await fs.writeFile(configPath, [
+    `APP_NAME=${shellQuote(serviceName)}`,
+    `APP_DISPLAY_NAME=${shellQuote(serviceName)}`,
+    `SERVICE_USER=${shellQuote(serviceUser)}`,
+    `SERVICE_GROUP=${shellQuote(serviceGroup)}`,
+    `APP_DIR=${shellQuote(runtimePath)}`,
+    `LOG_DIR=${shellQuote(logDirectory)}`,
+    `BACKUP_DIR=${shellQuote(backupDirectory)}`,
+    `ENV_FILE=${shellQuote(environmentFile)}`,
+    `RUNNER_SCRIPT=${shellQuote(runnerScript)}`,
+    `NODE_BIN=${shellQuote(process.execPath)}`,
+    `START_SCRIPT=${shellQuote(startScript)}`,
+    `NODE_ARGUMENTS=${shellQuote(nodeArguments)}`,
+    'APP_FRAMEWORK="nextjs"',
+    `NEXTJS_DEPLOYMENT_MODE=${shellQuote(mode)}`,
+    'SERVICE_MANAGER="launchd"',
+    'SKIP_INSTALL="true"',
+    'SKIP_BUILD="true"',
+    'NODE_ENV="production"',
+    `APP_PORT=${shellQuote(String(port))}`,
+    'BIND_ADDRESS="127.0.0.1"',
+    'HOST="127.0.0.1"',
+    'HOSTNAME="127.0.0.1"'
+  ].join('\n') + '\n');
+
+  try {
+    await runAsRoot('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
+    await run('sudo', ['--non-interactive', 'launchctl', 'print', `system/${serviceName}`]);
+    try {
+      await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    } catch (error) {
+      await run('sudo', ['--non-interactive', 'launchctl', 'print', `system/${serviceName}`], { allowFailure: true });
+      await run('sudo', ['--non-interactive', 'cat', path.join(logDirectory, 'stderr.log')], { allowFailure: true });
+      throw error;
+    }
+  } finally {
+    await run('sudo', [
+      '--non-interactive',
+      'bash', path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath
+    ], { allowFailure: true });
+    await fs.rm(serviceRoot, { recursive: true, force: true });
+  }
+}
+
 async function verifyRuntime(runtimePath, mode) {
   const port = await getFreePort();
+  if (process.platform === 'darwin' && runLaunchdServiceIntegration) {
+    await verifyMacosLaunchdService(runtimePath, mode, port);
+    return;
+  }
   if (process.platform !== 'win32') {
     await verifyUnixManagedRunner(runtimePath, mode, port);
     return;
@@ -313,7 +589,7 @@ async function verifyRuntime(runtimePath, mode) {
   }
 }
 
-async function verifyMode(projectPath, mode) {
+async function verifyMode(projectPath, mode, expectedNextVersion) {
   const extension = process.platform === 'win32' ? 'zip' : 'tar.gz';
   const packagePath = path.join(testRoot, `real-next-${mode}.${extension}`);
   const extractedPath = path.join(testRoot, `extracted-${mode}`);
@@ -321,8 +597,11 @@ async function verifyMode(projectPath, mode) {
   await packageProject(projectPath, mode, packagePath);
   await extractPackage(packagePath, extractedPath);
   await assertExists(path.join(extractedPath, 'node_modules', 'next', 'package.json'), `${mode} packaged Next.js metadata`);
-  await verifyRuntime(extractedPath, mode);
-  console.log(`Real Next.js ${mode} package/runtime integration OK.`);
+  const provenance = await verifyPackageProvenance(extractedPath, mode, expectedNextVersion);
+  const importedPath = await importPackage(packagePath, mode);
+  await verifyImportedPackageProvenance(importedPath, provenance, mode);
+  await verifyRuntime(importedPath, mode);
+  console.log(`Real Next.js ${mode} package/import/runtime integration OK.`);
 }
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -336,15 +615,16 @@ const nextStartProjectPath = path.join(testRoot, 'next-start-project');
 
 try {
   console.log(`==> Real Next.js integration (${process.platform}, Next.js ${nextVersion})`);
+  await verifyNpmRegistryAccess();
   await writeFixture(standaloneProjectPath, true);
   await buildProject(standaloneProjectPath, true);
   const installedVersion = JSON.parse(await fs.readFile(path.join(standaloneProjectPath, 'node_modules', 'next', 'package.json'), 'utf8')).version;
   console.log(`Built real Next.js ${installedVersion}.`);
-  await verifyMode(standaloneProjectPath, 'standalone');
+  await verifyMode(standaloneProjectPath, 'standalone', installedVersion);
 
   await writeFixture(nextStartProjectPath, false);
   await buildProject(nextStartProjectPath, false);
-  await verifyMode(nextStartProjectPath, 'next-start');
+  await verifyMode(nextStartProjectPath, 'next-start', installedVersion);
   console.log('Real Next.js integration checks OK.');
 } finally {
   if (!keepTestRoot) {

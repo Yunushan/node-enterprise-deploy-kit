@@ -210,6 +210,31 @@ EOF
   done
 }
 
+test_preparation_environment_preflight() {
+  local valid_root="$TEST_ROOT/preflight-preparation-valid"
+  local invalid_root="$TEST_ROOT/preflight-preparation-invalid"
+  local missing_root="$TEST_ROOT/preflight-preparation-missing"
+
+  mkdir -p "$valid_root" "$invalid_root" "$missing_root"
+
+  new_standalone_layout "$valid_root/app"
+  write_env "$valid_root/app.env" "$valid_root" 39220 "standalone" "server.js" "launchd"
+  write_file "$valid_root/preparation.env" "NODE_OPTIONS=--use-system-ca" "NODE_EXTRA_CA_CERTS=/etc/ssl/company/enterprise-ca.pem"
+  printf 'PREPARATION_ENV_FILE="%s"\n' "$valid_root/preparation.env" >> "$valid_root/app.env"
+  expect_success "valid preparation environment preflight" "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$valid_root/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+
+  new_standalone_layout "$invalid_root/app"
+  write_env "$invalid_root/app.env" "$invalid_root" 39221 "standalone" "server.js" "launchd"
+  write_file "$invalid_root/preparation.env" "not an assignment"
+  printf 'PREPARATION_ENV_FILE="%s"\n' "$invalid_root/preparation.env" >> "$invalid_root/app.env"
+  expect_failure "invalid preparation environment preflight" "PREPARATION_ENV_FILE line 1 must use NAME=value syntax." "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$invalid_root/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+
+  new_standalone_layout "$missing_root/app"
+  write_env "$missing_root/app.env" "$missing_root" 39222 "standalone" "server.js" "launchd"
+  printf 'PREPARATION_ENV_FILE="%s"\n' "$missing_root/missing.env" >> "$missing_root/app.env"
+  expect_failure "missing preparation environment preflight" "PREPARATION_ENV_FILE was not found" "$BASH" "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$missing_root/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+}
+
 write_minimal_env_without_service_manager() {
   local path="$1" root="$2" port="$3"
   cat > "$path" <<EOF
@@ -711,6 +736,7 @@ test_reverse_proxy_template_rendering
 test_node_runtime_smoke
 test_health_scheduler_preflight_requirements
 test_reverse_proxy_preflight_requires_binary
+test_preparation_environment_preflight
 test_dependency_bootstrap_requires_package_manager
 test_host_aware_service_manager_defaults
 
@@ -941,11 +967,58 @@ PACKAGE_PATH="$TEST_ROOT/package/example-next.tar.gz"
 new_next_project_layout "$PACKAGE_PROJECT"
 expect_success "package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$PACKAGE_PATH"
 expect_success "package validator" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$PACKAGE_PATH"
+PACKAGE_PROVENANCE="$(tar -xOzf "$PACKAGE_PATH" ./.node-enterprise-package.json)"
+[[ "$PACKAGE_PROVENANCE" == *'"schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v1"'* ]] || { echo "Next.js package helper output is missing provenance schema." >&2; exit 1; }
+[[ "$PACKAGE_PROVENANCE" == *'"buildPlatform": "linux"'* ]] || { echo "Next.js package helper output must identify the Linux build platform." >&2; exit 1; }
+
+PROVENANCE_STATUS_ROOT="$TEST_ROOT/provenance-status"
+mkdir -p "$PROVENANCE_STATUS_ROOT"
+new_standalone_layout "$PROVENANCE_STATUS_ROOT/app"
+write_env "$PROVENANCE_STATUS_ROOT/app.env" "$PROVENANCE_STATUS_ROOT" 39222 "standalone" "server.js" "launchd"
+write_file "$PROVENANCE_STATUS_ROOT/app/.node-enterprise-deploy.json" '{
+  "schema": "node-enterprise-deploy-kit/import-manifest/v1",
+  "packageProvenance": {
+    "schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v1",
+    "buildPlatform": "linux",
+    "buildArchitecture": "x64",
+    "buildLibc": "glibc",
+    "nextVersion": "0.0.0-test",
+    "nextBuildId": "example-build"
+  }
+}'
+PROVENANCE_STATUS_JSON="$PROVENANCE_STATUS_ROOT/status.json"
+expect_success "package provenance status evidence" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$PROVENANCE_STATUS_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$PROVENANCE_STATUS_JSON"
+assert_contains "$PROVENANCE_STATUS_JSON" '"packageProvenance": {'
+assert_contains "$PROVENANCE_STATUS_JSON" '"buildPlatform": "linux"'
+
+STRICT_PROVENANCE_ROOT="$TEST_ROOT/strict-package-provenance"
+mkdir -p "$STRICT_PROVENANCE_ROOT"
+write_env "$STRICT_PROVENANCE_ROOT/app.env" "$STRICT_PROVENANCE_ROOT" 39221 "standalone" "server.js" "launchd"
+printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$STRICT_PROVENANCE_ROOT/app.env"
+
+MISSING_PROVENANCE_ROOT="$TEST_ROOT/package/missing-provenance"
+MISSING_PROVENANCE_PACKAGE="$TEST_ROOT/package/missing-provenance.tar.gz"
+mkdir -p "$MISSING_PROVENANCE_ROOT"
+tar -xzf "$PACKAGE_PATH" -C "$MISSING_PROVENANCE_ROOT"
+rm -f "$MISSING_PROVENANCE_ROOT/.node-enterprise-package.json"
+tar -C "$MISSING_PROVENANCE_ROOT" -czf "$MISSING_PROVENANCE_PACKAGE" .
+expect_failure "strict package provenance missing" "package provenance is required" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$MISSING_PROVENANCE_PACKAGE"
+
+WRONG_PLATFORM_ROOT="$TEST_ROOT/package/wrong-platform"
+WRONG_PLATFORM_PACKAGE="$TEST_ROOT/package/wrong-platform.tar.gz"
+mkdir -p "$WRONG_PLATFORM_ROOT"
+tar -xzf "$PACKAGE_PATH" -C "$WRONG_PLATFORM_ROOT"
+WRONG_PLATFORM_MARKER="$WRONG_PLATFORM_ROOT/.node-enterprise-package.json"
+sed 's/"buildPlatform": "linux"/"buildPlatform": "windows"/' "$WRONG_PLATFORM_MARKER" > "$WRONG_PLATFORM_MARKER.tmp"
+mv "$WRONG_PLATFORM_MARKER.tmp" "$WRONG_PLATFORM_MARKER"
+tar -C "$WRONG_PLATFORM_ROOT" -czf "$WRONG_PLATFORM_PACKAGE" .
+expect_failure "strict package provenance mismatch" "built for 'windows'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE"
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   IMPORT_ROOT="$TEST_ROOT/import-ok"
   mkdir -p "$IMPORT_ROOT"
   write_env "$IMPORT_ROOT/app.env" "$IMPORT_ROOT" 39205 "standalone" "server.js" "launchd"
+  printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$IMPORT_ROOT/app.env"
   expect_success "root package import manifest" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$IMPORT_ROOT/app.env" "$PACKAGE_PATH"
   IMPORT_MANIFEST="$IMPORT_ROOT/app/.node-enterprise-deploy.json"
   STATUS_IMPORT_JSON="$IMPORT_ROOT/status-import.json"
@@ -958,6 +1031,11 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   fi
   assert_contains "$IMPORT_MANIFEST" '"packageName": "example-next.tar.gz"'
   assert_contains "$IMPORT_MANIFEST" '"nextBuildId": "example-build"'
+  assert_contains "$IMPORT_MANIFEST" '"buildPlatform": "linux"'
+  if [[ -e "$IMPORT_ROOT/app/.node-enterprise-package.json" ]]; then
+    echo "Unix package provenance marker must not be copied into APP_DIR." >&2
+    exit 1
+  fi
   if [[ -n "$PACKAGE_SHA256" ]]; then
     assert_contains "$IMPORT_MANIFEST" "\"packageSha256\": \"$PACKAGE_SHA256\""
   fi
@@ -969,6 +1047,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   assert_contains "$STATUS_IMPORT_JSON" '"nextBuildId": "example-build"'
   assert_not_contains "$STATUS_IMPORT_JSON" "$PACKAGE_PATH"
   assert_not_contains "$STATUS_IMPORT_JSON" "$IMPORT_ROOT"
+
 else
   echo "Skipping root package import manifest smoke; package import intentionally requires root."
 fi

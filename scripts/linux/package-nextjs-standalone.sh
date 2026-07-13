@@ -9,6 +9,8 @@ STAGE_DIR=""
 REQUIRE_PUBLIC_DIR="false"
 NO_PUBLIC="false"
 KEEP_STAGE="false"
+PACKAGE_PROVENANCE_FILE_NAME=".node-enterprise-package.json"
+PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v1"
 
 usage() {
   cat <<'USAGE'
@@ -126,6 +128,86 @@ assert_no_blocked_artifact_files() {
   fi
 }
 
+json_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+package_platform() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Linux) printf '%s\n' "linux" ;;
+    Darwin) printf '%s\n' "macos" ;;
+    FreeBSD) printf '%s\n' "freebsd" ;;
+    OpenBSD) printf '%s\n' "openbsd" ;;
+    NetBSD) printf '%s\n' "netbsd" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+package_architecture() {
+  case "$(uname -m 2>/dev/null || echo unknown)" in
+    x86_64|amd64) printf '%s\n' "x64" ;;
+    aarch64|arm64) printf '%s\n' "arm64" ;;
+    i386|i486|i586|i686|x86) printf '%s\n' "x86" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+package_libc() {
+  [[ "$(package_platform)" == "linux" ]] || {
+    printf '%s\n' "not-applicable"
+    return 0
+  }
+
+  if command -v getconf >/dev/null 2>&1 && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+    printf '%s\n' "glibc"
+    return 0
+  fi
+  if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi "musl"; then
+    printf '%s\n' "musl"
+    return 0
+  fi
+  printf '%s\n' "unknown"
+}
+
+next_version_from_package_json() {
+  local package_json="$1" version
+  version="$(sed -n -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$package_json" | head -n 1)"
+  [[ -n "$version" ]] || return 1
+  printf '%s\n' "$version"
+}
+
+write_package_provenance() {
+  local root="$1" mode="$2" next_package_json="$3" build_id_path="$4" next_version build_id
+  next_version="$(next_version_from_package_json "$next_package_json")" || {
+    echo "Next.js package provenance requires a non-empty Next.js version." >&2
+    exit 1
+  }
+  build_id="$(head -n 1 "$build_id_path")"
+  [[ -n "$build_id" ]] || {
+    echo "Next.js package provenance requires a non-empty BUILD_ID." >&2
+    exit 1
+  }
+
+  {
+    printf '{\n'
+    printf '  "schema": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_SCHEMA")"
+    printf '  "appFramework": "nextjs",\n'
+    printf '  "nextjsMode": "%s",\n' "$(json_escape "$mode")"
+    printf '  "buildPlatform": "%s",\n' "$(json_escape "$(package_platform)")"
+    printf '  "buildArchitecture": "%s",\n' "$(json_escape "$(package_architecture)")"
+    printf '  "buildLibc": "%s",\n' "$(json_escape "$(package_libc)")"
+    printf '  "nextVersion": "%s",\n' "$(json_escape "$next_version")"
+    printf '  "nextBuildId": "%s"\n' "$(json_escape "$build_id")"
+    printf '}\n'
+  } > "$root/$PACKAGE_PROVENANCE_FILE_NAME"
+}
+
 PROJECT_ROOT="$(abs_existing_dir "$PROJECT_PATH")"
 DEPLOYMENT_MODE="$(normalize_name "$DEPLOYMENT_MODE")"
 case "$DEPLOYMENT_MODE" in
@@ -239,6 +321,12 @@ if ! is_true "$NO_PUBLIC" && [[ -d "$PUBLIC_ROOT" ]]; then
   rm -rf "$STAGE_FULL/public"
   cp -R "$PUBLIC_ROOT" "$STAGE_FULL/public"
 fi
+
+write_package_provenance \
+  "$STAGE_FULL" \
+  "$DEPLOYMENT_MODE" \
+  "$STAGE_FULL/node_modules/next/package.json" \
+  "$STAGE_FULL/.next/BUILD_ID"
 
 assert_no_blocked_artifact_files "$STAGE_FULL"
 

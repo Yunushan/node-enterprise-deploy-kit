@@ -142,9 +142,11 @@ HEALTH_STATUS_CODE=""
 HEALTH_RESPONSE_SECONDS=""
 HEALTH_PROBE_URL=""
 HOST_UPTIME_SECONDS=""
+HOST_BOOT_TIME_KNOWN="false"
 SERVICE_UPTIME_SECONDS=""
 UPTIME_MINIMUM_SATISFIED=""
 SERVICE_START_KNOWN="false"
+SERVICE_STARTED_DURING_CURRENT_BOOT=""
 SERVICE_DEFINITION_CHECKED="false"
 SERVICE_DEFINITION_MANAGER="$SERVICE_MANAGER_NORMALIZED"
 SERVICE_DEFINITION_SOURCE="not-checked"
@@ -190,6 +192,12 @@ DEPLOYMENT_IDENTITY_PACKAGE_NAME=""
 DEPLOYMENT_IDENTITY_PACKAGE_SHA256=""
 DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC=""
 DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID=""
+DEPLOYMENT_IDENTITY_PACKAGE_PROVENANCE_SCHEMA=""
+DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM=""
+DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE=""
+DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC=""
+DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION=""
+DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID=""
 NODE_RUNTIME_VERSION=""
 NEXT_PACKAGE_VERSION=""
 NEXT_PACKAGE_JSON_EXISTS="false"
@@ -491,6 +499,18 @@ deployment_manifest_value() {
   ' "$manifest_path" 2>/dev/null
 }
 
+deployment_manifest_package_provenance_value() {
+  local key="$1" manifest_path
+  manifest_path="$(deployment_manifest_path 2>/dev/null || true)"
+  [[ -n "$manifest_path" && -f "$manifest_path" ]] || return 1
+  awk -F'"' -v key="$key" '
+    /"packageProvenance"[[:space:]]*:[[:space:]]*\{/ { in_provenance=1; next }
+    in_provenance && $2 == key { print $4; found=1; exit }
+    in_provenance && /^[[:space:]]*}[[:space:]]*,?[[:space:]]*$/ { exit }
+    END { exit found ? 0 : 1 }
+  ' "$manifest_path" 2>/dev/null
+}
+
 update_deployment_identity() {
   DEPLOYMENT_IDENTITY_APP_DIR_NAME="$(basename "${APP_DIR:-}" 2>/dev/null || echo "")"
   if [[ -f "$(deployment_manifest_path 2>/dev/null || echo "")" ]]; then
@@ -500,6 +520,12 @@ update_deployment_identity() {
     DEPLOYMENT_IDENTITY_PACKAGE_SHA256="$(deployment_manifest_value packageSha256 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC="$(deployment_manifest_value generatedAtUtc 2>/dev/null || echo "")"
     DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID="$(deployment_manifest_value nextBuildId 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_PROVENANCE_SCHEMA="$(deployment_manifest_package_provenance_value schema 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM="$(deployment_manifest_package_provenance_value buildPlatform 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE="$(deployment_manifest_package_provenance_value buildArchitecture 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC="$(deployment_manifest_package_provenance_value buildLibc 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION="$(deployment_manifest_package_provenance_value nextVersion 2>/dev/null || echo "")"
+    DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID="$(deployment_manifest_package_provenance_value nextBuildId 2>/dev/null || echo "")"
   fi
   DEPLOYMENT_IDENTITY_DEPLOYMENT_ID="${NEXT_DEPLOYMENT_ID:-${DEPLOYMENT_ID:-}}"
   if [[ -z "$DEPLOYMENT_IDENTITY_DEPLOYMENT_ID" ]]; then
@@ -1407,6 +1433,7 @@ write_json_output() {
     printf '  },\n'
     printf '  "uptime": {\n'
     if is_integer "$HOST_UPTIME_SECONDS"; then
+      HOST_BOOT_TIME_KNOWN="true"
       printf '    "hostUptimeSeconds": %s,\n' "$((10#$HOST_UPTIME_SECONDS))"
     else
       printf '    "hostUptimeSeconds": null,\n'
@@ -1422,7 +1449,13 @@ write_json_output() {
     else
       printf '    "minimumSatisfied": null,\n'
     fi
-    printf '    "serviceStartKnown": %s\n' "$SERVICE_START_KNOWN"
+    printf '    "hostBootTimeKnown": %s,\n' "$HOST_BOOT_TIME_KNOWN"
+    printf '    "serviceStartKnown": %s,\n' "$SERVICE_START_KNOWN"
+    if [[ "$SERVICE_STARTED_DURING_CURRENT_BOOT" == "true" || "$SERVICE_STARTED_DURING_CURRENT_BOOT" == "false" ]]; then
+      printf '    "serviceStartedDuringCurrentBoot": %s\n' "$SERVICE_STARTED_DURING_CURRENT_BOOT"
+    else
+      printf '    "serviceStartedDuringCurrentBoot": null\n'
+    fi
     printf '  },\n'
     printf '  "healthMonitor": {\n'
     printf '    "status": "%s",\n' "$(json_escape "$HEALTH_MONITOR_STATUS")"
@@ -1509,7 +1542,15 @@ write_json_output() {
     printf '    "packageName": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NAME")"
     printf '    "packageSha256": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_SHA256")"
     printf '    "packageImportedAtUtc": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC")"
-    printf '    "manifestNextBuildId": "%s"\n' "$(json_escape "$DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID")"
+    printf '    "manifestNextBuildId": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_MANIFEST_NEXT_BUILD_ID")"
+    printf '    "packageProvenance": {\n'
+    printf '      "schema": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_PROVENANCE_SCHEMA")"
+    printf '      "buildPlatform": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM")"
+    printf '      "buildArchitecture": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE")"
+    printf '      "buildLibc": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC")"
+    printf '      "nextVersion": "%s",\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION")"
+    printf '      "nextBuildId": "%s"\n' "$(json_escape "$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_BUILD_ID")"
+    printf '    }\n'
     printf '  },\n'
     printf '  "platform": {\n'
     printf '    "family": "%s",\n' "$(json_escape "$PLATFORM_FAMILY")"
@@ -1639,6 +1680,7 @@ echo
 echo "Host"
 uname -srm || true
 if HOST_UPTIME_SECONDS="$(host_uptime_seconds 2>/dev/null)"; then
+  HOST_BOOT_TIME_KNOWN="true"
   echo "HostUptime=$(format_seconds "$HOST_UPTIME_SECONDS")"
 fi
 if [[ -r /etc/os-release ]]; then
@@ -1708,6 +1750,16 @@ if [[ -n "$service_pid" && "$service_pid" != "0" ]]; then
   if uptime_seconds="$(process_elapsed_seconds "$service_pid" 2>/dev/null)"; then
     SERVICE_UPTIME_SECONDS="$uptime_seconds"
     SERVICE_START_KNOWN="true"
+    if is_integer "$HOST_UPTIME_SECONDS"; then
+      # Process uptime cannot exceed current boot uptime. Keep a small tolerance
+      # for independent sampling of those two clocks.
+      if [[ "$uptime_seconds" -le "$((HOST_UPTIME_SECONDS + 300))" ]]; then
+        SERVICE_STARTED_DURING_CURRENT_BOOT="true"
+      else
+        SERVICE_STARTED_DURING_CURRENT_BOOT="false"
+        add_critical "Service process uptime predates the current host boot session."
+      fi
+    fi
     echo "ServiceProcessUptime=$(format_seconds "$uptime_seconds")"
     if is_integer "$MINIMUM_UPTIME_HOURS" && [[ "$MINIMUM_UPTIME_HOURS" -gt 0 ]]; then
       minimum_seconds=$((MINIMUM_UPTIME_HOURS * 3600))
@@ -1791,6 +1843,10 @@ echo "ManifestExists=$DEPLOYMENT_IDENTITY_MANIFEST_EXISTS"
 echo "PackageName=$DEPLOYMENT_IDENTITY_PACKAGE_NAME"
 echo "PackageSha256=$DEPLOYMENT_IDENTITY_PACKAGE_SHA256"
 echo "PackageImportedAtUtc=$DEPLOYMENT_IDENTITY_PACKAGE_IMPORTED_AT_UTC"
+echo "PackageBuildPlatform=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_PLATFORM"
+echo "PackageBuildArchitecture=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_ARCHITECTURE"
+echo "PackageBuildLibc=$DEPLOYMENT_IDENTITY_PACKAGE_BUILD_LIBC"
+echo "PackageNextVersion=$DEPLOYMENT_IDENTITY_PACKAGE_NEXT_VERSION"
 
 echo
 echo "HTTP Health"

@@ -164,6 +164,8 @@ jobs:
     name: real-nextjs-integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      RUN_LAUNCHD_SERVICE_INTEGRATION: ${{ matrix.os == 'macos-15' && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:

@@ -649,6 +649,7 @@ Evidence is not enough when:
   from `node_modules/next/package.json` in the active runtime folder.
 - The service or port checks were skipped for a production support claim.
 - The service is currently active but not enabled to start after reboot.
+- The status evidence cannot prove the active service started during the current host boot session.
 - Service process uptime is missing, unknown, or below the requested minimum
   uptime window.
 - The configured app port is missing, owned by an unknown process, or could not

@@ -14,6 +14,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PackageProvenanceFileName = ".node-enterprise-package.json"
+$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v1"
 
 function Resolve-ConfigRelativePath {
     param(
@@ -249,6 +251,88 @@ function Test-NextJsPackageIfNeeded {
     & $validator @arguments
 }
 
+function Get-WindowsArchitecture {
+    $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+    }
+    if ($null -eq $raw) { $raw = "" }
+    switch ($raw.Trim().ToLowerInvariant()) {
+        { $_ -in @("amd64", "x64") } { return "x64" }
+        { $_ -in @("arm64", "aarch64") } { return "arm64" }
+        { $_ -in @("x86", "i386", "i686") } { return "x86" }
+        default { return "unknown" }
+    }
+}
+
+function Get-RequiredProvenanceString {
+    param($Provenance, [string]$Name)
+    if (-not $Provenance.PSObject.Properties[$Name]) {
+        throw "Next.js package provenance is missing $Name."
+    }
+    $value = ([string]$Provenance.$Name).Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Next.js package provenance has an empty $Name."
+    }
+    return $value
+}
+
+function Test-NextJsPackageProvenanceIfNeeded {
+    param(
+        $Config,
+        [string]$SourceRoot
+    )
+
+    $framework = Normalize-Name (Get-ConfigString $Config "AppFramework" "node")
+    if ($framework -notin @("next", "nextjs", "next-js")) {
+        return $null
+    }
+
+    $required = Get-ConfigBool $Config "NextjsRequirePackageProvenance" $false
+    $markerPath = Join-Path $SourceRoot $PackageProvenanceFileName
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        if ($required) {
+            throw "Next.js package provenance is required, but $PackageProvenanceFileName is missing. Package on a compatible target or use the kit packaging helper."
+        }
+        return $null
+    }
+
+    try {
+        $provenance = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Next.js package provenance is not valid JSON: $markerPath"
+    }
+
+    $schema = Get-RequiredProvenanceString $provenance "schema"
+    $sourceFramework = Normalize-Name (Get-RequiredProvenanceString $provenance "appFramework")
+    $sourceMode = Normalize-Name (Get-RequiredProvenanceString $provenance "nextjsMode")
+    $sourcePlatform = Normalize-Name (Get-RequiredProvenanceString $provenance "buildPlatform")
+    $sourceArchitecture = Normalize-Name (Get-RequiredProvenanceString $provenance "buildArchitecture")
+    $sourceLibc = Normalize-Name (Get-RequiredProvenanceString $provenance "buildLibc")
+    $nextVersion = Get-RequiredProvenanceString $provenance "nextVersion"
+    $nextBuildId = Get-RequiredProvenanceString $provenance "nextBuildId"
+    $targetMode = Normalize-Name (Get-ConfigString $Config "NextjsDeploymentMode" "standalone")
+    $targetArchitecture = Get-WindowsArchitecture
+
+    if ($schema -ne $PackageProvenanceSchema) { throw "Unsupported Next.js package provenance schema: $schema" }
+    if ($sourceFramework -notin @("next", "nextjs", "next-js")) { throw "Next.js package provenance appFramework must be nextjs." }
+    if ($sourceMode -ne $targetMode) { throw "Next.js package provenance mode '$sourceMode' does not match target mode '$targetMode'." }
+    if ($sourcePlatform -ne "windows") { throw "Next.js package was built for '$sourcePlatform', but this importer targets Windows." }
+    if ($sourceArchitecture -ne $targetArchitecture) { throw "Next.js package architecture '$sourceArchitecture' does not match Windows target architecture '$targetArchitecture'." }
+    if ($sourceLibc -ne "not-applicable") { throw "Next.js Windows package provenance buildLibc must be not-applicable." }
+    if ($required -and $targetArchitecture -eq "unknown") { throw "Cannot enforce Next.js package provenance because the Windows target architecture is unknown." }
+
+    Remove-Item -LiteralPath $markerPath -Force
+    return [pscustomobject]@{
+        schema = $schema
+        buildPlatform = $sourcePlatform
+        buildArchitecture = $sourceArchitecture
+        buildLibc = $sourceLibc
+        nextVersion = $nextVersion
+        nextBuildId = $nextBuildId
+    }
+}
+
 function Get-ReactDocumentRoot {
     param($Config)
 
@@ -376,7 +460,8 @@ function Write-DeploymentManifest {
     param(
         $Config,
         [string]$AppDirectory,
-        [string]$PackagePath
+        [string]$PackagePath,
+        $PackageProvenance
     )
 
     $manifestPath = Join-Path $AppDirectory ".node-enterprise-deploy.json"
@@ -395,6 +480,7 @@ function Write-DeploymentManifest {
         packageSha256 = $packageHash
         deploymentId = Get-DeploymentIdFromConfig $Config
         nextBuildId = Get-NextBuildIdFromDirectory $AppDirectory
+        packageProvenance = $PackageProvenance
     }
     $manifest |
         ConvertTo-Json -Depth 10 |
@@ -451,6 +537,7 @@ try {
     Assert-ExtractedTreeSafe -RootPath $extractRoot
     $sourceRoot = Get-PackageSourceRoot -ExtractRoot $extractRoot -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
     Assert-ExpectedFiles -SourceRoot $sourceRoot -ExpectedFiles $expectedFiles
+    $packageProvenance = Test-NextJsPackageProvenanceIfNeeded -Config $config -SourceRoot $sourceRoot
 
     if ($PSCmdlet.ShouldProcess($appDirectory, "Import application package $PackagePath")) {
         if (-not (Test-StaticIisDeploymentMode $config)) {
@@ -475,7 +562,7 @@ try {
             foreach ($item in Get-ChildItem -LiteralPath $sourceRoot -Force) {
                 Copy-Item -LiteralPath $item.FullName -Destination $appDirectory -Recurse -Force
             }
-            Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackagePath $PackagePath
+            Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackagePath $PackagePath -PackageProvenance $packageProvenance
         }
         catch {
             if (Test-Path -LiteralPath $appDirectory) {

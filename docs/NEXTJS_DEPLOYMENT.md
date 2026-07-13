@@ -159,6 +159,35 @@ replacing the current application directory. A `next-start` package must contain
 `package.json`, built `.next` output, and
 `node_modules/next/dist/bin/next`.
 
+## Build Target Compatibility
+
+Native runtime dependencies such as Next.js SWC, image-processing libraries,
+or database clients can make a package built on one operating system or CPU
+architecture unsuitable for another. The kit packaging helpers therefore add a
+safe `.node-enterprise-package.json` marker to every Next.js package. It stores
+only the package mode, build OS family, CPU architecture, Linux libc family
+when applicable, Next.js version, and Next.js build ID. It does not contain
+paths, hostnames, environment variables, credentials, or application data.
+
+Set `NextjsRequirePackageProvenance: true` on Windows or
+`NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"` on Unix-like targets to require the
+marker. The importer verifies the mode and target compatibility before it stops
+the service or replaces the active application directory. Linux targets also
+compare `glibc` and `musl`. The marker is removed from the extracted release
+before the application is made live; the safe verified values are retained in
+`.node-enterprise-deploy.json` for deployment evidence.
+
+Build the package on the same operating-system family and CPU architecture as
+the target. In particular, do not package a Linux runtime on Windows or macOS,
+and do not use a glibc-built artifact on an Alpine/musl target. Existing legacy
+packages remain accepted by default; enable the setting above to make the
+compatibility proof mandatory.
+
+`status.ps1` and `scripts/linux/status-node-app.sh --json-output` expose the
+verified package provenance from the active deployment manifest, allowing a
+host-evidence bundle to show the package build target without disclosing any
+runtime configuration.
+
 After a successful package import, the importer writes
 `.node-enterprise-deploy.json` into the deployed app directory. The manifest is
 safe to include in status evidence because it stores only the app name, import

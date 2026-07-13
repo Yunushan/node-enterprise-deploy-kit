@@ -877,10 +877,12 @@ function Get-UptimeEvidence {
   $uptime = Get-PropertyValue -Object $Evidence -Names @("Uptime", "uptime")
   [pscustomobject]@{
     hostUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("HostUptimeSeconds", "hostUptimeSeconds")
+    hostBootTimeKnown = Get-BooleanValue -Object $uptime -Names @("HostBootTimeKnown", "hostBootTimeKnown") -Default $false
     serviceUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("ServiceUptimeSeconds", "serviceUptimeSeconds")
     minimumUptimeHours = Get-IntegerValue -Object $uptime -Names @("MinimumUptimeHours", "minimumUptimeHours")
     minimumSatisfied = Get-BooleanValue -Object $uptime -Names @("MinimumSatisfied", "minimumSatisfied") -Default $null
     serviceStartKnown = Get-BooleanValue -Object $uptime -Names @("ServiceStartKnown", "serviceStartKnown") -Default $false
+    serviceStartedDuringCurrentBoot = Get-BooleanValue -Object $uptime -Names @("ServiceStartedDuringCurrentBoot", "serviceStartedDuringCurrentBoot") -Default $false
   }
 }
 
@@ -1066,10 +1068,12 @@ function Get-EvidenceRecords {
         reverseProxyEvidenceValid = Test-ReverseProxyEvidence -Evidence $reverseProxyEvidence
         generatedAtUtc = Get-EvidenceGeneratedAt -Evidence $evidence
         hostUptimeSeconds = $uptime.hostUptimeSeconds
+        hostBootTimeKnown = $uptime.hostBootTimeKnown
         serviceUptimeSeconds = $uptime.serviceUptimeSeconds
         minimumUptimeHours = $uptime.minimumUptimeHours
         minimumSatisfied = $uptime.minimumSatisfied
         serviceStartKnown = $uptime.serviceStartKnown
+        serviceStartedDuringCurrentBoot = $uptime.serviceStartedDuringCurrentBoot
         verdict = Get-StringValue -Object $evidence -Names @("Verdict", "verdict")
         critical = Get-IntegerValue -Object $evidence -Names @("Critical", "critical")
         warnings = Get-IntegerValue -Object $evidence -Names @("Warnings", "warnings")
@@ -1112,10 +1116,12 @@ function Get-EvidenceRecords {
         reverseProxyEvidenceValid = $false
         generatedAtUtc = ""
         hostUptimeSeconds = $null
+        hostBootTimeKnown = $false
         serviceUptimeSeconds = $null
         minimumUptimeHours = $null
         minimumSatisfied = $null
         serviceStartKnown = $false
+        serviceStartedDuringCurrentBoot = $false
         verdict = ""
         critical = $null
         warnings = $null
@@ -1165,6 +1171,8 @@ function Test-RecordHealthy {
   if ($RequiredMinimumUptimeHours -gt 0) {
     $requiredMinimumUptimeSeconds = [int64]$RequiredMinimumUptimeHours * 3600
     if ($Record.serviceStartKnown -ne $true) { return $false }
+    if ($Record.hostBootTimeKnown -ne $true) { return $false }
+    if ($Record.serviceStartedDuringCurrentBoot -ne $true) { return $false }
     if ($null -eq $Record.minimumUptimeHours -or [int]$Record.minimumUptimeHours -lt $RequiredMinimumUptimeHours) { return $false }
     if ($Record.minimumSatisfied -ne $true) { return $false }
     if ($null -eq $Record.serviceUptimeSeconds -or [int64]$Record.serviceUptimeSeconds -lt $requiredMinimumUptimeSeconds) { return $false }
@@ -1851,10 +1859,12 @@ function New-SelfTestEvidence {
       }
       uptime = [ordered]@{
         hostUptimeSeconds = $requiredMinimumUptimeSeconds + 86400
+        hostBootTimeKnown = $true
         serviceUptimeSeconds = $requiredMinimumUptimeSeconds
         minimumUptimeHours = [string]$RequiredMinimumUptimeHours
         minimumSatisfied = $true
         serviceStartKnown = $true
+        serviceStartedDuringCurrentBoot = $true
       }
       healthMonitor = $monitor
       nextJsRuntime = [ordered]@{

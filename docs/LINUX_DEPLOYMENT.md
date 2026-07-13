@@ -117,6 +117,27 @@ bootstrap without `sudo`; it uses Homebrew and will fail clearly if `brew` is
 not available. For locked-down servers, install the same packages through your
 approved software channel and skip this optional step.
 
+When npm uses a corporate TLS-inspection proxy or private registry, keep
+certificate and token settings in a separate target-local file rather than in
+`app.env` or the service environment. Set an absolute path in `app.env`:
+
+```bash
+PREPARATION_ENV_FILE="/etc/example-node-app/preparation.env"
+```
+
+The file accepts only literal `NAME=value` lines and is applied only to
+`INSTALL_COMMAND` and `BUILD_COMMAND`. It is not copied into the managed Node
+service environment or emitted in status evidence. For example, use an
+approved CA bundle without disabling TLS validation:
+
+```text
+NODE_EXTRA_CA_CERTS=/etc/ssl/company/enterprise-ca.pem
+```
+
+Restrict that file to the deployment administrator and the service account as
+required by your platform policy. Do not use `strict-ssl=false` or
+`NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
 6. Run preflight checks:
 
 ```bash

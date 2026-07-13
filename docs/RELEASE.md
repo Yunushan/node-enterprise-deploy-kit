@@ -28,7 +28,7 @@ The verifier checks:
 - Bash-only Unix Next.js smoke coverage for macOS-friendly packaging, runtime layout, POSIX-compatible runtime env files, rendered service templates, rendered Nginx/Apache/HAProxy/Traefik reverse-proxy templates, and systemd/System V/OpenRC/launchd/BSD rc static preflight/status evidence paths
 - Hosted Linux target-family real Next.js container coverage for Ubuntu, Debian, Linux Mint, RHEL/UBI, Oracle Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine: checksum-verified Node.js on glibc, signed Alpine `apk` Node.js, `next@latest`, both package modes, extraction, and live HTTP output
 - Local Node.js runtime smoke coverage for standalone and next-start Next.js services using the managed `PORT`, `APP_PORT`, `HOST`, and `HOSTNAME` contract
-- Hosted real Next.js integration coverage on Ubuntu, Windows Server 2022, Windows Server 2025, and macOS 15: builds `next@latest`, packages both modes, extracts each package, verifies live HTTP output, and uses the rendered launchd runner on Unix
+- Hosted real Next.js integration coverage on Ubuntu, Windows Server 2022, Windows Server 2025, and macOS 15: builds `next@latest`, packages both modes, strictly imports each artifact, verifies provenance and live HTTP output, and runs a temporary launchd service lifecycle on macOS
 - Hosted Windows Server 2022/2025 WinSW integration: starts both real Next.js package modes as checksum-verified temporary Windows services, probes HTTP, and uninstalls each service
 - release package hygiene and required release files, including the validated Windows/Unix `next-start`, macOS, and BSD examples
 - host evidence validator self-test for Windows, Linux, macOS, and BSD status JSON shapes

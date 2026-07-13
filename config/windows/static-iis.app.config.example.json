@@ -16,6 +16,7 @@
   "PackageStripSingleTopLevelDirectory": true,
   "InstallCommand": "npm ci --include=dev",
   "BuildCommand": "npm run build",
+  "PreparationEnvironment": {},
   "ServiceManager": "none",
   "ReverseProxy": "iis",
   "IisSitePath": "C:\\inetpub\\ExampleStaticSpa",

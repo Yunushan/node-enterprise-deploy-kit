@@ -659,10 +659,12 @@ function New-SelfTestEvidence {
     }
     Uptime = [ordered]@{
       HostUptimeSeconds = 345600
+      HostBootTimeKnown = $true
       ServiceUptimeSeconds = 259200
       MinimumUptimeHours = 72
       MinimumSatisfied = $true
       ServiceStartKnown = $true
+      ServiceStartedDuringCurrentBoot = $true
     }
     HealthMonitor = [ordered]@{
       Status = "ok"
@@ -777,10 +779,12 @@ function New-SelfTestEvidence {
     }
     uptime = [ordered]@{
       hostUptimeSeconds = 345600
+      hostBootTimeKnown = $true
       serviceUptimeSeconds = 259200
       minimumUptimeHours = "72"
       minimumSatisfied = $true
       serviceStartKnown = $true
+      serviceStartedDuringCurrentBoot = $true
     }
     healthMonitor = [ordered]@{
       status = "ok"

@@ -14,6 +14,7 @@
 | SPA shell file | `SpaShellFile` | n/a | Browser shell file served as the IIS default document and 404 ExecuteURL fallback, for example `_shell.html` |
 | Next.js require static assets | `NextjsRequireStaticAssets` | `NEXTJS_REQUIRE_STATIC_ASSETS` | Require `.next/static` under the standalone runtime root |
 | Next.js require public directory | `NextjsRequirePublicDirectory` | `NEXTJS_REQUIRE_PUBLIC_DIR` | Require `public` under the standalone runtime root when the app serves public files |
+| Next.js require package provenance | `NextjsRequirePackageProvenance` | `NEXTJS_REQUIRE_PACKAGE_PROVENANCE` | Require a kit-generated, safe Next.js package marker and reject a package built for a different OS, CPU architecture, or Linux libc family before the active app directory is replaced |
 | Next.js require Server Actions key | `NextjsRequireServerActionsEncryptionKey` | `NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY` | When true, preflight requires `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in private runtime config and validates base64 AES key length |
 | Next.js require deployment ID | `NextjsRequireDeploymentId` | `NEXTJS_REQUIRE_DEPLOYMENT_ID` | When true, preflight requires `NEXT_DEPLOYMENT_ID` in private runtime config for rolling deployment/version-skew protection |
 | Next.js minimum Node.js version | `NextjsMinimumNodeVersion` | `NEXTJS_MINIMUM_NODE_VERSION` | Minimum Node.js runtime version required by Next.js preflight and status evidence; defaults to `20.9.0` |
@@ -64,6 +65,7 @@
 | IIS site | `IisSiteName` | n/a | Windows IIS site name |
 | IIS app pool | `IisAppPoolName` | n/a | Windows IIS app pool name |
 | IIS certificate | `IisCertificateThumbprint` | n/a | Optional LocalMachine\My certificate thumbprint |
+| Install/build-only environment | `PreparationEnvironment` | `PREPARATION_ENV_FILE` | Optional local-only configuration applied only to install/build commands. Windows uses an environment map; Unix-like hosts use an absolute path to a restricted `NAME=value` file. Neither is copied to the service environment or emitted in deployment evidence. |
 | IIS ARR proxy | `IisEnableArrProxy` | n/a | Enable and configure IIS ARR proxy mode for localhost reverse proxying |
 | IIS URL Rewrite required | `IisRequireUrlRewrite` | n/a | Fail Windows IIS proxy preflight/install if URL Rewrite is missing |
 | IIS ARR required | `IisRequireArrProxy` | n/a | Fail Windows IIS proxy preflight/install if ARR is missing |

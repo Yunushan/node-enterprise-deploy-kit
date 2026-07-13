@@ -369,6 +369,29 @@ for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR HEALTHCHECK_STATE_DIR; do
   fi
 done
 
+if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${PREPARATION_ENV_FILE:-}" ]]; then
+  if [[ "$PREPARATION_ENV_FILE" != /* ]]; then
+    add_error "PREPARATION_ENV_FILE must be an absolute target-local path."
+  elif [[ ! -f "$PREPARATION_ENV_FILE" ]]; then
+    add_error "PREPARATION_ENV_FILE was not found: $PREPARATION_ENV_FILE"
+  else
+    preparation_line_number=0
+    while IFS= read -r preparation_line || [[ -n "$preparation_line" ]]; do
+      preparation_line_number=$((preparation_line_number + 1))
+      preparation_line="${preparation_line%$'\r'}"
+      [[ -z "$preparation_line" || "$preparation_line" == \#* ]] && continue
+      if [[ "$preparation_line" != *=* ]]; then
+        add_error "PREPARATION_ENV_FILE line $preparation_line_number must use NAME=value syntax."
+        continue
+      fi
+      preparation_key="${preparation_line%%=*}"
+      if [[ ! "$preparation_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        add_error "PREPARATION_ENV_FILE line $preparation_line_number has an invalid environment variable name."
+      fi
+    done < "$PREPARATION_ENV_FILE"
+  fi
+fi
+
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && -d "$APP_DIR" && -n "${START_SCRIPT:-}" ]]; then
   if [[ "$START_SCRIPT" = /* ]]; then
     [[ -f "$START_SCRIPT" ]] || add_error "START_SCRIPT file not found: $START_SCRIPT"

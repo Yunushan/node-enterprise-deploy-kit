@@ -394,10 +394,12 @@ function Get-UptimeEvidence {
 
   return [pscustomobject]@{
     HostUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("HostUptimeSeconds", "hostUptimeSeconds")
+    HostBootTimeKnown = Get-BooleanValue -Object $uptime -Names @("HostBootTimeKnown", "hostBootTimeKnown") -Default $false
     ServiceUptimeSeconds = Get-IntegerValue -Object $uptime -Names @("ServiceUptimeSeconds", "serviceUptimeSeconds")
     MinimumUptimeHours = Get-IntegerValue -Object $uptime -Names @("MinimumUptimeHours", "minimumUptimeHours")
     MinimumSatisfied = Get-BooleanValue -Object $uptime -Names @("MinimumSatisfied", "minimumSatisfied")
     ServiceStartKnown = Get-BooleanValue -Object $uptime -Names @("ServiceStartKnown", "serviceStartKnown") -Default $false
+    ServiceStartedDuringCurrentBoot = Get-BooleanValue -Object $uptime -Names @("ServiceStartedDuringCurrentBoot", "serviceStartedDuringCurrentBoot") -Default $false
   }
 }
 
@@ -889,10 +891,12 @@ function New-SelfTestEvidence {
   }
   $unixUptimeEvidence = [ordered]@{
     hostUptimeSeconds = 345600
+    hostBootTimeKnown = $true
     serviceUptimeSeconds = 259200
     minimumUptimeHours = "72"
     minimumSatisfied = $true
     serviceStartKnown = $true
+    serviceStartedDuringCurrentBoot = $true
   }
   $unixHealthMonitorEvidence = [ordered]@{
     status = "ok"
@@ -1047,10 +1051,12 @@ function New-SelfTestEvidence {
         }
         Uptime = [ordered]@{
           HostUptimeSeconds = 345600
+          HostBootTimeKnown = $true
           ServiceUptimeSeconds = 259200
           MinimumUptimeHours = 72
           MinimumSatisfied = $true
           ServiceStartKnown = $true
+          ServiceStartedDuringCurrentBoot = $true
         }
         HealthMonitor = [ordered]@{
           Status = "ok"
@@ -1176,10 +1182,12 @@ function New-SelfTestEvidence {
         }
         Uptime = [ordered]@{
           HostUptimeSeconds = 345600
+          HostBootTimeKnown = $true
           ServiceUptimeSeconds = 259200
           MinimumUptimeHours = 72
           MinimumSatisfied = $true
           ServiceStartKnown = $true
+          ServiceStartedDuringCurrentBoot = $true
         }
         HealthMonitor = [ordered]@{
           Status = "ok"
@@ -1805,6 +1813,12 @@ function Test-EvidenceFile {
   }
   if ($uptimeEvidence.ServiceStartKnown -ne $true) {
     $Issues.Add("$displayFile does not prove service start time / service process uptime was known.") | Out-Null
+  }
+  if ($uptimeEvidence.HostBootTimeKnown -ne $true) {
+    $Issues.Add("$displayFile does not prove host boot-session timing was known.") | Out-Null
+  }
+  if ($uptimeEvidence.ServiceStartedDuringCurrentBoot -ne $true) {
+    $Issues.Add("$displayFile does not prove the service started during the current host boot session.") | Out-Null
   }
   if ($null -eq $uptimeEvidence.ServiceUptimeSeconds -or $uptimeEvidence.ServiceUptimeSeconds -lt 0) {
     $Issues.Add("$displayFile does not prove service process uptime seconds.") | Out-Null
@@ -2434,6 +2448,21 @@ if ($SelfTest) {
     ExpectedReverseProxy = "nginx"
     ExpectedMatrixPath = "config/support-matrix.example.json"
     ExpectedMatrixSha256 = ("d" * 64)
+  }
+
+  $missingBootSessionEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-boot-session-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $missingBootSessionEvidencePath
+  $missingBootSessionFile = Join-Path $missingBootSessionEvidencePath "ubuntu.json"
+  $missingBootSessionEvidence = Get-Content -LiteralPath $missingBootSessionFile -Raw | ConvertFrom-Json
+  $missingBootSessionEvidence.uptime.serviceStartedDuringCurrentBoot = $false
+  $missingBootSessionEvidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $missingBootSessionFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "does not prove the service started during the current host boot session" -Parameters @{
+    EvidencePath = $missingBootSessionEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    RequireCollectorSha256 = $true
+    RequireMinimumUptimeHours = 72
   }
 
   $badWorkflowMatrixEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-workflow-matrix-$([Guid]::NewGuid().ToString('N'))"

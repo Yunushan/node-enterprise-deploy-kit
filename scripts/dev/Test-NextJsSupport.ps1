@@ -81,9 +81,21 @@ function Test-LinuxRuntimeEnvironmentDefaults {
       'write_env_value "BIND_ADDRESS" "$BIND_ADDRESS"',
       'write_env_value "HOST" "$runtime_host"',
       'write_env_value "HOSTNAME" "$runtime_host"',
+      'PREPARATION_ENV_FILE="${PREPARATION_ENV_FILE:-}"',
+      'load_preparation_environment',
+      'PREPARATION_ENV_FILE line $line_number must use NAME=value syntax.',
+      'env "${PREPARATION_ENV_ASSIGNMENTS[@]}" bash -lc',
       'NODE_ENV|PORT|APP_PORT|APP_NAME|BIND_ADDRESS|HOST|HOSTNAME|"") continue ;;'
     )) {
     Assert-FileContainsText -Path $installerPath -ExpectedText $expected
+  }
+
+  $preflightPath = Join-Path $RepoRoot "scripts/linux/test-deployment-preflight.sh"
+  foreach ($expected in @(
+      'PREPARATION_ENV_FILE must be an absolute target-local path.',
+      'PREPARATION_ENV_FILE line $preparation_line_number must use NAME=value syntax.'
+    )) {
+    Assert-FileContainsText -Path $preflightPath -ExpectedText $expected
   }
 
   Assert-FileContainsText `
@@ -128,6 +140,71 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
   }
 }
 
+function Test-WindowsPreparationEnvironmentIsolation {
+  $preparationPath = Join-Path $RepoRoot "scripts/windows/Invoke-AppPreparation.ps1"
+  foreach ($expected in @(
+      "Get-PreparationEnvironment",
+      "Invoke-WithPreparationEnvironment",
+      "PreparationEnvironment contains an invalid environment variable name.",
+      '[Environment]::SetEnvironmentVariable($name, [string]$Environment[$name], "Process")',
+      '[Environment]::SetEnvironmentVariable($name, $previousValues[$name], "Process")'
+    )) {
+    Assert-FileContainsText -Path $preparationPath -ExpectedText $expected
+  }
+
+  $testRoot = Join-Path $RepoRoot (".tmp\preparation-environment-" + [guid]::NewGuid().ToString("N"))
+  $appDirectory = Join-Path $testRoot "app"
+  $configPath = Join-Path $testRoot "app.config.json"
+  $outputPath = Join-Path $testRoot "install-environment.txt"
+  $variableName = "NODE_ENTERPRISE_DEPLOY_KIT_PREPARATION_TEST"
+  $previousValue = [Environment]::GetEnvironmentVariable($variableName, "Process")
+
+  try {
+    New-Directory $appDirectory
+    [Environment]::SetEnvironmentVariable($variableName, "outside", "Process")
+    $config = [ordered]@{
+      AppName = "PreparationEnvironmentTest"
+      AppDirectory = $appDirectory
+      InstallCommand = "echo %$variableName%> `"$outputPath`""
+      BuildCommand = ""
+      PreparationEnvironment = [ordered]@{
+        $variableName = "inside"
+      }
+    }
+    Write-Utf8NoBom -Path $configPath -Text (($config | ConvertTo-Json -Depth 10) + "`n")
+
+    & $preparationPath -ConfigPath $configPath -SkipBuild | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Invoke-AppPreparation.ps1 failed while testing PreparationEnvironment."
+    }
+    if ((Get-Content -LiteralPath $outputPath -Raw).Trim() -ne "inside") {
+      throw "PreparationEnvironment was not visible to InstallCommand."
+    }
+    if ([Environment]::GetEnvironmentVariable($variableName, "Process") -ne "outside") {
+      throw "PreparationEnvironment was not restored after InstallCommand."
+    }
+
+    $config.PreparationEnvironment = [ordered]@{ "INVALID-NAME" = "value" }
+    Write-Utf8NoBom -Path $configPath -Text (($config | ConvertTo-Json -Depth 10) + "`n")
+    $invalidError = ""
+    try {
+      & $preparationPath -ConfigPath $configPath -SkipInstall -SkipBuild
+    }
+    catch {
+      $invalidError = $_.Exception.Message
+    }
+    if ($invalidError -notmatch "invalid environment variable name") {
+      throw "PreparationEnvironment should reject invalid variable names."
+    }
+  }
+  finally {
+    [Environment]::SetEnvironmentVariable($variableName, $previousValue, "Process")
+    if (Test-Path -LiteralPath $testRoot) {
+      Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Next.js runtime layout"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "MinimumNodeVersion"
@@ -142,10 +219,12 @@ function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the configured IIS site is started."
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Health = [pscustomobject]"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "Uptime = [pscustomobject]"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "ServiceStartedDuringCurrentBoot"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "status.ps1") -ExpectedText "HealthMonitor = [pscustomobject]"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"ownedByService"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"health": {'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"uptime": {'
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"serviceStartedDuringCurrentBoot"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"healthMonitor": {'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"minimumNodeVersion"'
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/linux/status-node-app.sh") -ExpectedText '"nodeVersionSatisfied"'
@@ -156,6 +235,7 @@ function Test-PostDeployDiagnosticsIncludeNextJsLayout {
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the configured app port is owned by the configured service process"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the HTTP health probe was performed"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove service process uptime seconds"
+  Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the service started during the current host boot session"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove health monitor status ok"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the systemd healthcheck timer exists"
   Assert-FileContainsText -Path (Join-Path $RepoRoot "scripts/dev/Test-HostEvidence.ps1") -ExpectedText "does not prove the launchd healthcheck plist exists"
@@ -193,6 +273,7 @@ function New-WindowsConfig {
     [switch]$NoEnvironment,
     [switch]$RequireServerActionsEncryptionKey,
     [switch]$RequireDeploymentId,
+    [switch]$RequirePackageProvenance,
     [switch]$WithMultiInstanceEnvironment,
     [string]$ServerActionsEncryptionKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
     [string]$DeploymentId = "example-deploy-001"
@@ -217,6 +298,7 @@ function New-WindowsConfig {
     NextjsDeploymentMode = $NextjsDeploymentMode
     NextjsRequireStaticAssets = $true
     NextjsRequirePublicDirectory = $false
+    NextjsRequirePackageProvenance = [bool]$RequirePackageProvenance
     NextjsRequireServerActionsEncryptionKey = [bool]$RequireServerActionsEncryptionKey
     NextjsRequireDeploymentId = [bool]$RequireDeploymentId
     NextjsMinimumNodeVersion = "20.9.0"
@@ -835,6 +917,7 @@ function Invoke-ExpectBashFailure {
 Write-Step "Next.js support"
 Test-LinuxRuntimeEnvironmentDefaults
 Test-WindowsFallbackRuntimeEnvironmentDefaults
+Test-WindowsPreparationEnvironmentIsolation
 Test-PostDeployDiagnosticsIncludeNextJsLayout
 $testRoot = Join-Path $RepoRoot (".tmp\nextjs-support-" + [guid]::NewGuid().ToString("N"))
 $windowsPreflight = Join-Path $RepoRoot "scripts\windows\Test-DeploymentPreflight.ps1"
@@ -1107,13 +1190,16 @@ try {
   $windowsImportRoot = Join-Path $testRoot "windows-import"
   $windowsImportConfig = Join-Path $windowsImportRoot "app.config.json"
   $windowsImportApp = Join-Path $windowsImportRoot "app"
-  New-WindowsConfig -Path $windowsImportConfig -AppDirectory $windowsImportApp -ServiceDirectory (Join-Path $windowsImportRoot "svc") -LogDirectory (Join-Path $windowsImportRoot "logs") -Port 39109
+  New-WindowsConfig -Path $windowsImportConfig -AppDirectory $windowsImportApp -ServiceDirectory (Join-Path $windowsImportRoot "svc") -LogDirectory (Join-Path $windowsImportRoot "logs") -Port 39109 -RequirePackageProvenance
   Invoke-ExpectImportPowerShellSuccess -ConfigPath $windowsImportConfig -PackagePath $windowsPackagePath
   if (-not (Test-Path -LiteralPath (Join-Path $windowsImportApp "server.js") -PathType Leaf)) {
     throw "Windows package import did not place server.js into AppDirectory."
   }
   if (-not (Test-Path -LiteralPath (Join-Path $windowsImportApp ".next\static") -PathType Container)) {
     throw "Windows package import did not place .next/static into AppDirectory."
+  }
+  if (Test-Path -LiteralPath (Join-Path $windowsImportApp ".node-enterprise-package.json") -PathType Leaf) {
+    throw "Windows package provenance marker must not be copied into AppDirectory."
   }
   $windowsImportManifest = Join-Path $windowsImportApp ".node-enterprise-deploy.json"
   if (-not (Test-Path -LiteralPath $windowsImportManifest -PathType Leaf)) {
@@ -1130,8 +1216,27 @@ try {
   if ($windowsImportManifestEvidence.nextBuildId -ne "example-build") {
     throw "Windows deployment manifest should include the imported Next.js build ID."
   }
+  if ($windowsImportManifestEvidence.packageProvenance.buildPlatform -ne "windows") {
+    throw "Windows deployment manifest should include verified Windows package provenance."
+  }
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsPackagePath
   Assert-FileDoesNotContainText -Path $windowsImportManifest -UnexpectedText $windowsImportRoot
+
+  $windowsWrongPlatformRoot = Join-Path $testRoot "windows-package-wrong-platform"
+  Expand-Archive -LiteralPath $windowsPackagePath -DestinationPath $windowsWrongPlatformRoot -Force
+  $windowsWrongPlatformMarker = Join-Path $windowsWrongPlatformRoot ".node-enterprise-package.json"
+  $windowsWrongPlatformProvenance = Get-Content -LiteralPath $windowsWrongPlatformMarker -Raw | ConvertFrom-Json
+  $windowsWrongPlatformProvenance.buildPlatform = "linux"
+  Write-Utf8NoBom -Path $windowsWrongPlatformMarker -Text (($windowsWrongPlatformProvenance | ConvertTo-Json -Depth 10) + "`n")
+  $windowsWrongPlatformPackage = Join-Path $testRoot "packages\wrong-platform.zip"
+  New-ZipFromDirectory -SourceDirectory $windowsWrongPlatformRoot -OutputPath $windowsWrongPlatformPackage
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsWrongPlatformPackage -ExpectedText "built for 'linux'"
+
+  $windowsMissingProvenanceRoot = Join-Path $testRoot "windows-package-missing-provenance"
+  New-StandaloneLayout -AppDirectory $windowsMissingProvenanceRoot
+  $windowsMissingProvenancePackage = Join-Path $testRoot "packages\missing-provenance.zip"
+  New-ZipFromDirectory -SourceDirectory $windowsMissingProvenanceRoot -OutputPath $windowsMissingProvenancePackage
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsMissingProvenancePackage -ExpectedText "package provenance is required"
 
   if (Test-WindowsStatusSmokeSupported) {
     $windowsImportStatusJson = Join-Path $windowsImportRoot "status-import.json"
@@ -1145,6 +1250,9 @@ try {
     }
     if ($windowsImportStatusEvidence.DeploymentIdentity.PackageSha256 -ne $windowsPackageSha256) {
       throw "Windows status JSON should include the imported package SHA256."
+    }
+    if ($windowsImportStatusEvidence.DeploymentIdentity.PackageProvenance.BuildPlatform -ne "windows") {
+      throw "Windows status JSON should include the verified package build platform."
     }
     Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsPackagePath
     Assert-FileDoesNotContainText -Path $windowsImportStatusJson -UnexpectedText $windowsImportRoot

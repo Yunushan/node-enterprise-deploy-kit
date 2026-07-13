@@ -166,6 +166,17 @@ function Test-WindowsExampleConfig {
   if (-not $config.PSObject.Properties["ServiceAccountPassword"]) {
     throw "$relativePathForMessage is missing ServiceAccountPassword."
   }
+  if (-not $config.PSObject.Properties["PreparationEnvironment"] -or $null -eq $config.PreparationEnvironment) {
+    throw "$relativePathForMessage is missing PreparationEnvironment."
+  }
+  foreach ($property in @($config.PreparationEnvironment.PSObject.Properties)) {
+    if ([string]$property.Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+      throw "$relativePathForMessage PreparationEnvironment contains an invalid environment variable name."
+    }
+    if ($null -eq $property.Value) {
+      throw "$relativePathForMessage PreparationEnvironment contains a missing value."
+    }
+  }
   foreach ($name in @("PackagePath", "PackageExpectedFiles", "PackageStripSingleTopLevelDirectory")) {
     if (-not $config.PSObject.Properties[$name]) {
       throw "$relativePathForMessage is missing $name."
@@ -356,6 +367,12 @@ function Test-WindowsStaticIisExampleConfig {
   }
   if ([string]$config.BuildCommand -ne "npm run build") {
     throw "static_iis example BuildCommand must use npm run build."
+  }
+  if (-not $config.PSObject.Properties["PreparationEnvironment"] -or $null -eq $config.PreparationEnvironment) {
+    throw "static_iis example PreparationEnvironment must be an object."
+  }
+  if (@($config.PreparationEnvironment.PSObject.Properties).Count -ne 0) {
+    throw "static_iis example PreparationEnvironment must be empty."
   }
   if ([string]$config.ServiceManager -ne "none") {
     throw "static_iis example must not configure a Node service manager."

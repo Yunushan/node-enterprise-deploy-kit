@@ -94,6 +94,23 @@ The default install flow is:
 preflight -> optional package import -> InstallCommand -> BuildCommand -> service install/update -> IIS config -> health task
 ```
 
+When the server reaches npm through a corporate TLS-inspection proxy or a
+private registry, keep CA configuration target-local and apply it only during
+the install/build phase. `PreparationEnvironment` is intentionally not copied
+into the running service environment:
+
+```json
+{
+  "PreparationEnvironment": {
+    "NODE_OPTIONS": "--use-system-ca"
+  }
+}
+```
+
+Use `NODE_EXTRA_CA_CERTS` with an approved local PEM path on Node.js versions
+that do not support `--use-system-ca`. Do not disable npm or Node TLS
+verification. See [Troubleshooting](TROUBLESHOOTING.md#npm-certificate-validation-on-enterprise-networks).
+
 To deploy a built `.zip` artifact, set `PackagePath` in config or pass
 `-PackagePath` to the wrapper:
 

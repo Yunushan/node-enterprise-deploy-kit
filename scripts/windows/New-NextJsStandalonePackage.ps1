@@ -25,6 +25,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$PackageProvenanceFileName = ".node-enterprise-package.json"
+$PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v1"
 
 function Resolve-FullPath {
     param([string]$Path)
@@ -151,6 +153,49 @@ function Assert-NextJsPackageValid {
     & $validator @arguments *>&1 | Out-Null
 }
 
+function Get-WindowsArchitecture {
+    $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
+    }
+    if ($null -eq $raw) { $raw = "" }
+    switch ($raw.Trim().ToLowerInvariant()) {
+        { $_ -in @("amd64", "x64") } { return "x64" }
+        { $_ -in @("arm64", "aarch64") } { return "arm64" }
+        { $_ -in @("x86", "i386", "i686") } { return "x86" }
+        default { return "unknown" }
+    }
+}
+
+function Write-PackageProvenance {
+    param(
+        [string]$Root,
+        [string]$Mode,
+        [string]$NextPackageJsonPath,
+        [string]$BuildIdPath
+    )
+
+    $nextMetadata = Get-Content -LiteralPath $NextPackageJsonPath -Raw | ConvertFrom-Json
+    $nextVersion = ([string]$nextMetadata.version).Trim()
+    $buildId = ([string](Get-Content -LiteralPath $BuildIdPath -TotalCount 1)).Trim()
+    if ([string]::IsNullOrWhiteSpace($nextVersion) -or [string]::IsNullOrWhiteSpace($buildId)) {
+        throw "Next.js package provenance requires a non-empty Next.js version and BUILD_ID."
+    }
+
+    $provenance = [ordered]@{
+        schema = $PackageProvenanceSchema
+        appFramework = "nextjs"
+        nextjsMode = $Mode
+        buildPlatform = "windows"
+        buildArchitecture = Get-WindowsArchitecture
+        buildLibc = "not-applicable"
+        nextVersion = $nextVersion
+        nextBuildId = $buildId
+    }
+    $path = Join-Path $Root $PackageProvenanceFileName
+    $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
 $projectRoot = Resolve-FullPath $ProjectPath
 if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
     throw "ProjectPath was not found: $projectRoot"
@@ -262,6 +307,13 @@ if ($PSCmdlet.ShouldProcess($stageRoot, "Stage Next.js standalone package")) {
         }
         Copy-Item -LiteralPath $publicRoot -Destination $stagePublic -Recurse -Force
     }
+
+    $stageNextPackageJsonPath = Join-Path $stageRoot "node_modules\next\package.json"
+    Write-PackageProvenance `
+        -Root $stageRoot `
+        -Mode $modeNormalized `
+        -NextPackageJsonPath $stageNextPackageJsonPath `
+        -BuildIdPath (Join-Path $stageRoot ".next\BUILD_ID")
 
     Assert-NoBlockedArtifactFiles -Root $stageRoot
 }

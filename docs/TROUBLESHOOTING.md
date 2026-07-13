@@ -69,3 +69,37 @@ response bodies are acceptable in the generated bundle.
 | Works until user logs out | App was started manually | Install as service |
 | Dies after 1–2 days | Memory leak, crash, idle recycle, or service not managed | Use health checks, service recovery, and analyze logs |
 | PM2 list is empty | PM2 is not managing the app | Use WinSW or a native Linux service manager, or fix PM2 process definition |
+| `npm ci` or `npm install` fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE` | A corporate HTTPS-inspection proxy or private registry CA is not trusted by Node.js | Install the organization's CA in the host trust store, then use target-local `PreparationEnvironment` configuration. Never disable TLS verification. |
+
+## npm certificate validation on enterprise networks
+
+Keep certificate and proxy settings out of version control. On a Windows host
+with a Node.js version that supports the system CA store, put this only in the
+target-local config file (for example `config/windows/app.config.json`, which
+must remain ignored):
+
+```json
+{
+  "PreparationEnvironment": {
+    "NODE_OPTIONS": "--use-system-ca"
+  }
+}
+```
+
+`PreparationEnvironment` applies only to `InstallCommand` and `BuildCommand`.
+It is not written to the service XML, IIS configuration, status evidence, or
+logs by this kit. For Node.js versions that do not support `--use-system-ca`,
+have the platform team provide an approved PEM bundle and set the local
+`NODE_EXTRA_CA_CERTS` path instead:
+
+```json
+{
+  "PreparationEnvironment": {
+    "NODE_EXTRA_CA_CERTS": "C:\\ProgramData\\Company\\certs\\enterprise-ca.pem"
+  }
+}
+```
+
+Do not use `strict-ssl=false`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, or a
+certificate-validation bypass. They make a deployment appear to work by
+removing the protection that detects a compromised registry or proxy.

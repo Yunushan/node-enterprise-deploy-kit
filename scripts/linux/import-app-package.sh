@@ -36,6 +36,15 @@ SERVICE_MANAGER="${SERVICE_MANAGER:-$(default_service_manager "$(detect_platform
 APP_FRAMEWORK_NORMALIZED="$(normalize_name "${APP_FRAMEWORK:-node}")"
 NEXTJS_DEPLOYMENT_MODE_NORMALIZED="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-standalone}")"
 REACT_DOCUMENT_ROOT_NORMALIZED="${REACT_DOCUMENT_ROOT:-build}"
+NEXTJS_REQUIRE_PACKAGE_PROVENANCE="${NEXTJS_REQUIRE_PACKAGE_PROVENANCE:-false}"
+PACKAGE_PROVENANCE_FILE_NAME=".node-enterprise-package.json"
+PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v1"
+PACKAGE_PROVENANCE_SCHEMA_VALUE=""
+PACKAGE_PROVENANCE_BUILD_PLATFORM=""
+PACKAGE_PROVENANCE_BUILD_ARCHITECTURE=""
+PACKAGE_PROVENANCE_BUILD_LIBC=""
+PACKAGE_PROVENANCE_NEXT_VERSION=""
+PACKAGE_PROVENANCE_NEXT_BUILD_ID=""
 
 safe_relative_path() {
   local path="${1//\\//}"
@@ -137,6 +146,116 @@ validate_react_package_if_needed() {
   bash "$SCRIPT_DIR/validate-react-static-package.sh" "${args[@]}"
 }
 
+target_platform() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Linux) printf '%s\n' "linux" ;;
+    Darwin) printf '%s\n' "macos" ;;
+    FreeBSD) printf '%s\n' "freebsd" ;;
+    OpenBSD) printf '%s\n' "openbsd" ;;
+    NetBSD) printf '%s\n' "netbsd" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+target_architecture() {
+  case "$(uname -m 2>/dev/null || echo unknown)" in
+    x86_64|amd64) printf '%s\n' "x64" ;;
+    aarch64|arm64) printf '%s\n' "arm64" ;;
+    i386|i486|i586|i686|x86) printf '%s\n' "x86" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+target_libc() {
+  [[ "$(target_platform)" == "linux" ]] || {
+    printf '%s\n' "not-applicable"
+    return 0
+  }
+
+  if command -v getconf >/dev/null 2>&1 && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+    printf '%s\n' "glibc"
+    return 0
+  fi
+  if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi "musl"; then
+    printf '%s\n' "musl"
+    return 0
+  fi
+  printf '%s\n' "unknown"
+}
+
+provenance_json_value() {
+  local file="$1" key="$2"
+  awk -F'"' -v key="$key" '$2 == key { print $4; exit }' "$file"
+}
+
+require_provenance_value() {
+  local file="$1" key="$2" value
+  value="$(provenance_json_value "$file" "$key")"
+  [[ -n "$value" ]] || {
+    echo "Next.js package provenance is missing or has an empty $key." >&2
+    exit 1
+  }
+  printf '%s\n' "$value"
+}
+
+validate_nextjs_package_provenance_if_needed() {
+  if [[ "$APP_FRAMEWORK_NORMALIZED" != "next" && "$APP_FRAMEWORK_NORMALIZED" != "nextjs" && "$APP_FRAMEWORK_NORMALIZED" != "next-js" ]]; then
+    return 0
+  fi
+
+  local marker_path="$1/$PACKAGE_PROVENANCE_FILE_NAME" required=false
+  if is_true "$NEXTJS_REQUIRE_PACKAGE_PROVENANCE"; then
+    required=true
+  fi
+  if [[ ! -f "$marker_path" ]]; then
+    if [[ "$required" == true ]]; then
+      echo "Next.js package provenance is required, but $PACKAGE_PROVENANCE_FILE_NAME is missing. Package on a compatible target or use the kit packaging helper." >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  local schema source_framework source_mode source_platform source_architecture source_libc package_next_version package_next_build_id current_platform current_architecture current_libc
+  schema="$(require_provenance_value "$marker_path" "schema")"
+  source_framework="$(normalize_name "$(require_provenance_value "$marker_path" "appFramework")")"
+  source_mode="$(normalize_name "$(require_provenance_value "$marker_path" "nextjsMode")")"
+  source_platform="$(normalize_name "$(require_provenance_value "$marker_path" "buildPlatform")")"
+  source_architecture="$(normalize_name "$(require_provenance_value "$marker_path" "buildArchitecture")")"
+  source_libc="$(normalize_name "$(require_provenance_value "$marker_path" "buildLibc")")"
+  package_next_version="$(require_provenance_value "$marker_path" "nextVersion")"
+  package_next_build_id="$(require_provenance_value "$marker_path" "nextBuildId")"
+  current_platform="$(target_platform)"
+  current_architecture="$(target_architecture)"
+  current_libc="$(target_libc)"
+
+  [[ "$schema" == "$PACKAGE_PROVENANCE_SCHEMA" ]] || { echo "Unsupported Next.js package provenance schema: $schema" >&2; exit 1; }
+  [[ "$source_framework" == "nextjs" || "$source_framework" == "next" || "$source_framework" == "next-js" ]] || { echo "Next.js package provenance appFramework must be nextjs." >&2; exit 1; }
+  [[ "$source_mode" == "$NEXTJS_DEPLOYMENT_MODE_NORMALIZED" ]] || { echo "Next.js package provenance mode '$source_mode' does not match target mode '$NEXTJS_DEPLOYMENT_MODE_NORMALIZED'." >&2; exit 1; }
+  [[ "$source_platform" == "$current_platform" ]] || { echo "Next.js package was built for '$source_platform', but this target is '$current_platform'." >&2; exit 1; }
+  [[ "$source_architecture" == "$current_architecture" ]] || { echo "Next.js package architecture '$source_architecture' does not match target architecture '$current_architecture'." >&2; exit 1; }
+  if [[ "$current_platform" == "linux" && "$source_libc" != "$current_libc" ]]; then
+    echo "Next.js package libc '$source_libc' does not match Linux target libc '$current_libc'." >&2
+    exit 1
+  fi
+  if [[ "$current_platform" != "linux" && "$source_libc" != "not-applicable" ]]; then
+    echo "Next.js package provenance buildLibc must be not-applicable on $current_platform." >&2
+    exit 1
+  fi
+  if [[ "$required" == true && ( "$current_platform" == "unknown" || "$current_architecture" == "unknown" || ( "$current_platform" == "linux" && "$current_libc" == "unknown" ) ) ]]; then
+    echo "Cannot enforce Next.js package provenance because target platform, architecture, or Linux libc is unknown." >&2
+    exit 1
+  fi
+
+  PACKAGE_PROVENANCE_SCHEMA_VALUE="$schema"
+  PACKAGE_PROVENANCE_BUILD_PLATFORM="$source_platform"
+  PACKAGE_PROVENANCE_BUILD_ARCHITECTURE="$source_architecture"
+  PACKAGE_PROVENANCE_BUILD_LIBC="$source_libc"
+  PACKAGE_PROVENANCE_NEXT_VERSION="$package_next_version"
+  PACKAGE_PROVENANCE_NEXT_BUILD_ID="$package_next_build_id"
+  rm -f -- "$marker_path"
+  echo "Next.js package provenance verified: $source_platform/$source_architecture/$source_libc"
+}
+
 stop_app_service_if_present() {
   local manager
   manager="$(normalize_name "$SERVICE_MANAGER")"
@@ -209,6 +328,18 @@ write_deployment_manifest() {
     printf '  "packageName": "%s",\n' "$(json_escape "$package_name")"
     printf '  "packageSha256": "%s",\n' "$(json_escape "$package_hash")"
     printf '  "deploymentId": "%s",\n' "$(json_escape "$deployment_id")"
+    if [[ -n "$PACKAGE_PROVENANCE_SCHEMA_VALUE" ]]; then
+      printf '  "packageProvenance": {\n'
+      printf '    "schema": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_SCHEMA_VALUE")"
+      printf '    "buildPlatform": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_PLATFORM")"
+      printf '    "buildArchitecture": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_ARCHITECTURE")"
+      printf '    "buildLibc": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_BUILD_LIBC")"
+      printf '    "nextVersion": "%s",\n' "$(json_escape "$PACKAGE_PROVENANCE_NEXT_VERSION")"
+      printf '    "nextBuildId": "%s"\n' "$(json_escape "$PACKAGE_PROVENANCE_NEXT_BUILD_ID")"
+      printf '  },\n'
+    else
+      printf '  "packageProvenance": null,\n'
+    fi
     printf '  "nextBuildId": "%s"\n' "$(json_escape "$next_build_id")"
     printf '}\n'
   } > "$manifest_path"
@@ -290,6 +421,8 @@ while IFS= read -r expected; do
     exit 1
   fi
 done < <(runtime_env_key_list "$PACKAGE_EXPECTED_FILES")
+
+validate_nextjs_package_provenance_if_needed "$source_root"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root or with sudo." >&2

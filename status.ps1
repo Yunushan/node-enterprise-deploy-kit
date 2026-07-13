@@ -111,10 +111,12 @@ $script:healthEvidence = [pscustomobject]@{
 }
 $script:uptimeEvidence = [pscustomobject]@{
     HostUptimeSeconds = $null
+    HostBootTimeKnown = $false
     ServiceUptimeSeconds = $null
     MinimumUptimeHours = $MinimumUptimeHours
     MinimumSatisfied = $null
     ServiceStartKnown = $false
+    ServiceStartedDuringCurrentBoot = $null
 }
 $script:serviceDefinitionEvidence = [pscustomobject]@{
     Checked = $false
@@ -464,6 +466,17 @@ function Get-SafeNextJsRuntimeEvidence($Evidence) {
         NextPackageJsonExists = Get-ObjectPropertyValue $Evidence "NextPackageJsonExists" $null
     }
 }
+function Get-SafePackageProvenanceEvidence($Provenance) {
+    if ($null -eq $Provenance) { return $null }
+    return [pscustomobject]@{
+        Schema = [string](Get-ObjectPropertyValue $Provenance "schema" "")
+        BuildPlatform = [string](Get-ObjectPropertyValue $Provenance "buildPlatform" "")
+        BuildArchitecture = [string](Get-ObjectPropertyValue $Provenance "buildArchitecture" "")
+        BuildLibc = [string](Get-ObjectPropertyValue $Provenance "buildLibc" "")
+        NextVersion = [string](Get-ObjectPropertyValue $Provenance "nextVersion" "")
+        NextBuildId = [string](Get-ObjectPropertyValue $Provenance "nextBuildId" "")
+    }
+}
 function Get-SafeDeploymentIdentityEvidence($Evidence) {
     return [pscustomobject]@{
         Status = [string](Get-ObjectPropertyValue $Evidence "Status" "unknown")
@@ -476,6 +489,7 @@ function Get-SafeDeploymentIdentityEvidence($Evidence) {
         PackageSha256 = [string](Get-ObjectPropertyValue $Evidence "PackageSha256" "")
         PackageImportedAtUtc = [string](Get-ObjectPropertyValue $Evidence "PackageImportedAtUtc" "")
         ManifestNextBuildId = [string](Get-ObjectPropertyValue $Evidence "ManifestNextBuildId" "")
+        PackageProvenance = Get-SafePackageProvenanceEvidence (Get-ObjectPropertyValue $Evidence "PackageProvenance" $null)
     }
 }
 function Get-SafeRelativeUrlPath([string]$Path, [string]$Default) {
@@ -855,6 +869,7 @@ function Update-DeploymentIdentityEvidence {
     $manifestDeploymentId = Get-ManifestString $manifest "deploymentId"
     $manifestNextBuildId = Get-ManifestString $manifest "nextBuildId"
     $packageSha256 = Get-ManifestString $manifest "packageSha256"
+    $packageProvenance = Get-ObjectPropertyValue $manifest "packageProvenance" $null
     $deploymentId = Get-ConfigString $config "DeploymentId" ""
     if ([string]::IsNullOrWhiteSpace($deploymentId)) {
         $deploymentId = Get-ConfigEnvironmentString $config "NEXT_DEPLOYMENT_ID" ""
@@ -884,6 +899,7 @@ function Update-DeploymentIdentityEvidence {
         PackageSha256 = $packageSha256
         PackageImportedAtUtc = Get-ManifestString $manifest "generatedAtUtc"
         ManifestNextBuildId = $manifestNextBuildId
+        PackageProvenance = $packageProvenance
         Status = $status
     }
 }
@@ -1182,6 +1198,7 @@ $platformEvidence = [pscustomobject]@{
 }
 if ($os -and $os.LastBootUpTime) {
     $script:uptimeEvidence.HostUptimeSeconds = [int64]((Get-Date) - $os.LastBootUpTime).TotalSeconds
+    $script:uptimeEvidence.HostBootTimeKnown = $true
     [pscustomobject]@{
         ComputerName = $env:COMPUTERNAME
         LastBootUpTime = $os.LastBootUpTime
@@ -1233,6 +1250,13 @@ if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessI
         $wrapperUptimeSeconds = [int64]((Get-Date) - $wrapper.StartTime).TotalSeconds
         $script:uptimeEvidence.ServiceUptimeSeconds = $wrapperUptimeSeconds
         $script:uptimeEvidence.ServiceStartKnown = $true
+        if ($script:uptimeEvidence.HostBootTimeKnown) {
+            # Allow a small tolerance for CIM/process sampling around boot.
+            $script:uptimeEvidence.ServiceStartedDuringCurrentBoot = ($wrapper.StartTime -ge $os.LastBootUpTime.AddMinutes(-5))
+            if ($script:uptimeEvidence.ServiceStartedDuringCurrentBoot -ne $true) {
+                Add-Finding -Severity Critical -Message "Service wrapper start time predates the current host boot session."
+            }
+        }
         if ($MinimumUptimeHours -gt 0) {
             $script:uptimeEvidence.MinimumSatisfied = ($wrapperUptimeSeconds -ge ($MinimumUptimeHours * 3600))
         }
@@ -1286,7 +1310,7 @@ Update-DeploymentIdentityEvidence
 Write-Host ""
 Write-Host "Deployment identity" -ForegroundColor Yellow
 $script:deploymentIdentityEvidence |
-    Select-Object Status, AppDirectoryName, DeploymentId, NextBuildId, ManifestExists, PackageName, PackageSha256, PackageImportedAtUtc |
+    Select-Object Status, AppDirectoryName, DeploymentId, NextBuildId, ManifestExists, PackageName, PackageSha256, PackageImportedAtUtc, PackageProvenance |
     Format-List
 
 Write-Host ""
@@ -1635,10 +1659,12 @@ $statusEvidence = [pscustomobject]@{
     }
     Uptime = [pscustomobject]@{
         HostUptimeSeconds = $script:uptimeEvidence.HostUptimeSeconds
+        HostBootTimeKnown = [bool]$script:uptimeEvidence.HostBootTimeKnown
         ServiceUptimeSeconds = $script:uptimeEvidence.ServiceUptimeSeconds
         MinimumUptimeHours = [int]$script:uptimeEvidence.MinimumUptimeHours
         MinimumSatisfied = $script:uptimeEvidence.MinimumSatisfied
         ServiceStartKnown = [bool]$script:uptimeEvidence.ServiceStartKnown
+        ServiceStartedDuringCurrentBoot = $script:uptimeEvidence.ServiceStartedDuringCurrentBoot
     }
     HealthMonitor = [pscustomobject]@{
         Status = [string]$script:healthMonitorEvidence.Status

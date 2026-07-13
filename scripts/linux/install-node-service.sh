@@ -19,6 +19,8 @@ BUILD_COMMAND="${BUILD_COMMAND:-}"
 SKIP_INSTALL="${SKIP_INSTALL:-false}"
 SKIP_BUILD="${SKIP_BUILD:-false}"
 RUNTIME_ENV_KEYS="${RUNTIME_ENV_KEYS:-}"
+PREPARATION_ENV_FILE="${PREPARATION_ENV_FILE:-}"
+PREPARATION_ENV_ASSIGNMENTS=()
 
 require_root() { if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi; }
 write_env_value() {
@@ -55,13 +57,41 @@ run_as_service_user() {
   fi
   echo "Running $label..."
   if command -v runuser >/dev/null 2>&1; then
-    runuser -u "$SERVICE_USER" -- bash -lc "cd \"$APP_DIR\" && $command_text"
+    runuser -u "$SERVICE_USER" -- env "${PREPARATION_ENV_ASSIGNMENTS[@]}" bash -lc "cd \"$APP_DIR\" && $command_text"
   elif command -v su >/dev/null 2>&1; then
-    su -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text"
+    env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text"
   else
     echo "Cannot run $label as $SERVICE_USER; install runuser/su or run the command manually." >&2
     exit 1
   fi
+}
+load_preparation_environment() {
+  PREPARATION_ENV_ASSIGNMENTS=()
+  if [[ -z "$PREPARATION_ENV_FILE" ]]; then
+    return
+  fi
+  if [[ ! -f "$PREPARATION_ENV_FILE" || ! -r "$PREPARATION_ENV_FILE" ]]; then
+    echo "PREPARATION_ENV_FILE is not readable: $PREPARATION_ENV_FILE" >&2
+    exit 1
+  fi
+
+  local line key value line_number=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_number=$((line_number + 1))
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" != *=* ]]; then
+      echo "PREPARATION_ENV_FILE line $line_number must use NAME=value syntax." >&2
+      exit 1
+    fi
+    key="${line%%=*}"
+    value="${line#*=}"
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo "PREPARATION_ENV_FILE line $line_number has an invalid environment variable name." >&2
+      exit 1
+    fi
+    PREPARATION_ENV_ASSIGNMENTS+=("$key=$value")
+  done < "$PREPARATION_ENV_FILE"
 }
 render_template() {
   local template="$1" output="$2"
@@ -138,6 +168,7 @@ prepare_runtime() {
   chown root:"$SERVICE_GROUP" "$ENV_FILE" || true
 }
 prepare_app() {
+  load_preparation_environment
   if [[ "$SKIP_INSTALL" != "true" ]]; then
     run_as_service_user "$INSTALL_COMMAND" "INSTALL_COMMAND"
   fi
