@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-0BSD-blue.svg"></a>
   <img alt="windows" src="https://img.shields.io/badge/windows-10%20%7C%2011%20%7C%20Server%202012--2025-0078D4.svg">
   <img alt="linux" src="https://img.shields.io/badge/linux-Ubuntu%20%7C%20Debian%20%7C%20RHEL%20%7C%20Fedora%20%7C%20Alpine-success.svg">
   <img alt="unix" src="https://img.shields.io/badge/unix-BSD%20%7C%20macOS-lightgrey.svg">
@@ -1318,4 +1318,4 @@ Use this kit when you need to deploy:
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+0BSD. See [LICENSE](LICENSE).
