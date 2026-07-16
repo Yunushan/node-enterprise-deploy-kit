@@ -12,18 +12,27 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const nextVersion = process.env.NEXTJS_INTEGRATION_NEXT_VERSION || 'latest';
 const keepTestRoot = process.env.KEEP_REAL_NEXTJS_INTEGRATION === 'true';
 const runWindowsServiceIntegration = process.env.RUN_WINSW_SERVICE_INTEGRATION === 'true';
+const runWindowsNssmServiceIntegration = process.env.RUN_NSSM_SERVICE_INTEGRATION === 'true';
+const runWindowsIisIntegration = process.env.RUN_WINDOWS_IIS_INTEGRATION === 'true';
 const runLaunchdServiceIntegration = process.env.RUN_LAUNCHD_SERVICE_INTEGRATION === 'true';
 const runLinuxSystemVServiceIntegration = process.env.RUN_SYSTEMV_SERVICE_INTEGRATION === 'true';
 const runLinuxOpenRcServiceIntegration = process.env.RUN_OPENRC_SERVICE_INTEGRATION === 'true';
 const runLinuxSystemdServiceIntegration = process.env.RUN_SYSTEMD_SERVICE_INTEGRATION === 'true';
+const runApacheProxyIntegration = process.env.RUN_APACHE_PROXY_INTEGRATION === 'true';
+const runNginxProxyIntegration = process.env.RUN_NGINX_PROXY_INTEGRATION === 'true';
+const runHaProxyIntegration = process.env.RUN_HAPROXY_INTEGRATION === 'true';
+const runTraefikProxyIntegration = process.env.RUN_TRAEFIK_PROXY_INTEGRATION === 'true';
 const testRootBase = process.env.NEXTJS_INTEGRATION_TEMP_ROOT
+  || (process.platform === 'linux' && runLinuxSystemdServiceIntegration
+    ? '/srv/node-enterprise-deploy-kit-ci'
+    : null)
   || (process.platform === 'win32' ? path.join(repoRoot, '.tmp') : os.tmpdir());
 const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.platform}-${Date.now()}`);
 
 function usage() {
   console.log('Usage: node scripts/dev/test-real-nextjs-integration.mjs [--help]');
   console.log('Builds a temporary real Next.js project, packages standalone and next-start artifacts, and verifies both serve HTTP.');
-  console.log('RUN_WINSW_SERVICE_INTEGRATION=true, RUN_LAUNCHD_SERVICE_INTEGRATION=true, RUN_SYSTEMD_SERVICE_INTEGRATION=true, RUN_SYSTEMV_SERVICE_INTEGRATION=true, or RUN_OPENRC_SERVICE_INTEGRATION=true runs the matching native service-manager path.');
+  console.log('Set one native service integration flag and optionally one matching reverse-proxy flag to verify a real manager-plus-proxy deployment path.');
 }
 
 function run(command, args, options = {}) {
@@ -78,7 +87,7 @@ async function getFreePort() {
   });
 }
 
-async function waitForPage(url, expectedText, child) {
+async function waitForPage(url, expectedText, child, headers = {}) {
   const deadline = Date.now() + 45000;
   let lastError = 'server did not respond';
 
@@ -89,7 +98,7 @@ async function waitForPage(url, expectedText, child) {
 
     try {
       const response = await new Promise((resolve, reject) => {
-        const request = http.get(url, (result) => {
+        const request = http.get(url, { headers }, (result) => {
           let body = '';
           result.setEncoding('utf8');
           result.on('data', (chunk) => { body += chunk; });
@@ -102,7 +111,7 @@ async function waitForPage(url, expectedText, child) {
       if (response.statusCode === 200 && response.body.includes(expectedText)) {
         return;
       }
-      lastError = `received HTTP ${response.statusCode}`;
+      lastError = `received HTTP ${response.statusCode}: ${response.body.slice(0, 500)}`;
     } catch (error) {
       lastError = error.message;
     }
@@ -111,6 +120,28 @@ async function waitForPage(url, expectedText, child) {
   }
 
   throw new Error(`Timed out waiting for ${url}: ${lastError}`);
+}
+
+async function waitForForwardedProxyHeaders(proxyPort, child, headers = {}, forwardedPort = String(proxyPort)) {
+  const expectedHeaders = `"forwardedProto":"http","forwardedPort":"${forwardedPort}"`;
+  await waitForPage(
+    `http://127.0.0.1:${proxyPort}/api/proxy-evidence`,
+    expectedHeaders,
+    child,
+    headers
+  );
+}
+
+async function waitForForwardedRuntimeHeaders(port, child) {
+  await waitForPage(
+    `http://127.0.0.1:${port}/api/proxy-evidence`,
+    '"forwardedProto":"https","forwardedPort":"443"',
+    child,
+    {
+      'X-Forwarded-Proto': 'https',
+      'X-Forwarded-Port': '443'
+    }
+  );
 }
 
 async function stopProcess(child) {
@@ -132,6 +163,7 @@ async function stopProcess(child) {
 
 async function writeFixture(projectPath, standalone) {
   await fs.mkdir(path.join(projectPath, 'app'), { recursive: true });
+  await fs.mkdir(path.join(projectPath, 'app', 'api', 'proxy-evidence'), { recursive: true });
   await fs.mkdir(path.join(projectPath, 'public'), { recursive: true });
   await fs.writeFile(path.join(projectPath, 'package.json'), JSON.stringify({
     name: 'node-enterprise-deploy-kit-real-nextjs-integration',
@@ -143,6 +175,7 @@ async function writeFixture(projectPath, standalone) {
   }
   await fs.writeFile(path.join(projectPath, 'app', 'layout.js'), "export default function RootLayout({ children }) { return <html><body>{children}</body></html>; }\n");
   await fs.writeFile(path.join(projectPath, 'app', 'page.js'), "export default function Page() { return <main>node-enterprise-deploy-kit real-nextjs-integration</main>; }\n");
+  await fs.writeFile(path.join(projectPath, 'app', 'api', 'proxy-evidence', 'route.js'), "export function GET(request) { return Response.json({ forwardedProto: request.headers.get('x-forwarded-proto') || '', forwardedPort: request.headers.get('x-forwarded-port') || '' }); }\n");
   await fs.writeFile(path.join(projectPath, 'public', 'integration.txt'), 'node-enterprise-deploy-kit\n');
 }
 
@@ -426,45 +459,51 @@ async function verifyUnixManagedRunner(runtimePath, mode, port) {
 
   try {
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', child);
+    await waitForForwardedRuntimeHeaders(port, child);
   } finally {
     await stopProcess(child);
   }
 }
 
-async function verifyWindowsWinSwService(runtimePath, mode, port) {
-  const serviceName = `NodeDeployKitRealNext${Date.now()}${mode === 'standalone' ? 'Standalone' : 'NextStart'}`;
-  const serviceRoot = path.join(testRoot, `winsw-${mode}-${port}`);
-  const configPath = path.join(serviceRoot, 'service.config.json');
-  const serviceDirectory = path.join(serviceRoot, 'service');
-  const logDirectory = path.join(serviceRoot, 'logs');
-  const backupDirectory = path.join(serviceRoot, 'backups');
-  const winSwPath = path.join(serviceRoot, 'winsw', 'WinSW-x64.exe');
+function createWindowsServiceConfig({ serviceName, runtimePath, mode, port, publicPort, serviceManager, serviceRoot }) {
   const startCommand = mode === 'standalone'
     ? 'server.js'
     : path.join('node_modules', 'next', 'dist', 'bin', 'next');
   const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
-  const config = {
+  const iisSiteName = `${serviceName}-Iis`;
+  const iisAppPoolName = `${serviceName}-IisAppPool`;
+  return {
     AppName: serviceName,
     DisplayName: serviceName,
-    Description: 'Temporary real Next.js WinSW CI integration service',
-    DeploymentMode: 'service_only',
+    Description: `Temporary real Next.js ${serviceManager} CI integration service`,
+    DeploymentMode: runWindowsIisIntegration ? 'reverse_proxy' : 'service_only',
     AppFramework: 'nextjs',
     NextjsDeploymentMode: mode,
     NextjsRequireStaticAssets: true,
     NextjsMinimumNodeVersion: '20.9.0',
-    ServiceManager: 'winsw',
-    ReverseProxy: 'none',
+    ServiceManager: serviceManager,
+    ReverseProxy: runWindowsIisIntegration ? 'iis' : 'none',
     ServiceAccount: 'LocalSystem',
     AppDirectory: runtimePath,
-    ServiceDirectory: serviceDirectory,
-    LogDirectory: logDirectory,
-    BackupDirectory: backupDirectory,
+    ServiceDirectory: path.join(serviceRoot, 'service'),
+    LogDirectory: path.join(serviceRoot, 'logs'),
+    BackupDirectory: path.join(serviceRoot, 'backups'),
     NodeExe: process.execPath,
     StartCommand: startCommand,
     NodeArguments: nodeArguments,
     Port: port,
     BindAddress: '127.0.0.1',
     HealthUrl: `http://127.0.0.1:${port}/`,
+    IisSitePath: path.join(serviceRoot, 'iis-site'),
+    IisSiteName: iisSiteName,
+    IisAppPoolName: iisAppPoolName,
+    PublicHostName: '',
+    PublicPort: publicPort,
+    TlsEnabled: false,
+    IisEnableArrProxy: true,
+    IisSetForwardedHeaders: true,
+    IisRequireUrlRewrite: true,
+    IisRequireArrProxy: true,
     Environment: {
       NODE_ENV: 'production',
       PORT: String(port),
@@ -474,6 +513,44 @@ async function verifyWindowsWinSwService(runtimePath, mode, port) {
       NEXT_TELEMETRY_DISABLED: '1'
     }
   };
+}
+
+async function removeTemporaryWindowsIisSite(config) {
+  if (!runWindowsIisIntegration) {
+    return;
+  }
+
+  const command = [
+    '$ErrorActionPreference = "Continue"',
+    'Import-Module WebAdministration',
+    `if (Test-Path -LiteralPath "IIS:\\Sites\\${config.IisSiteName}") { Stop-Website -Name "${config.IisSiteName}" -ErrorAction SilentlyContinue; Remove-Website -Name "${config.IisSiteName}" -ErrorAction SilentlyContinue }`,
+    `if (Test-Path -LiteralPath "IIS:\\AppPools\\${config.IisAppPoolName}") { Remove-WebAppPool -Name "${config.IisAppPoolName}" -ErrorAction SilentlyContinue }`
+  ].join('; ');
+  await run('pwsh', ['-NoProfile', '-Command', command], { allowFailure: true });
+}
+
+async function verifyWindowsIisProxy(config, configPath) {
+  if (!runWindowsIisIntegration) {
+    return;
+  }
+
+  await run('pwsh', [
+    '-NoProfile',
+    '-File', path.join(repoRoot, 'scripts', 'windows', 'Install-ReverseProxy.ps1'),
+    '-ConfigPath', configPath
+  ]);
+  const publicPort = Number(config.PublicPort);
+  await waitForPage(`http://127.0.0.1:${publicPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+  await waitForForwardedProxyHeaders(publicPort, { exitCode: null });
+}
+
+async function verifyWindowsWinSwService(runtimePath, mode, port) {
+  const serviceName = `NodeDeployKitRealNext${Date.now()}${mode === 'standalone' ? 'Standalone' : 'NextStart'}`;
+  const serviceRoot = path.join(testRoot, `winsw-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.config.json');
+  const winSwPath = path.join(serviceRoot, 'winsw', 'WinSW-x64.exe');
+  const publicPort = await getFreePort();
+  const config = createWindowsServiceConfig({ serviceName, runtimePath, mode, port, publicPort, serviceManager: 'winsw', serviceRoot });
 
   await fs.mkdir(serviceRoot, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify(config, null, 2));
@@ -488,7 +565,10 @@ async function verifyWindowsWinSwService(runtimePath, mode, port) {
       '-WinSWDownloadSha256', '05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA'
     ]);
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+    await verifyWindowsIisProxy(config, configPath);
   } finally {
+    await removeTemporaryWindowsIisSite(config);
     await run('pwsh', [
       '-NoProfile',
       '-File', path.join(repoRoot, 'scripts', 'windows', 'Uninstall-NodeService.ps1'),
@@ -498,7 +578,40 @@ async function verifyWindowsWinSwService(runtimePath, mode, port) {
   }
 }
 
-async function verifyMacosLaunchdService(runtimePath, mode, port) {
+async function verifyWindowsNssmService(runtimePath, mode, port) {
+  const serviceName = `NodeDeployKitRealNextNssm${Date.now()}${mode === 'standalone' ? 'Standalone' : 'NextStart'}`;
+  const serviceRoot = path.join(testRoot, `nssm-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.config.json');
+  const nssmPath = process.env.NSSM_PATH || 'C:\\ProgramData\\chocolatey\\bin\\nssm.exe';
+  const publicPort = await getFreePort();
+  const config = createWindowsServiceConfig({ serviceName, runtimePath, mode, port, publicPort, serviceManager: 'nssm', serviceRoot });
+
+  await fs.mkdir(serviceRoot, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+
+  try {
+    await run('pwsh', [
+      '-NoProfile',
+      '-File', path.join(repoRoot, 'scripts', 'windows', 'Install-NSSMService.ps1'),
+      '-ConfigPath', configPath,
+      '-NssmPath', nssmPath
+    ]);
+    await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+    await verifyWindowsIisProxy(config, configPath);
+  } finally {
+    await removeTemporaryWindowsIisSite(config);
+    await run('pwsh', [
+      '-NoProfile',
+      '-File', path.join(repoRoot, 'scripts', 'windows', 'Uninstall-NodeService.ps1'),
+      '-ConfigPath', configPath,
+      '-NssmPath', nssmPath
+    ], { allowFailure: true });
+    await fs.rm(serviceRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyMacosLaunchdService(runtimePath, mode, port, afterServiceReady = null) {
   const serviceName = `node-deploy-kit-real-next-${Date.now()}-${mode}`;
   const serviceRoot = path.join(testRoot, `launchd-${mode}-${port}`);
   const configPath = path.join(serviceRoot, 'service.env');
@@ -543,6 +656,10 @@ async function verifyMacosLaunchdService(runtimePath, mode, port) {
     await run('sudo', ['--non-interactive', 'launchctl', 'print', `system/${serviceName}`]);
     try {
       await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+      await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+      if (afterServiceReady) {
+        await afterServiceReady();
+      }
     } catch (error) {
       await run('sudo', ['--non-interactive', 'launchctl', 'print', `system/${serviceName}`], { allowFailure: true });
       await run('sudo', ['--non-interactive', 'cat', path.join(logDirectory, 'stderr.log')], { allowFailure: true });
@@ -557,11 +674,433 @@ async function verifyMacosLaunchdService(runtimePath, mode, port) {
   }
 }
 
+async function startDirectLinuxNextRuntime(runtimePath, mode, appPort, label) {
+  const runtimeRoot = path.join(testRoot, `${label}-backend-${mode}-${appPort}`);
+  const envPath = path.join(runtimeRoot, 'runtime.env');
+  const runnerPath = path.join(runtimeRoot, 'runner.sh');
+  const startScript = mode === 'standalone'
+    ? 'server.js'
+    : path.join('node_modules', 'next', 'dist', 'bin', 'next');
+  const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
+  const runnerTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'launchd-runner.sh.tpl'), 'utf8');
+  const runner = runnerTemplate
+    .replaceAll('{{APP_DIR}}', runtimePath)
+    .replaceAll('{{ENV_FILE}}', envPath)
+    .replaceAll('{{NODE_BIN}}', process.execPath)
+    .replaceAll('{{START_SCRIPT}}', startScript)
+    .replaceAll('{{NODE_ARGUMENTS}}', nodeArguments);
+
+  await fs.mkdir(runtimeRoot, { recursive: true });
+  await fs.writeFile(envPath, [
+    'NODE_ENV=production',
+    `PORT=${appPort}`,
+    `APP_PORT=${appPort}`,
+    'BIND_ADDRESS=127.0.0.1',
+    'HOST=127.0.0.1',
+    'HOSTNAME=127.0.0.1',
+    'NEXT_TELEMETRY_DISABLED=1'
+  ].join('\n') + '\n');
+  await fs.writeFile(runnerPath, runner, { mode: 0o755 });
+  const child = start('bash', [runnerPath], { cwd: runtimePath, env: process.env });
+
+  return {
+    child,
+    async cleanup() {
+      await stopProcess(child);
+      await fs.rm(runtimeRoot, { recursive: true, force: true });
+    }
+  };
+}
+
+async function withLinuxProxyBackend(runtimePath, mode, appPort, label, backend, verifyProxy) {
+  const directRuntime = backend ? null : await startDirectLinuxNextRuntime(runtimePath, mode, appPort, label);
+  const child = backend || directRuntime.child;
+
+  try {
+    await waitForPage(`http://127.0.0.1:${appPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', child);
+    await verifyProxy(child);
+  } finally {
+    if (directRuntime) {
+      await directRuntime.cleanup();
+    }
+  }
+}
+
+async function resolveNginxMimeTypes() {
+  for (const candidate of [
+    '/etc/nginx/mime.types',
+    '/opt/homebrew/etc/nginx/mime.types',
+    '/usr/local/etc/nginx/mime.types'
+  ]) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Try the next platform-specific nginx installation location.
+    }
+  }
+  throw new Error('Could not locate nginx mime.types. Install nginx before running the reverse-proxy integration.');
+}
+
+async function resolveLinuxApacheInstallation() {
+  const candidates = [
+    {
+      command: 'apache2',
+      moduleDirectory: '/usr/lib/apache2/modules',
+      mimeTypesPath: '/etc/mime.types',
+      user: 'www-data',
+      group: 'www-data'
+    },
+    {
+      command: 'httpd',
+      moduleDirectory: '/usr/lib/apache2',
+      mimeTypesPath: '/etc/apache2/mime.types',
+      user: 'apache',
+      group: 'apache'
+    }
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await Promise.all([
+        fs.access(candidate.mimeTypesPath),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_mpm_event.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_authz_core.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_mime.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy_http.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy_wstunnel.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_headers.so')),
+        fs.access(path.join(candidate.moduleDirectory, 'mod_rewrite.so'))
+      ]);
+      const unixdModulePath = path.join(candidate.moduleDirectory, 'mod_unixd.so');
+      try {
+        await fs.access(unixdModulePath);
+        return { ...candidate, unixdModulePath };
+      } catch {
+        return candidate;
+      }
+    } catch {
+      // Try the next supported Apache/httpd layout.
+    }
+  }
+  throw new Error('Could not locate a supported Apache/httpd module layout. Install Apache proxy and rewrite modules before running the integration.');
+}
+
+async function verifyLinuxApacheProxy(runtimePath, mode, appPort, backend = null) {
+  if (process.platform !== 'linux') {
+    throw new Error('Apache proxy integration is only supported on Linux.');
+  }
+
+  const proxyPort = await getFreePort();
+  const apacheRoot = path.join(testRoot, `apache-${mode}-${proxyPort}`);
+  const configPath = path.join(apacheRoot, 'httpd.conf');
+  const vhostPath = path.join(apacheRoot, 'node-enterprise-deploy-kit.conf');
+  const logDirectory = path.join(apacheRoot, 'logs');
+  const apacheInstallation = await resolveLinuxApacheInstallation();
+  const vhostTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'apache-vhost.conf.tpl'), 'utf8');
+  const vhost = vhostTemplate
+    .replaceAll('{{APP_NAME}}', 'node-enterprise-deploy-kit-real-next')
+    .replaceAll('{{PUBLIC_HOSTNAME}}', 'localhost')
+    .replaceAll('{{PROXY_LISTEN_PORT}}', String(proxyPort))
+    .replaceAll('{{APP_PORT}}', String(appPort))
+    .replaceAll('{{HEALTH_URL}}', `http://127.0.0.1:${appPort}/`)
+    .replaceAll('{{LOG_DIR}}', logDirectory)
+    .replaceAll('{{FORWARDED_PROTO}}', 'http')
+    .replaceAll('{{FORWARDED_PORT}}', String(proxyPort));
+
+  await fs.mkdir(logDirectory, { recursive: true });
+  await fs.chmod(logDirectory, 0o777);
+  await fs.writeFile(vhostPath, vhost);
+  await fs.writeFile(configPath, [
+    `ServerRoot "${apacheRoot}"`,
+    `DefaultRuntimeDir "${apacheRoot}"`,
+    `PidFile "${path.join(apacheRoot, 'httpd.pid')}"`,
+    'ServerName localhost',
+    `Listen 127.0.0.1:${proxyPort}`,
+    `TypesConfig ${apacheInstallation.mimeTypesPath}`,
+    `LoadModule mpm_event_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mpm_event.so')}`,
+    ...(apacheInstallation.unixdModulePath ? [`LoadModule unixd_module ${apacheInstallation.unixdModulePath}`] : []),
+    `LoadModule authz_core_module ${path.join(apacheInstallation.moduleDirectory, 'mod_authz_core.so')}`,
+    `LoadModule mime_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mime.so')}`,
+    `LoadModule proxy_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy.so')}`,
+    `LoadModule proxy_http_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy_http.so')}`,
+    `LoadModule proxy_wstunnel_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy_wstunnel.so')}`,
+    `LoadModule headers_module ${path.join(apacheInstallation.moduleDirectory, 'mod_headers.so')}`,
+    `LoadModule rewrite_module ${path.join(apacheInstallation.moduleDirectory, 'mod_rewrite.so')}`,
+    `User ${apacheInstallation.user}`,
+    `Group ${apacheInstallation.group}`,
+    `ErrorLog "${path.join(logDirectory, 'apache-bootstrap-error.log')}"`,
+    `Include "${vhostPath}"`
+  ].join('\n') + '\n');
+  await run(apacheInstallation.command, ['-t', '-f', configPath]);
+
+  let apache;
+  try {
+    await withLinuxProxyBackend(runtimePath, mode, appPort, 'apache', backend, async () => {
+      apache = start(apacheInstallation.command, ['-f', configPath, '-DFOREGROUND'], { cwd: apacheRoot, env: process.env });
+      await waitForPage(`http://127.0.0.1:${proxyPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', apache);
+      await waitForForwardedProxyHeaders(proxyPort, apache);
+    });
+  } catch (error) {
+    const diagnostics = await fs.readFile(path.join(logDirectory, 'apache-bootstrap-error.log'), 'utf8')
+      .catch(() => 'Apache error log was not created.');
+    throw new Error(`${error.message}\nApache diagnostics:\n${diagnostics}`);
+  } finally {
+    await stopProcess(apache);
+    await fs.rm(apacheRoot, { recursive: true, force: true });
+  }
+}
+
+async function resolveMacosHttpdInstallation() {
+  for (const prefix of ['/opt/homebrew/opt/httpd', '/usr/local/opt/httpd']) {
+    const binaryPath = path.join(prefix, 'bin', 'httpd');
+    const moduleDirectory = path.join(prefix, 'lib', 'httpd', 'modules');
+    try {
+      await Promise.all([
+        fs.access(binaryPath),
+        fs.access(path.join(moduleDirectory, 'mod_mpm_event.so')),
+        fs.access(path.join(moduleDirectory, 'mod_proxy_http.so'))
+      ]);
+      return { binaryPath, moduleDirectory };
+    } catch {
+      // Try the next Homebrew installation prefix.
+    }
+  }
+  throw new Error('Could not locate Homebrew httpd. Install it with "brew install httpd" before running the macOS Apache integration.');
+}
+
+async function verifyMacosApacheProxy(runtimePath, mode, appPort, backend = null) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The macOS Apache proxy integration is only supported on macOS.');
+  }
+
+  const { binaryPath, moduleDirectory } = await resolveMacosHttpdInstallation();
+  const proxyPort = await getFreePort();
+  const apacheRoot = path.join(testRoot, `macos-apache-${mode}-${proxyPort}`);
+  const configPath = path.join(apacheRoot, 'httpd.conf');
+  const vhostPath = path.join(apacheRoot, 'node-enterprise-deploy-kit.conf');
+  const logDirectory = path.join(apacheRoot, 'logs');
+  const vhostTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'apache-vhost.conf.tpl'), 'utf8');
+  const vhost = vhostTemplate
+    .replaceAll('{{APP_NAME}}', 'node-enterprise-deploy-kit-real-next')
+    .replaceAll('{{PUBLIC_HOSTNAME}}', 'localhost')
+    .replaceAll('{{PROXY_LISTEN_PORT}}', String(proxyPort))
+    .replaceAll('{{APP_PORT}}', String(appPort))
+    .replaceAll('{{HEALTH_URL}}', `http://127.0.0.1:${appPort}/`)
+    .replaceAll('{{LOG_DIR}}', logDirectory)
+    .replaceAll('{{FORWARDED_PROTO}}', 'http')
+    .replaceAll('{{FORWARDED_PORT}}', String(proxyPort));
+
+  await fs.mkdir(logDirectory, { recursive: true });
+  await fs.chmod(logDirectory, 0o777);
+  await fs.writeFile(vhostPath, vhost);
+  await fs.writeFile(configPath, [
+    `ServerRoot "${apacheRoot}"`,
+    `DefaultRuntimeDir "${apacheRoot}"`,
+    `PidFile "${path.join(apacheRoot, 'httpd.pid')}"`,
+    'ServerName localhost',
+    `Listen 127.0.0.1:${proxyPort}`,
+    `LoadModule mpm_event_module "${path.join(moduleDirectory, 'mod_mpm_event.so')}"`,
+    `LoadModule authz_core_module "${path.join(moduleDirectory, 'mod_authz_core.so')}"`,
+    `LoadModule authz_host_module "${path.join(moduleDirectory, 'mod_authz_host.so')}"`,
+    `LoadModule mime_module "${path.join(moduleDirectory, 'mod_mime.so')}"`,
+    `LoadModule proxy_module "${path.join(moduleDirectory, 'mod_proxy.so')}"`,
+    `LoadModule proxy_http_module "${path.join(moduleDirectory, 'mod_proxy_http.so')}"`,
+    `LoadModule headers_module "${path.join(moduleDirectory, 'mod_headers.so')}"`,
+    `LoadModule rewrite_module "${path.join(moduleDirectory, 'mod_rewrite.so')}"`,
+    `ErrorLog "${path.join(logDirectory, 'apache-bootstrap-error.log')}"`,
+    `Include "${vhostPath}"`
+  ].join('\n') + '\n');
+  await run(binaryPath, ['-t', '-f', configPath]);
+
+  let apache;
+  try {
+    await withLinuxProxyBackend(runtimePath, mode, appPort, 'macos-apache', backend, async () => {
+      apache = start(binaryPath, ['-f', configPath, '-DFOREGROUND'], { cwd: apacheRoot, env: process.env });
+      await waitForPage(`http://127.0.0.1:${proxyPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', apache);
+      await waitForForwardedProxyHeaders(proxyPort, apache);
+    });
+  } catch (error) {
+    const diagnostics = await fs.readFile(path.join(logDirectory, 'apache-bootstrap-error.log'), 'utf8')
+      .catch(() => 'Apache error log was not created.');
+    throw new Error(`${error.message}\nmacOS Apache diagnostics:\n${diagnostics}`);
+  } finally {
+    await stopProcess(apache);
+    await fs.rm(apacheRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyLinuxNginxProxy(runtimePath, mode, appPort, backend = null) {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    throw new Error('Nginx proxy integration is only supported on Linux and macOS.');
+  }
+
+  const proxyPort = await getFreePort();
+  const nginxRoot = path.join(testRoot, `nginx-${mode}-${proxyPort}`);
+  const configPath = path.join(nginxRoot, 'nginx.conf');
+  const sitePath = path.join(nginxRoot, 'node-enterprise-deploy-kit.conf');
+  const logDirectory = path.join(nginxRoot, 'logs');
+  const mimeTypesPath = await resolveNginxMimeTypes();
+  const siteTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'nginx-site.conf.tpl'), 'utf8');
+  const site = siteTemplate
+    .replaceAll('{{APP_NAME}}', 'node-enterprise-deploy-kit-real-next')
+    .replaceAll('{{PUBLIC_HOSTNAME}}', 'localhost')
+    .replaceAll('{{PROXY_LISTEN_PORT}}', String(proxyPort))
+    .replaceAll('{{APP_PORT}}', String(appPort))
+    .replaceAll('{{HEALTH_URL}}', `http://127.0.0.1:${appPort}/`)
+    .replaceAll('{{LOG_DIR}}', logDirectory)
+    .replaceAll('{{FORWARDED_PROTO}}', 'http')
+    .replaceAll('{{FORWARDED_PORT}}', String(proxyPort));
+
+  await fs.mkdir(logDirectory, { recursive: true });
+  await fs.writeFile(sitePath, site);
+  await fs.writeFile(configPath, [
+    'worker_processes 1;',
+    `pid ${path.join(nginxRoot, 'nginx.pid')};`,
+    `error_log ${path.join(logDirectory, 'nginx-bootstrap-error.log')} warn;`,
+    'events { worker_connections 64; }',
+    'http {',
+    `  include ${mimeTypesPath};`,
+    '  default_type application/octet-stream;',
+    `  include ${sitePath};`,
+    '}'
+  ].join('\n') + '\n');
+
+  let nginx;
+  try {
+    await withLinuxProxyBackend(runtimePath, mode, appPort, 'nginx', backend, async () => {
+      nginx = start('nginx', ['-c', configPath, '-p', nginxRoot, '-g', 'daemon off;'], { cwd: nginxRoot, env: process.env });
+      await waitForPage(`http://127.0.0.1:${proxyPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', nginx);
+      await waitForForwardedProxyHeaders(proxyPort, nginx);
+    });
+  } finally {
+    await stopProcess(nginx);
+    await fs.rm(nginxRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyLinuxHaProxy(runtimePath, mode, appPort, backend = null) {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    throw new Error('HAProxy integration is only supported on Linux and macOS.');
+  }
+
+  const proxyPort = await getFreePort();
+  const haproxyRoot = path.join(testRoot, `haproxy-${mode}-${proxyPort}`);
+  const configPath = path.join(haproxyRoot, 'haproxy.cfg');
+  const configTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'haproxy.cfg.tpl'), 'utf8');
+  const config = configTemplate
+    .replaceAll('{{APP_NAME}}', 'node-enterprise-deploy-kit-real-next')
+    .replaceAll('{{HAPROXY_FRONTEND_NAME}}', 'node_enterprise_deploy_kit_frontend')
+    .replaceAll('{{HAPROXY_BACKEND_NAME}}', 'node_enterprise_deploy_kit_backend')
+    .replaceAll('{{HAPROXY_BIND}}', `127.0.0.1:${proxyPort}`)
+    .replaceAll('{{APP_PORT}}', String(appPort))
+    .replaceAll('{{HEALTHCHECK_PATH}}', '/')
+    .replaceAll('{{FORWARDED_PROTO}}', 'http')
+    .replaceAll('{{FORWARDED_PORT}}', String(proxyPort));
+
+  await fs.mkdir(haproxyRoot, { recursive: true });
+  await fs.writeFile(configPath, config);
+
+  let haproxy;
+  try {
+    await withLinuxProxyBackend(runtimePath, mode, appPort, 'haproxy', backend, async () => {
+      haproxy = start('haproxy', ['-f', configPath, '-db'], { cwd: haproxyRoot, env: process.env });
+      await waitForPage(`http://127.0.0.1:${proxyPort}/`, 'node-enterprise-deploy-kit real-nextjs-integration', haproxy);
+      await waitForForwardedProxyHeaders(proxyPort, haproxy);
+    });
+  } finally {
+    await stopProcess(haproxy);
+    await fs.rm(haproxyRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyLinuxTraefikProxy(runtimePath, mode, appPort, backend = null) {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    throw new Error('Traefik integration is only supported on Linux and macOS.');
+  }
+
+  const proxyPort = await getFreePort();
+  const traefikRoot = path.join(testRoot, `traefik-${mode}-${proxyPort}`);
+  const staticConfigPath = path.join(traefikRoot, 'traefik.yml');
+  const dynamicConfigPath = path.join(traefikRoot, 'dynamic.yml');
+  const dynamicTemplate = await fs.readFile(path.join(repoRoot, 'templates', 'linux', 'traefik-dynamic.yml.tpl'), 'utf8');
+  const dynamicConfig = dynamicTemplate
+    .replaceAll('{{APP_NAME}}', 'node-enterprise-deploy-kit-real-next')
+    .replaceAll('{{PUBLIC_HOSTNAME}}', 'localhost')
+    .replaceAll('{{TRAEFIK_ENTRYPOINT}}', 'integration')
+    .replaceAll('{{TRAEFIK_ROUTER_NAME}}', 'node-enterprise-deploy-kit-real-next-router')
+    .replaceAll('{{TRAEFIK_SERVICE_NAME}}', 'node-enterprise-deploy-kit-real-next-service')
+    .replaceAll('{{HEALTHCHECK_PATH}}', '/')
+    .replaceAll('{{APP_PORT}}', String(appPort));
+  const staticConfig = [
+    'entryPoints:',
+    '  integration:',
+    `    address: "127.0.0.1:${proxyPort}"`,
+    'providers:',
+    '  file:',
+    `    filename: "${dynamicConfigPath}"`,
+    '    watch: false',
+    'log:',
+    '  level: ERROR'
+  ].join('\n') + '\n';
+
+  await fs.mkdir(traefikRoot, { recursive: true });
+  await fs.writeFile(dynamicConfigPath, dynamicConfig);
+  await fs.writeFile(staticConfigPath, staticConfig);
+
+  let traefik;
+  try {
+    await withLinuxProxyBackend(runtimePath, mode, appPort, 'traefik', backend, async () => {
+      traefik = start('traefik', [`--configFile=${staticConfigPath}`], { cwd: traefikRoot, env: process.env });
+      await waitForPage(
+        `http://127.0.0.1:${proxyPort}/`,
+        'node-enterprise-deploy-kit real-nextjs-integration',
+        traefik,
+        { Host: 'localhost' }
+      );
+      await waitForForwardedProxyHeaders(proxyPort, traefik, { Host: 'localhost' }, '80');
+    });
+  } finally {
+    await stopProcess(traefik);
+    await fs.rm(traefikRoot, { recursive: true, force: true });
+  }
+}
+
 function shellEnvAssignment(key, value) {
   return `${key}=${shellQuote(String(value))}`;
 }
 
-async function verifyLinuxSystemVService(runtimePath, mode, port) {
+async function verifySelectedLinuxReverseProxy(runtimePath, mode, appPort, backend = null) {
+  if (runApacheProxyIntegration) {
+    if (process.platform === 'darwin') {
+      await verifyMacosApacheProxy(runtimePath, mode, appPort, backend);
+      return;
+    }
+    await verifyLinuxApacheProxy(runtimePath, mode, appPort, backend);
+    return;
+  }
+  if (runNginxProxyIntegration) {
+    await verifyLinuxNginxProxy(runtimePath, mode, appPort, backend);
+    return;
+  }
+  if (runHaProxyIntegration) {
+    await verifyLinuxHaProxy(runtimePath, mode, appPort, backend);
+    return;
+  }
+  if (runTraefikProxyIntegration) {
+    await verifyLinuxTraefikProxy(runtimePath, mode, appPort, backend);
+  }
+}
+
+function hasLinuxProxyIntegration() {
+  return runApacheProxyIntegration
+    || runNginxProxyIntegration
+    || runHaProxyIntegration
+    || runTraefikProxyIntegration;
+}
+
+async function verifyLinuxSystemVService(runtimePath, mode, port, afterServiceReady = null) {
   const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
   const serviceRoot = path.join(testRoot, `systemv-${mode}-${port}`);
   const configPath = path.join(serviceRoot, 'service.env');
@@ -603,13 +1142,17 @@ async function verifyLinuxSystemVService(runtimePath, mode, port) {
   try {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+    if (afterServiceReady) {
+      await afterServiceReady();
+    }
   } finally {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
     await fs.rm(serviceRoot, { recursive: true, force: true });
   }
 }
 
-async function verifyLinuxOpenRcService(runtimePath, mode, port) {
+async function verifyLinuxOpenRcService(runtimePath, mode, port, afterServiceReady = null) {
   const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
   const serviceRoot = path.join(testRoot, `openrc-${mode}-${port}`);
   const configPath = path.join(serviceRoot, 'service.env');
@@ -651,13 +1194,17 @@ async function verifyLinuxOpenRcService(runtimePath, mode, port) {
   try {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+    if (afterServiceReady) {
+      await afterServiceReady();
+    }
   } finally {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
     await fs.rm(serviceRoot, { recursive: true, force: true });
   }
 }
 
-async function verifyLinuxSystemdService(runtimePath, mode, port) {
+async function verifyLinuxSystemdService(runtimePath, mode, port, afterServiceReady = null) {
   const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
   const serviceRoot = path.join(testRoot, `systemd-${mode}-${port}`);
   const configPath = path.join(serviceRoot, 'service.env');
@@ -699,6 +1246,10 @@ async function verifyLinuxSystemdService(runtimePath, mode, port) {
   try {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+    await waitForForwardedRuntimeHeaders(port, { exitCode: null });
+    if (afterServiceReady) {
+      await afterServiceReady();
+    }
   } finally {
     await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
     await fs.rm(serviceRoot, { recursive: true, force: true });
@@ -707,20 +1258,28 @@ async function verifyLinuxSystemdService(runtimePath, mode, port) {
 
 async function verifyRuntime(runtimePath, mode) {
   const port = await getFreePort();
+  const verifyServiceProxy = hasLinuxProxyIntegration()
+    ? () => verifySelectedLinuxReverseProxy(runtimePath, mode, port, { exitCode: null })
+    : null;
+
   if (process.platform === 'linux' && runLinuxSystemdServiceIntegration) {
-    await verifyLinuxSystemdService(runtimePath, mode, port);
+    await verifyLinuxSystemdService(runtimePath, mode, port, verifyServiceProxy);
     return;
   }
   if (process.platform === 'linux' && runLinuxOpenRcServiceIntegration) {
-    await verifyLinuxOpenRcService(runtimePath, mode, port);
+    await verifyLinuxOpenRcService(runtimePath, mode, port, verifyServiceProxy);
     return;
   }
   if (process.platform === 'linux' && runLinuxSystemVServiceIntegration) {
-    await verifyLinuxSystemVService(runtimePath, mode, port);
+    await verifyLinuxSystemVService(runtimePath, mode, port, verifyServiceProxy);
     return;
   }
   if (process.platform === 'darwin' && runLaunchdServiceIntegration) {
-    await verifyMacosLaunchdService(runtimePath, mode, port);
+    await verifyMacosLaunchdService(runtimePath, mode, port, verifyServiceProxy);
+    return;
+  }
+  if (hasLinuxProxyIntegration()) {
+    await verifySelectedLinuxReverseProxy(runtimePath, mode, port);
     return;
   }
   if (process.platform !== 'win32') {
@@ -729,6 +1288,10 @@ async function verifyRuntime(runtimePath, mode) {
   }
   if (runWindowsServiceIntegration) {
     await verifyWindowsWinSwService(runtimePath, mode, port);
+    return;
+  }
+  if (runWindowsNssmServiceIntegration) {
+    await verifyWindowsNssmService(runtimePath, mode, port);
     return;
   }
 
@@ -740,6 +1303,7 @@ async function verifyRuntime(runtimePath, mode) {
 
   try {
     await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', child);
+    await waitForForwardedRuntimeHeaders(port, child);
   } finally {
     await stopProcess(child);
   }
@@ -767,6 +1331,15 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
 
 if ([runLinuxSystemdServiceIntegration, runLinuxSystemVServiceIntegration, runLinuxOpenRcServiceIntegration].filter(Boolean).length > 1) {
   throw new Error('Only one Linux native service-manager integration flag may be true.');
+}
+if ([runApacheProxyIntegration, runNginxProxyIntegration, runHaProxyIntegration, runTraefikProxyIntegration].filter(Boolean).length > 1) {
+  throw new Error('Only one Linux reverse-proxy integration flag may be true.');
+}
+if ([runWindowsServiceIntegration, runWindowsNssmServiceIntegration].filter(Boolean).length > 1) {
+  throw new Error('Only one Windows service-manager integration flag may be true.');
+}
+if (runWindowsIisIntegration && !runWindowsServiceIntegration && !runWindowsNssmServiceIntegration) {
+  throw new Error('RUN_WINDOWS_IIS_INTEGRATION requires RUN_WINSW_SERVICE_INTEGRATION or RUN_NSSM_SERVICE_INTEGRATION.');
 }
 
 await fs.mkdir(testRoot, { recursive: true });

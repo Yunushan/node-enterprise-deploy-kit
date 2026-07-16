@@ -140,8 +140,25 @@ bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
 
 Hosted CI also exercises both modes through temporary native services: systemd
 on Ubuntu, System V in an Ubuntu container, OpenRC in an Alpine container, WinSW
-on Windows Server 2022/2025, and launchd on macOS 15. Each job installs the
-service, verifies a live loopback HTTP response, then uninstalls it.
+on Windows Server 2022/2025, and launchd on macOS 15. Windows Server also runs
+WinSW and NSSM behind an IIS URL Rewrite plus ARR reverse proxy. Each job
+installs the service, verifies direct and proxied HTTP responses with forwarded
+headers, then removes its service and IIS site. macOS also verifies a launchd
+service behind Homebrew Nginx, Apache, HAProxy, and Traefik reverse proxies.
+Each managed-runtime check also confirms that Next.js receives forwarded HTTPS
+protocol and port headers.
+The systemd test uses a service-visible `/srv` temporary root because the
+production unit enables `PrivateTmp=true`.
+Additional Ubuntu container jobs render the Apache vhost, Nginx site, HAProxy,
+and Traefik templates, start each proxy, and verify real Next.js responses
+through them, including `X-Forwarded-Proto` and `X-Forwarded-Port` values.
+System V and Alpine OpenRC matrices run each proxy against the installed
+temporary service, while the native Ubuntu systemd job exercises the same
+composed lifecycle through Nginx.
+The Traefik job downloads the pinned upstream Linux binary and validates its
+published SHA-256 because Ubuntu does not provide a Traefik package.
+Traefik reports the standard HTTP forwarded port (`80`) for its HTTP entrypoint;
+the live test asserts that provider behavior explicitly.
 
 To validate the container smoke wrapper locally without Docker pulls:
 

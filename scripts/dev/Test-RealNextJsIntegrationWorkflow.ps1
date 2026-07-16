@@ -7,6 +7,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $WorkflowPath = Join-Path $RepoRoot ".github\workflows\ci.yml"
 $IntegrationScriptPath = Join-Path $ScriptDir "test-real-nextjs-integration.mjs"
+$LinuxContainerScriptPath = Join-Path $ScriptDir "test-linux-container-smoke.sh"
 
 function Assert-Contains {
   param(
@@ -29,9 +30,13 @@ if (-not (Test-Path -LiteralPath $WorkflowPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $IntegrationScriptPath -PathType Leaf)) {
   throw "Missing real Next.js integration script: scripts/dev/test-real-nextjs-integration.mjs"
 }
+if (-not (Test-Path -LiteralPath $LinuxContainerScriptPath -PathType Leaf)) {
+  throw "Missing Linux container smoke script: scripts/dev/test-linux-container-smoke.sh"
+}
 
 $workflow = Get-Content -LiteralPath $WorkflowPath -Raw
 $script = Get-Content -LiteralPath $IntegrationScriptPath -Raw
+$containerScript = Get-Content -LiteralPath $LinuxContainerScriptPath -Raw
 
 foreach ($expected in @(
     "real-nextjs-integration:",
@@ -49,18 +54,56 @@ foreach ($expected in @(
     "real-windows-service-nextjs:",
     "real-windows-service-nextjs (`${{ matrix.os }})",
     "RUN_WINSW_SERVICE_INTEGRATION: `"true`"",
+    "real-windows-service-iis-nextjs:",
+    "real-windows-service-iis-nextjs (`${{ matrix.os }}, `${{ matrix.manager }})",
+    "RUN_WINDOWS_IIS_INTEGRATION: `"true`"",
+    "RUN_NSSM_SERVICE_INTEGRATION = 'true'",
+    "choco install urlrewrite --version=2.1.20190828",
+    "choco install iis-arr --version=3.0.20210521",
+    "choco install nssm --version=2.24.101.20180116",
     "real-macos-service-nextjs:",
     "real-macos-service-nextjs (macos-15)",
     "RUN_LAUNCHD_SERVICE_INTEGRATION=true",
+    "real-macos-service-nginx-nextjs:",
+    "real-macos-service-nginx-nextjs (macos-15)",
+    "brew install nginx",
+    "RUN_NGINX_PROXY_INTEGRATION=true",
+    "real-macos-service-proxy-nextjs:",
+    "real-macos-service-proxy-nextjs (macos-15, `${{ matrix.proxy }})",
+    "package: httpd",
+    "package: haproxy",
+    "package: traefik",
+    "RUN_APACHE_PROXY_INTEGRATION=true",
+    "RUN_HAPROXY_INTEGRATION=true",
+    "RUN_TRAEFIK_PROXY_INTEGRATION=true",
     "linux-container-real-nextjs-systemv:",
     "linux-container-real-nextjs-systemv (ubuntu)",
     "--systemv-service-integration",
+    "linux-container-real-nextjs-systemv-proxy:",
+    "linux-container-real-nextjs-systemv-proxy (`${{ matrix.proxy }})",
+    "--systemv-service-integration --`${{ matrix.proxy }}-proxy-integration",
     "linux-container-real-nextjs-openrc:",
     "linux-container-real-nextjs-openrc (alpine)",
     "--openrc-service-integration",
+    "linux-container-real-nextjs-openrc-proxy:",
+    "linux-container-real-nextjs-openrc-proxy (`${{ matrix.proxy }})",
+    "--openrc-service-integration --`${{ matrix.proxy }}-proxy-integration",
+    "linux-container-real-nextjs-apache:",
+    "linux-container-real-nextjs-apache (ubuntu)",
+    "--apache-proxy-integration",
+    "linux-container-real-nextjs-nginx:",
+    "linux-container-real-nextjs-nginx (ubuntu)",
+    "--nginx-proxy-integration",
+    "linux-container-real-nextjs-haproxy:",
+    "linux-container-real-nextjs-haproxy (ubuntu)",
+    "--haproxy-integration",
+    "linux-container-real-nextjs-traefik:",
+    "linux-container-real-nextjs-traefik (ubuntu)",
+    "--traefik-proxy-integration",
     "real-linux-systemd-nextjs:",
-    "real-linux-systemd-nextjs (ubuntu)",
+    "real-linux-systemd-nextjs (ubuntu, nginx)",
     "RUN_SYSTEMD_SERVICE_INTEGRATION=true",
+    "RUN_NGINX_PROXY_INTEGRATION=true",
     "NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci"
   )) {
   Assert-Contains -Text $workflow -Expected $expected -Context ".github/workflows/ci.yml"
@@ -88,6 +131,7 @@ foreach ($expected in @(
     "verifyUnixManagedRunner",
     "RUN_LAUNCHD_SERVICE_INTEGRATION",
     "verifyMacosLaunchdService",
+    "afterServiceReady",
     "install-node-service.sh",
     "uninstall-node-service.sh",
     "getUnixPrimaryGroup",
@@ -95,6 +139,13 @@ foreach ($expected in @(
     "stderr.log",
     "RUN_WINSW_SERVICE_INTEGRATION",
     "verifyWindowsWinSwService",
+    "RUN_NSSM_SERVICE_INTEGRATION",
+    "verifyWindowsNssmService",
+    "RUN_WINDOWS_IIS_INTEGRATION",
+    "verifyWindowsIisProxy",
+    "removeTemporaryWindowsIisSite",
+    "Install-ReverseProxy.ps1",
+    "Install-NSSMService.ps1",
     "Install-NodeService.ps1",
     "Uninstall-NodeService.ps1",
     "RUN_LAUNCHD_SERVICE_INTEGRATION",
@@ -105,15 +156,42 @@ foreach ($expected in @(
     "RUN_SYSTEMV_SERVICE_INTEGRATION",
     "verifyLinuxSystemVService",
     "SERVICE_MANAGER: 'systemv'",
+    "withLinuxProxyBackend",
+    "verifySelectedLinuxReverseProxy",
+    "hasLinuxProxyIntegration",
     "RUN_OPENRC_SERVICE_INTEGRATION",
     "verifyLinuxOpenRcService",
     "SERVICE_MANAGER: 'openrc'",
     "RUN_SYSTEMD_SERVICE_INTEGRATION",
     "verifyLinuxSystemdService",
     "SERVICE_MANAGER: 'systemd'",
+    "RUN_APACHE_PROXY_INTEGRATION",
+    "verifyLinuxApacheProxy",
+    "resolveLinuxApacheInstallation",
+    "verifyMacosApacheProxy",
+    "resolveMacosHttpdInstallation",
+    "apache-vhost.conf.tpl",
+    "apacheInstallation.command, ['-t', '-f'",
+    "Apache diagnostics",
+    "mimeTypesPath: '/etc/mime.types'",
+    "RUN_NGINX_PROXY_INTEGRATION",
+    "verifyLinuxNginxProxy",
+    "resolveNginxMimeTypes",
+    "nginx-site.conf.tpl",
+    "RUN_HAPROXY_INTEGRATION",
+    "verifyLinuxHaProxy",
+    "haproxy.cfg.tpl",
+    "RUN_TRAEFIK_PROXY_INTEGRATION",
+    "verifyLinuxTraefikProxy",
+    "traefik-dynamic.yml.tpl",
     "waitForPage",
+    "response.body.slice(0, 500)",
+    "waitForForwardedProxyHeaders",
+    "waitForForwardedRuntimeHeaders",
+    "proxy-evidence",
     "fs.rm(testRoot",
     "NEXTJS_INTEGRATION_TEMP_ROOT",
+    "/srv/node-enterprise-deploy-kit-ci",
     "os.tmpdir()",
     "NEXT_TELEMETRY_DISABLED",
     "verifyNpmRegistryAccess",
@@ -121,6 +199,19 @@ foreach ($expected in @(
     "Cannot reach the configured npm registry with a trusted TLS certificate"
   )) {
   Assert-Contains -Text $script -Expected $expected -Context "scripts/dev/test-real-nextjs-integration.mjs"
+}
+
+foreach ($expected in @(
+    "/run/openrc/softlevel",
+    "service_integration_count",
+    "proxy_integration_count",
+    "RUN_TRAEFIK_PROXY_INTEGRATION",
+    "install_traefik",
+    "TRAEFIK_VERSION",
+    "e92bcfb03fa1e6a70c4e7ad4eb4f1604967e6fa3c21d8e7605aca5407a40162c",
+    "github.com/traefik/traefik/releases/download"
+  )) {
+  Assert-Contains -Text $containerScript -Expected $expected -Context "scripts/dev/test-linux-container-smoke.sh"
 }
 
 $node = Get-Command node -ErrorAction SilentlyContinue

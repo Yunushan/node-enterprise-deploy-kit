@@ -166,6 +166,24 @@ jobs:
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration
 
+  linux-container-real-nextjs-systemv-proxy:
+    name: linux-container-real-nextjs-systemv-proxy (${{ matrix.proxy }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy:
+          - apache
+          - nginx
+          - haproxy
+          - traefik
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run a real Next.js System V service through a reverse proxy
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration --${{ matrix.proxy }}-proxy-integration
+
   linux-container-real-nextjs-openrc:
     name: linux-container-real-nextjs-openrc (alpine)
     runs-on: ubuntu-latest
@@ -176,15 +194,80 @@ jobs:
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration
 
-  real-linux-systemd-nextjs:
-    name: real-linux-systemd-nextjs (ubuntu)
+  linux-container-real-nextjs-openrc-proxy:
+    name: linux-container-real-nextjs-openrc-proxy (${{ matrix.proxy }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy:
+          - apache
+          - nginx
+          - haproxy
+          - traefik
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run a real Next.js OpenRC service through a reverse proxy
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration --${{ matrix.proxy }}-proxy-integration
+
+  linux-container-real-nextjs-apache:
+    name: linux-container-real-nextjs-apache (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - name: Build, package, and run real Next.js through systemd
+      - name: Run a real Next.js package through Apache
         shell: bash
-        run: sudo env RUN_SYSTEMD_SERVICE_INTEGRATION=true NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --apache-proxy-integration
+
+  linux-container-real-nextjs-nginx:
+    name: linux-container-real-nextjs-nginx (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run a real Next.js package through Nginx
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --nginx-proxy-integration
+
+  linux-container-real-nextjs-haproxy:
+    name: linux-container-real-nextjs-haproxy (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run a real Next.js package through HAProxy
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --haproxy-integration
+
+  linux-container-real-nextjs-traefik:
+    name: linux-container-real-nextjs-traefik (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run a real Next.js package through Traefik
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --traefik-proxy-integration
+
+  real-linux-systemd-nextjs:
+    name: real-linux-systemd-nextjs (ubuntu, nginx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Nginx
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends nginx
+      - name: Build, package, and run real Next.js through systemd and Nginx
+        shell: bash
+        run: sudo env RUN_SYSTEMD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
 
   macos-checks:
     runs-on: macos-15
@@ -248,6 +331,51 @@ jobs:
           RUN_WINSW_SERVICE_INTEGRATION: "true"
         run: node scripts/dev/test-real-nextjs-integration.mjs
 
+  real-windows-service-iis-nextjs:
+    name: real-windows-service-iis-nextjs (${{ matrix.os }}, ${{ matrix.manager }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+        manager:
+          - winsw
+          - nssm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install IIS and reverse-proxy dependencies
+        shell: pwsh
+        run: |
+          if (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue) {
+            Install-WindowsFeature -Name Web-Server, Web-WebSockets -IncludeManagementTools | Out-Host
+          } else {
+            Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole,IIS-WebSockets -All -NoRestart | Out-Host
+          }
+          choco install urlrewrite --version=2.1.20190828 --yes --no-progress
+          choco install iis-arr --version=3.0.20210521 --yes --no-progress
+          if ('${{ matrix.manager }}' -eq 'nssm') {
+            choco install nssm --version=2.24.101.20180116 --yes --no-progress
+          }
+          iisreset /restart
+      - name: Build, package, and run real Next.js through IIS
+        shell: pwsh
+        env:
+          RUN_WINDOWS_IIS_INTEGRATION: "true"
+        run: |
+          if ('${{ matrix.manager }}' -eq 'winsw') {
+            $env:RUN_WINSW_SERVICE_INTEGRATION = 'true'
+          } else {
+            $env:RUN_NSSM_SERVICE_INTEGRATION = 'true'
+          }
+          node scripts/dev/test-real-nextjs-integration.mjs
+
   real-macos-service-nextjs:
     name: real-macos-service-nextjs (macos-15)
     runs-on: macos-15
@@ -257,3 +385,54 @@ jobs:
       - name: Build, package, and run real Next.js through launchd
         shell: bash
         run: sudo env RUN_LAUNCHD_SERVICE_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+
+  real-macos-service-nginx-nextjs:
+    name: real-macos-service-nginx-nextjs (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Nginx
+        shell: bash
+        run: brew install nginx
+      - name: Build, package, and run real Next.js through launchd and Nginx
+        shell: bash
+        run: sudo env PATH="$PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+
+  real-macos-service-proxy-nextjs:
+    name: real-macos-service-proxy-nextjs (macos-15, ${{ matrix.proxy }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - proxy: apache
+            package: httpd
+          - proxy: haproxy
+            package: haproxy
+          - proxy: traefik
+            package: traefik
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install reverse proxy
+        shell: bash
+        run: brew install ${{ matrix.package }}
+      - name: Build, package, and run real Next.js through launchd and the selected proxy
+        shell: bash
+        run: |
+          case '${{ matrix.proxy }}' in
+            apache) proxy_env=RUN_APACHE_PROXY_INTEGRATION=true ;;
+            haproxy) proxy_env=RUN_HAPROXY_INTEGRATION=true ;;
+            traefik) proxy_env=RUN_TRAEFIK_PROXY_INTEGRATION=true ;;
+            *) echo "Unsupported macOS proxy matrix value." >&2; exit 1 ;;
+          esac
+          sudo env PATH="$PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true "$proxy_env" "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs

@@ -466,8 +466,26 @@ Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine.
 On the hosted native runners, it also deploys both modes through temporary
 systemd services on Ubuntu, System V services in an Ubuntu container, OpenRC
 services in an Alpine container, WinSW services on Windows Server 2022/2025,
-and launchd services on macOS 15. Each check verifies live loopback HTTP output
-and removes the service afterwards.
+and launchd services on macOS 15. A Windows Server matrix also verifies WinSW
+and NSSM behind a temporary IIS URL Rewrite plus ARR reverse proxy. Each check
+verifies direct and proxied loopback HTTP output, including forwarded headers,
+then removes its service and IIS site afterwards. macOS additionally runs a
+launchd service behind temporary Homebrew Nginx, Apache, HAProxy, and Traefik
+reverse proxies. Alpine OpenRC coverage also runs each supported proxy against
+the managed Next.js service.
+Managed-runtime checks also confirm that the packaged Next.js application
+receives forwarded HTTPS protocol and port headers.
+The systemd integration uses a service-visible `/srv` temporary root because
+the production unit isolates `/tmp` with `PrivateTmp=true`.
+The Ubuntu container suite also renders the Apache vhost, Nginx site, HAProxy,
+and Traefik templates, verifying that each proxy serves a real response from
+every packaged Next.js mode and passes its forwarded protocol and port headers.
+Its System V matrix runs every proxy against the installed temporary service,
+and the native Ubuntu systemd job covers the composed service-plus-Nginx path.
+The Traefik verification downloads a pinned upstream Linux binary and validates
+its published SHA-256 rather than relying on an unavailable Ubuntu package.
+Its HTTP entrypoint reports the standard forwarded port `80`, which the live
+integration assertion verifies explicitly.
 Real-host release claims still require collected status evidence from the exact
 platform rows in the support matrix.
 
