@@ -156,6 +156,36 @@ jobs:
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}" --real-nextjs
 
+  linux-container-real-nextjs-systemv:
+    name: linux-container-real-nextjs-systemv (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install, run, and remove a real Next.js System V service
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration
+
+  linux-container-real-nextjs-openrc:
+    name: linux-container-real-nextjs-openrc (alpine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install, run, and remove a real Next.js OpenRC service
+        shell: bash
+        run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration
+
+  real-linux-systemd-nextjs:
+    name: real-linux-systemd-nextjs (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build, package, and run real Next.js through systemd
+        shell: bash
+        run: sudo env RUN_SYSTEMD_SERVICE_INTEGRATION=true NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+
   macos-checks:
     runs-on: macos-15
     timeout-minutes: 60
@@ -217,3 +247,13 @@ jobs:
         env:
           RUN_WINSW_SERVICE_INTEGRATION: "true"
         run: node scripts/dev/test-real-nextjs-integration.mjs
+
+  real-macos-service-nextjs:
+    name: real-macos-service-nextjs (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build, package, and run real Next.js through launchd
+        shell: bash
+        run: sudo env RUN_LAUNCHD_SERVICE_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs

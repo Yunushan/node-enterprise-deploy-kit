@@ -138,6 +138,11 @@ live HTTP output:
 bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
 ```
 
+Hosted CI also exercises both modes through temporary native services: systemd
+on Ubuntu, System V in an Ubuntu container, OpenRC in an Alpine container, WinSW
+on Windows Server 2022/2025, and launchd on macOS 15. Each job installs the
+service, verifies a live loopback HTTP response, then uninstalls it.
+
 To validate the container smoke wrapper locally without Docker pulls:
 
 ```bash

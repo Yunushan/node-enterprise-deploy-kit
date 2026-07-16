@@ -13,6 +13,9 @@ const nextVersion = process.env.NEXTJS_INTEGRATION_NEXT_VERSION || 'latest';
 const keepTestRoot = process.env.KEEP_REAL_NEXTJS_INTEGRATION === 'true';
 const runWindowsServiceIntegration = process.env.RUN_WINSW_SERVICE_INTEGRATION === 'true';
 const runLaunchdServiceIntegration = process.env.RUN_LAUNCHD_SERVICE_INTEGRATION === 'true';
+const runLinuxSystemVServiceIntegration = process.env.RUN_SYSTEMV_SERVICE_INTEGRATION === 'true';
+const runLinuxOpenRcServiceIntegration = process.env.RUN_OPENRC_SERVICE_INTEGRATION === 'true';
+const runLinuxSystemdServiceIntegration = process.env.RUN_SYSTEMD_SERVICE_INTEGRATION === 'true';
 const testRootBase = process.env.NEXTJS_INTEGRATION_TEMP_ROOT
   || (process.platform === 'win32' ? path.join(repoRoot, '.tmp') : os.tmpdir());
 const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.platform}-${Date.now()}`);
@@ -20,6 +23,7 @@ const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.plat
 function usage() {
   console.log('Usage: node scripts/dev/test-real-nextjs-integration.mjs [--help]');
   console.log('Builds a temporary real Next.js project, packages standalone and next-start artifacts, and verifies both serve HTTP.');
+  console.log('RUN_WINSW_SERVICE_INTEGRATION=true, RUN_LAUNCHD_SERVICE_INTEGRATION=true, RUN_SYSTEMD_SERVICE_INTEGRATION=true, RUN_SYSTEMV_SERVICE_INTEGRATION=true, or RUN_OPENRC_SERVICE_INTEGRATION=true runs the matching native service-manager path.');
 }
 
 function run(command, args, options = {}) {
@@ -508,7 +512,6 @@ async function verifyMacosLaunchdService(runtimePath, mode, port) {
     ? 'server.js'
     : path.join('node_modules', 'next', 'dist', 'bin', 'next');
   const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
-
   await fs.mkdir(serviceRoot, { recursive: true });
   await fs.writeFile(configPath, [
     `APP_NAME=${shellQuote(serviceName)}`,
@@ -554,8 +557,168 @@ async function verifyMacosLaunchdService(runtimePath, mode, port) {
   }
 }
 
+function shellEnvAssignment(key, value) {
+  return `${key}=${shellQuote(String(value))}`;
+}
+
+async function verifyLinuxSystemVService(runtimePath, mode, port) {
+  const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
+  const serviceRoot = path.join(testRoot, `systemv-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.env');
+  const envPath = path.join(serviceRoot, 'runtime.env');
+  const logDirectory = path.join(serviceRoot, 'logs');
+  const backupDirectory = path.join(serviceRoot, 'backups');
+  const startScript = mode === 'standalone'
+    ? 'server.js'
+    : path.join('node_modules', 'next', 'dist', 'bin', 'next');
+  const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
+  const config = {
+    APP_NAME: serviceName,
+    APP_DISPLAY_NAME: serviceName,
+    APP_DESCRIPTION: 'Temporary real Next.js System V CI integration service',
+    APP_DIR: runtimePath,
+    ENV_FILE: envPath,
+    NODE_BIN: process.execPath,
+    START_SCRIPT: startScript,
+    NODE_ARGUMENTS: nodeArguments,
+    APP_PORT: String(port),
+    BIND_ADDRESS: '127.0.0.1',
+    SERVICE_MANAGER: 'systemv',
+    SERVICE_USER: 'root',
+    SERVICE_GROUP: 'root',
+    LOG_DIR: logDirectory,
+    BACKUP_DIR: backupDirectory,
+    SKIP_INSTALL: 'true',
+    SKIP_BUILD: 'true',
+    NODE_ENV: 'production',
+    RUNTIME_ENV_KEYS: 'NEXT_TELEMETRY_DISABLED',
+    NEXT_TELEMETRY_DISABLED: '1'
+  };
+
+  await fs.mkdir(serviceRoot, { recursive: true });
+  await fs.writeFile(configPath, Object.entries(config)
+    .map(([key, value]) => shellEnvAssignment(key, value))
+    .join('\n') + '\n');
+
+  try {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
+    await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+  } finally {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
+    await fs.rm(serviceRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyLinuxOpenRcService(runtimePath, mode, port) {
+  const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
+  const serviceRoot = path.join(testRoot, `openrc-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.env');
+  const envPath = path.join(serviceRoot, 'runtime.env');
+  const logDirectory = path.join(serviceRoot, 'logs');
+  const backupDirectory = path.join(serviceRoot, 'backups');
+  const startScript = mode === 'standalone'
+    ? 'server.js'
+    : path.join('node_modules', 'next', 'dist', 'bin', 'next');
+  const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
+  const config = {
+    APP_NAME: serviceName,
+    APP_DISPLAY_NAME: serviceName,
+    APP_DESCRIPTION: 'Temporary real Next.js OpenRC CI integration service',
+    APP_DIR: runtimePath,
+    ENV_FILE: envPath,
+    NODE_BIN: process.execPath,
+    START_SCRIPT: startScript,
+    NODE_ARGUMENTS: nodeArguments,
+    APP_PORT: String(port),
+    BIND_ADDRESS: '127.0.0.1',
+    SERVICE_MANAGER: 'openrc',
+    SERVICE_USER: 'root',
+    SERVICE_GROUP: 'root',
+    LOG_DIR: logDirectory,
+    BACKUP_DIR: backupDirectory,
+    SKIP_INSTALL: 'true',
+    SKIP_BUILD: 'true',
+    NODE_ENV: 'production',
+    RUNTIME_ENV_KEYS: 'NEXT_TELEMETRY_DISABLED',
+    NEXT_TELEMETRY_DISABLED: '1'
+  };
+
+  await fs.mkdir(serviceRoot, { recursive: true });
+  await fs.writeFile(configPath, Object.entries(config)
+    .map(([key, value]) => shellEnvAssignment(key, value))
+    .join('\n') + '\n');
+
+  try {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
+    await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+  } finally {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
+    await fs.rm(serviceRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyLinuxSystemdService(runtimePath, mode, port) {
+  const serviceName = `node-deploy-kit-next-${Date.now()}-${mode === 'standalone' ? 'standalone' : 'next-start'}`;
+  const serviceRoot = path.join(testRoot, `systemd-${mode}-${port}`);
+  const configPath = path.join(serviceRoot, 'service.env');
+  const envPath = path.join(serviceRoot, 'runtime.env');
+  const logDirectory = path.join(serviceRoot, 'logs');
+  const backupDirectory = path.join(serviceRoot, 'backups');
+  const startScript = mode === 'standalone'
+    ? 'server.js'
+    : path.join('node_modules', 'next', 'dist', 'bin', 'next');
+  const nodeArguments = mode === 'standalone' ? '' : 'start -H 127.0.0.1';
+  const config = {
+    APP_NAME: serviceName,
+    APP_DISPLAY_NAME: serviceName,
+    APP_DESCRIPTION: 'Temporary real Next.js systemd CI integration service',
+    APP_DIR: runtimePath,
+    ENV_FILE: envPath,
+    NODE_BIN: process.execPath,
+    START_SCRIPT: startScript,
+    NODE_ARGUMENTS: nodeArguments,
+    APP_PORT: String(port),
+    BIND_ADDRESS: '127.0.0.1',
+    SERVICE_MANAGER: 'systemd',
+    SERVICE_USER: 'root',
+    SERVICE_GROUP: 'root',
+    LOG_DIR: logDirectory,
+    BACKUP_DIR: backupDirectory,
+    SKIP_INSTALL: 'true',
+    SKIP_BUILD: 'true',
+    NODE_ENV: 'production',
+    RUNTIME_ENV_KEYS: 'NEXT_TELEMETRY_DISABLED',
+    NEXT_TELEMETRY_DISABLED: '1'
+  };
+
+  await fs.mkdir(serviceRoot, { recursive: true });
+  await fs.writeFile(configPath, Object.entries(config)
+    .map(([key, value]) => shellEnvAssignment(key, value))
+    .join('\n') + '\n');
+
+  try {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'install-node-service.sh'), configPath]);
+    await waitForPage(`http://127.0.0.1:${port}/`, 'node-enterprise-deploy-kit real-nextjs-integration', { exitCode: null });
+  } finally {
+    await run('bash', [path.join(repoRoot, 'scripts', 'linux', 'uninstall-node-service.sh'), configPath], { allowFailure: true });
+    await fs.rm(serviceRoot, { recursive: true, force: true });
+  }
+}
+
 async function verifyRuntime(runtimePath, mode) {
   const port = await getFreePort();
+  if (process.platform === 'linux' && runLinuxSystemdServiceIntegration) {
+    await verifyLinuxSystemdService(runtimePath, mode, port);
+    return;
+  }
+  if (process.platform === 'linux' && runLinuxOpenRcServiceIntegration) {
+    await verifyLinuxOpenRcService(runtimePath, mode, port);
+    return;
+  }
+  if (process.platform === 'linux' && runLinuxSystemVServiceIntegration) {
+    await verifyLinuxSystemVService(runtimePath, mode, port);
+    return;
+  }
   if (process.platform === 'darwin' && runLaunchdServiceIntegration) {
     await verifyMacosLaunchdService(runtimePath, mode, port);
     return;
@@ -600,6 +763,10 @@ async function verifyMode(projectPath, mode, expectedNextVersion) {
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   usage();
   process.exit(0);
+}
+
+if ([runLinuxSystemdServiceIntegration, runLinuxSystemVServiceIntegration, runLinuxOpenRcServiceIntegration].filter(Boolean).length > 1) {
+  throw new Error('Only one Linux native service-manager integration flag may be true.');
 }
 
 await fs.mkdir(testRoot, { recursive: true });

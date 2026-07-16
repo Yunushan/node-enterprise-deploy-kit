@@ -463,6 +463,11 @@ bash scripts/dev/test-linux-container-smoke.sh --self-test
 
 CI runs both container modes for Ubuntu, Debian, Linux Mint, RHEL/UBI, Oracle
 Linux, CentOS/CentOS Stream, Rocky Linux, AlmaLinux, Fedora, and Alpine.
+On the hosted native runners, it also deploys both modes through temporary
+systemd services on Ubuntu, System V services in an Ubuntu container, OpenRC
+services in an Alpine container, WinSW services on Windows Server 2022/2025,
+and launchd services on macOS 15. Each check verifies live loopback HTTP output
+and removes the service afterwards.
 Real-host release claims still require collected status evidence from the exact
 platform rows in the support matrix.
 

@@ -6,13 +6,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/dev/test-linux-container-smoke.sh --platform <name> [--image <image>] [--real-nextjs] [--dry-run]
+Usage: scripts/dev/test-linux-container-smoke.sh --platform <name> [--image <image>] [--real-nextjs] [--systemv-service-integration] [--openrc-service-integration] [--dry-run]
        scripts/dev/test-linux-container-smoke.sh --self-test
 
 Runs the Unix deployment and Next.js smoke checks inside a target or
 target-family Linux container. This is intended for CI on hosted Ubuntu runners
 where Docker is available. --real-nextjs additionally builds, packages, and
 runs a temporary real Next.js application in the container.
+--systemv-service-integration additionally installs, probes, and removes the
+generated System V service; it is currently supported on the Ubuntu container.
+--openrc-service-integration additionally installs, probes, and removes the
+generated OpenRC service; it is currently supported on the Alpine container.
 EOF
 }
 
@@ -69,6 +73,9 @@ case "$PLATFORM_CASE" in
     ;;
   alpine)
     apk add --no-cache bash nodejs npm tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
+    if [ "${RUN_OPENRC_SERVICE_INTEGRATION:-false}" = "true" ]; then
+      apk add --no-cache openrc
+    fi
     ;;
   *)
     echo "Unsupported PLATFORM_CASE=$PLATFORM_CASE" >&2
@@ -156,7 +163,7 @@ resolve_image() {
 }
 
 run_container_smoke() {
-  local platform="$1" image_override="$2" dry_run="$3" real_nextjs="$4"
+  local platform="$1" image_override="$2" dry_run="$3" real_nextjs="$4" systemv_service_integration="$5" openrc_service_integration="$6"
   local image container_script docker_bin
 
   if ! image="$(resolve_image "$platform" "$image_override")"; then
@@ -176,6 +183,15 @@ run_container_smoke() {
       require_contains "$container_script" 'curl_package="curl-minimal"' "container script"
       require_contains "$container_script" 'if ! command -v curl >/dev/null 2>&1; then' "container script"
       require_contains "$container_script" "apk add --no-cache bash nodejs npm" "container script"
+      require_contains "$container_script" "apk add --no-cache openrc" "container script"
+      if [[ "$systemv_service_integration" == "true" && "$platform" != "ubuntu" ]]; then
+        echo "System V service integration is only supported for the Ubuntu container." >&2
+        return 2
+      fi
+      if [[ "$openrc_service_integration" == "true" && "$platform" != "alpine" ]]; then
+        echo "OpenRC service integration is only supported for the Alpine container." >&2
+        return 2
+      fi
       echo "Linux container real Next.js dry-run OK: $platform ($image)"
     else
       echo "Linux container smoke dry-run OK: $platform ($image)"
@@ -190,16 +206,32 @@ run_container_smoke() {
   fi
 
   echo "==> Linux container smoke: $platform ($image)"
+  if [[ "$systemv_service_integration" == "true" && "$platform" != "ubuntu" ]]; then
+    echo "System V service integration is only supported for the Ubuntu container." >&2
+    return 2
+  fi
+  if [[ "$openrc_service_integration" == "true" && "$platform" != "alpine" ]]; then
+    echo "OpenRC service integration is only supported for the Alpine container." >&2
+    return 2
+  fi
   "$docker_bin" run --rm \
     -e PLATFORM_CASE="$platform" \
     -e RUN_REAL_NEXTJS="$real_nextjs" \
+    -e RUN_SYSTEMV_SERVICE_INTEGRATION="$systemv_service_integration" \
+    -e RUN_OPENRC_SERVICE_INTEGRATION="$openrc_service_integration" \
     -v "$REPO_ROOT:/repo" \
     -w /repo \
     "$image" \
     sh -lc "$container_script"
 
   if [[ "$real_nextjs" == "true" ]]; then
-    echo "Linux container real Next.js OK: $platform"
+    if [[ "$systemv_service_integration" == "true" ]]; then
+      echo "Linux container real Next.js System V service OK: $platform"
+    elif [[ "$openrc_service_integration" == "true" ]]; then
+      echo "Linux container real Next.js OpenRC service OK: $platform"
+    else
+      echo "Linux container real Next.js OK: $platform"
+    fi
   else
     echo "Linux container smoke OK: $platform"
   fi
@@ -209,15 +241,15 @@ run_self_test() {
   local platform output status
 
   for platform in ubuntu debian linux-mint rhel oracle-linux centos centos-stream rocky almalinux fedora alpine; do
-    output="$(run_container_smoke "$platform" "" true false)"
+    output="$(run_container_smoke "$platform" "" true false false false)"
     require_contains "$output" "Linux container smoke dry-run OK: $platform" "dry-run output"
   done
 
-  output="$(run_container_smoke "ubuntu" "example/custom:local" true false)"
+  output="$(run_container_smoke "ubuntu" "example/custom:local" true false false false)"
   require_contains "$output" "example/custom:local" "image override dry-run output"
 
   set +e
-  output="$(run_container_smoke "solaris" "" true false 2>&1)"
+  output="$(run_container_smoke "solaris" "" true false false false 2>&1)"
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
@@ -226,8 +258,14 @@ run_self_test() {
   fi
   require_contains "$output" "Unsupported Linux container smoke platform: solaris" "unsupported platform output"
 
-  output="$(run_container_smoke "ubuntu" "" true true)"
+  output="$(run_container_smoke "ubuntu" "" true true false false)"
   require_contains "$output" "Linux container real Next.js dry-run OK: ubuntu" "real Next.js dry-run output"
+
+  output="$(run_container_smoke "ubuntu" "" true true true false)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: ubuntu" "System V service integration dry-run output"
+
+  output="$(run_container_smoke "alpine" "" true true false true)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: alpine" "OpenRC service integration dry-run output"
 
   echo "Linux container smoke self-test OK"
 }
@@ -237,6 +275,8 @@ image_override=""
 dry_run="false"
 self_test="false"
 real_nextjs="false"
+systemv_service_integration="false"
+openrc_service_integration="false"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -262,6 +302,14 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --real-nextjs)
       real_nextjs="true"
+      shift
+      ;;
+    --systemv-service-integration)
+      systemv_service_integration="true"
+      shift
+      ;;
+    --openrc-service-integration)
+      openrc_service_integration="true"
       shift
       ;;
     --self-test)
@@ -291,4 +339,13 @@ if [[ -z "$platform_case" ]]; then
   exit 2
 fi
 
-run_container_smoke "$platform_case" "$image_override" "$dry_run" "$real_nextjs"
+if [[ ( "$systemv_service_integration" == "true" || "$openrc_service_integration" == "true" ) && "$real_nextjs" != "true" ]]; then
+  echo "--systemv-service-integration and --openrc-service-integration require --real-nextjs." >&2
+  exit 2
+fi
+if [[ "$systemv_service_integration" == "true" && "$openrc_service_integration" == "true" ]]; then
+  echo "--systemv-service-integration and --openrc-service-integration cannot be used together." >&2
+  exit 2
+fi
+
+run_container_smoke "$platform_case" "$image_override" "$dry_run" "$real_nextjs" "$systemv_service_integration" "$openrc_service_integration"
