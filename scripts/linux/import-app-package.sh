@@ -177,10 +177,18 @@ target_libc() {
     printf '%s\n' "glibc"
     return 0
   fi
-  if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi "musl"; then
+  if command -v ldd >/dev/null 2>&1 && { ldd --version 2>&1 || true; } | grep -qi "musl"; then
     printf '%s\n' "musl"
     return 0
   fi
+  # Alpine's ldd can return nonzero for --version; its musl loader is authoritative.
+  local musl_loader
+  for musl_loader in /lib/ld-musl-*.so.1 /usr/lib/ld-musl-*.so.1; do
+    if [[ -e "$musl_loader" ]]; then
+      printf '%s\n' "musl"
+      return 0
+    fi
+  done
   printf '%s\n' "unknown"
 }
 

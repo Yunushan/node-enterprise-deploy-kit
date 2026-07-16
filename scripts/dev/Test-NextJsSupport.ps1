@@ -141,6 +141,11 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
 }
 
 function Test-WindowsPreparationEnvironmentIsolation {
+  if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+    Write-Host "Skipping Windows preparation environment smoke; cmd.exe is only available on Windows."
+    return
+  }
+
   $preparationPath = Join-Path $RepoRoot "scripts/windows/Invoke-AppPreparation.ps1"
   foreach ($expected in @(
       "Get-PreparationEnvironment",

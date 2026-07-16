@@ -70,6 +70,22 @@ exit 0'
   chmod 0755 "$node_bin"
 }
 
+host_package_platform() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Linux) printf '%s\n' "linux" ;;
+    Darwin) printf '%s\n' "macos" ;;
+    FreeBSD) printf '%s\n' "freebsd" ;;
+    OpenBSD) printf '%s\n' "openbsd" ;;
+    NetBSD) printf '%s\n' "netbsd" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+provenance_value() {
+  local json="$1" key="$2"
+  awk -F'"' -v key="$key" '$2 == key { print $4; exit }' <<<"$json"
+}
+
 write_env() {
   local path="$1" root="$2" port="$3" mode="${4:-standalone}" start_script="${5:-server.js}" service_manager="${6:-launchd}" node_arguments="${7:-}"
   local node_bin="$root/fake-node"
@@ -979,30 +995,45 @@ write_fake_node "$PACKAGE_NODE_BIN"
 expect_success "package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$PACKAGE_PATH" --node-bin "$PACKAGE_NODE_BIN"
 expect_success "package validator" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$PACKAGE_PATH"
 PACKAGE_PROVENANCE="$(tar -xOzf "$PACKAGE_PATH" ./.node-enterprise-package.json)"
+PACKAGE_BUILD_PLATFORM="$(provenance_value "$PACKAGE_PROVENANCE" "buildPlatform")"
+PACKAGE_BUILD_LIBC="$(provenance_value "$PACKAGE_PROVENANCE" "buildLibc")"
 [[ "$PACKAGE_PROVENANCE" == *'"schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v2"'* ]] || { echo "Next.js package helper output is missing provenance schema." >&2; exit 1; }
-[[ "$PACKAGE_PROVENANCE" == *'"buildPlatform": "linux"'* ]] || { echo "Next.js package helper output must identify the Linux build platform." >&2; exit 1; }
+[[ "$PACKAGE_BUILD_PLATFORM" == "$(host_package_platform)" ]] || { echo "Next.js package helper output must identify the current host build platform." >&2; exit 1; }
 [[ "$PACKAGE_PROVENANCE" == *'"nodeModuleAbi": "115"'* ]] || { echo "Next.js package helper output must identify the Node native module ABI." >&2; exit 1; }
+
+MUSL_PROVENANCE_BIN="$TEST_ROOT/musl-provenance-bin"
+MUSL_PACKAGE_PATH="$TEST_ROOT/package/example-next-musl.tar.gz"
+mkdir -p "$MUSL_PROVENANCE_BIN"
+write_file "$MUSL_PROVENANCE_BIN/getconf" '#!/bin/sh
+exit 1'
+write_file "$MUSL_PROVENANCE_BIN/ldd" '#!/bin/sh
+echo "musl libc"
+exit 1'
+chmod 0755 "$MUSL_PROVENANCE_BIN/getconf" "$MUSL_PROVENANCE_BIN/ldd"
+expect_success "package helper musl libc detection" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$MUSL_PACKAGE_PATH" --node-bin "$PACKAGE_NODE_BIN"
+MUSL_PACKAGE_PROVENANCE="$(tar -xOzf "$MUSL_PACKAGE_PATH" ./.node-enterprise-package.json)"
+[[ "$MUSL_PACKAGE_PROVENANCE" == *'"buildLibc": "musl"'* ]] || { echo "Next.js package helper must detect musl even when ldd --version exits nonzero." >&2; exit 1; }
 
 PROVENANCE_STATUS_ROOT="$TEST_ROOT/provenance-status"
 mkdir -p "$PROVENANCE_STATUS_ROOT"
 new_standalone_layout "$PROVENANCE_STATUS_ROOT/app"
 write_env "$PROVENANCE_STATUS_ROOT/app.env" "$PROVENANCE_STATUS_ROOT" 39222 "standalone" "server.js" "launchd"
-write_file "$PROVENANCE_STATUS_ROOT/app/.node-enterprise-deploy.json" '{
-  "schema": "node-enterprise-deploy-kit/import-manifest/v1",
-  "packageProvenance": {
-    "schema": "node-enterprise-deploy-kit/nextjs-package-provenance/v2",
-    "buildPlatform": "linux",
-    "buildArchitecture": "x64",
-    "buildLibc": "glibc",
-    "nodeModuleAbi": "115",
-    "nextVersion": "0.0.0-test",
-    "nextBuildId": "example-build"
+write_file "$PROVENANCE_STATUS_ROOT/app/.node-enterprise-deploy.json" "{
+  \"schema\": \"node-enterprise-deploy-kit/import-manifest/v1\",
+  \"packageProvenance\": {
+    \"schema\": \"node-enterprise-deploy-kit/nextjs-package-provenance/v2\",
+    \"buildPlatform\": \"$PACKAGE_BUILD_PLATFORM\",
+    \"buildArchitecture\": \"x64\",
+    \"buildLibc\": \"$PACKAGE_BUILD_LIBC\",
+    \"nodeModuleAbi\": \"115\",
+    \"nextVersion\": \"0.0.0-test\",
+    \"nextBuildId\": \"example-build\"
   }
-}'
+}"
 PROVENANCE_STATUS_JSON="$PROVENANCE_STATUS_ROOT/status.json"
 expect_success "package provenance status evidence" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$PROVENANCE_STATUS_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$PROVENANCE_STATUS_JSON"
 assert_contains "$PROVENANCE_STATUS_JSON" '"packageProvenance": {'
-assert_contains "$PROVENANCE_STATUS_JSON" '"buildPlatform": "linux"'
+assert_contains "$PROVENANCE_STATUS_JSON" "\"buildPlatform\": \"$PACKAGE_BUILD_PLATFORM\""
 assert_contains "$PROVENANCE_STATUS_JSON" '"nodeModuleAbi": "115"'
 
 STRICT_PROVENANCE_ROOT="$TEST_ROOT/strict-package-provenance"
@@ -1023,10 +1054,14 @@ WRONG_PLATFORM_PACKAGE="$TEST_ROOT/package/wrong-platform.tar.gz"
 mkdir -p "$WRONG_PLATFORM_ROOT"
 tar -xzf "$PACKAGE_PATH" -C "$WRONG_PLATFORM_ROOT"
 WRONG_PLATFORM_MARKER="$WRONG_PLATFORM_ROOT/.node-enterprise-package.json"
-sed 's/"buildPlatform": "linux"/"buildPlatform": "windows"/' "$WRONG_PLATFORM_MARKER" > "$WRONG_PLATFORM_MARKER.tmp"
+WRONG_PLATFORM="windows"
+if [[ "$PACKAGE_BUILD_PLATFORM" == "$WRONG_PLATFORM" ]]; then
+  WRONG_PLATFORM="linux"
+fi
+sed "s/\"buildPlatform\": \"$PACKAGE_BUILD_PLATFORM\"/\"buildPlatform\": \"$WRONG_PLATFORM\"/" "$WRONG_PLATFORM_MARKER" > "$WRONG_PLATFORM_MARKER.tmp"
 mv "$WRONG_PLATFORM_MARKER.tmp" "$WRONG_PLATFORM_MARKER"
 tar -C "$WRONG_PLATFORM_ROOT" -czf "$WRONG_PLATFORM_PACKAGE" .
-expect_failure "strict package provenance mismatch" "built for 'windows'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE"
+expect_failure "strict package provenance mismatch" "built for '$WRONG_PLATFORM'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE"
 
 WRONG_NODE_ABI_ROOT="$TEST_ROOT/package/wrong-node-abi"
 WRONG_NODE_ABI_PACKAGE="$TEST_ROOT/package/wrong-node-abi.tar.gz"
@@ -1055,7 +1090,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   fi
   assert_contains "$IMPORT_MANIFEST" '"packageName": "example-next.tar.gz"'
   assert_contains "$IMPORT_MANIFEST" '"nextBuildId": "example-build"'
-  assert_contains "$IMPORT_MANIFEST" '"buildPlatform": "linux"'
+  assert_contains "$IMPORT_MANIFEST" "\"buildPlatform\": \"$PACKAGE_BUILD_PLATFORM\""
   assert_contains "$IMPORT_MANIFEST" '"nodeModuleAbi": "115"'
   if [[ -e "$IMPORT_ROOT/app/.node-enterprise-package.json" ]]; then
     echo "Unix package provenance marker must not be copied into APP_DIR." >&2
@@ -1072,6 +1107,13 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   assert_contains "$STATUS_IMPORT_JSON" '"nextBuildId": "example-build"'
   assert_not_contains "$STATUS_IMPORT_JSON" "$PACKAGE_PATH"
   assert_not_contains "$STATUS_IMPORT_JSON" "$IMPORT_ROOT"
+
+  MUSL_IMPORT_ROOT="$TEST_ROOT/import-musl-ok"
+  mkdir -p "$MUSL_IMPORT_ROOT"
+  write_env "$MUSL_IMPORT_ROOT/app.env" "$MUSL_IMPORT_ROOT" 39223 "standalone" "server.js" "launchd"
+  printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$MUSL_IMPORT_ROOT/app.env"
+  expect_success "strict musl package import" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$MUSL_IMPORT_ROOT/app.env" "$MUSL_PACKAGE_PATH"
+  assert_contains "$MUSL_IMPORT_ROOT/app/.node-enterprise-deploy.json" '"buildLibc": "musl"'
 
 else
   echo "Skipping root package import manifest smoke; package import intentionally requires root."
