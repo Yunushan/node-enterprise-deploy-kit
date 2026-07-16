@@ -182,7 +182,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run a real Next.js System V service through a reverse proxy
         shell: bash
-        run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration --${{ matrix.proxy }}-proxy-integration
+        run: |
+          case '${{ matrix.proxy }}' in
+            haproxy) proxy_flag=--haproxy-integration ;;
+            *) proxy_flag=--${{ matrix.proxy }}-proxy-integration ;;
+          esac
+          bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration "$proxy_flag"
 
   linux-container-real-nextjs-openrc:
     name: linux-container-real-nextjs-openrc (alpine)
@@ -210,7 +215,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run a real Next.js OpenRC service through a reverse proxy
         shell: bash
-        run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration --${{ matrix.proxy }}-proxy-integration
+        run: |
+          case '${{ matrix.proxy }}' in
+            haproxy) proxy_flag=--haproxy-integration ;;
+            *) proxy_flag=--${{ matrix.proxy }}-proxy-integration ;;
+          esac
+          bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration "$proxy_flag"
 
   linux-container-real-nextjs-apache:
     name: linux-container-real-nextjs-apache (ubuntu)

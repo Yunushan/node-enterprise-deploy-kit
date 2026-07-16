@@ -904,6 +904,7 @@ async function verifyMacosApacheProxy(runtimePath, mode, appPort, backend = null
     `LoadModule mpm_event_module "${path.join(moduleDirectory, 'mod_mpm_event.so')}"`,
     `LoadModule authz_core_module "${path.join(moduleDirectory, 'mod_authz_core.so')}"`,
     `LoadModule authz_host_module "${path.join(moduleDirectory, 'mod_authz_host.so')}"`,
+    `LoadModule log_config_module "${path.join(moduleDirectory, 'mod_log_config.so')}"`,
     `LoadModule mime_module "${path.join(moduleDirectory, 'mod_mime.so')}"`,
     `LoadModule proxy_module "${path.join(moduleDirectory, 'mod_proxy.so')}"`,
     `LoadModule proxy_http_module "${path.join(moduleDirectory, 'mod_proxy_http.so')}"`,

@@ -380,16 +380,15 @@ run_self_test() {
   output="$(run_container_smoke "ubuntu" "" true true false false false false false true)"
   require_contains "$output" "Linux container real Next.js dry-run OK: ubuntu" "Traefik proxy integration dry-run output"
 
-  for platform in alpine; do
-    output="$(run_container_smoke "$platform" "" true true false true true false false false)"
-    require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Apache and OpenRC integration dry-run output"
-    output="$(run_container_smoke "$platform" "" true true false true false true false false)"
-    require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Nginx and OpenRC integration dry-run output"
-    output="$(run_container_smoke "$platform" "" true true false true false false true false)"
-    require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine HAProxy and OpenRC integration dry-run output"
-    output="$(run_container_smoke "$platform" "" true true false true false false false true)"
-    require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Traefik and OpenRC integration dry-run output"
-  done
+  platform="alpine"
+  output="$(run_container_smoke "$platform" "" true true false true true false false false)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Apache and OpenRC integration dry-run output"
+  output="$(run_container_smoke "$platform" "" true true false true false true false false)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Nginx and OpenRC integration dry-run output"
+  output="$(run_container_smoke "$platform" "" true true false true false false true false)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine HAProxy and OpenRC integration dry-run output"
+  output="$(run_container_smoke "$platform" "" true true false true false false false true)"
+  require_contains "$output" "Linux container real Next.js dry-run OK: $platform" "Alpine Traefik and OpenRC integration dry-run output"
 
   echo "Linux container smoke self-test OK"
 }

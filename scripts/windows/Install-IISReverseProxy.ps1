@@ -222,7 +222,11 @@ $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $templatePath = Join-Path $repoRoot "templates\windows\iis-web.config.tpl"
 
-Import-Module WebAdministration -ErrorAction Stop
+if ($PSVersionTable.PSEdition -eq "Core") {
+    Import-Module WebAdministration -SkipEditionCheck -ErrorAction Stop
+} else {
+    Import-Module WebAdministration -ErrorAction Stop
+}
 
 $siteName = [string](Get-ConfigValue $config "IisSiteName" $config.AppName)
 $appPoolName = [string](Get-ConfigValue $config "IisAppPoolName" "$($config.AppName)-AppPool")

@@ -1001,18 +1001,20 @@ PACKAGE_BUILD_LIBC="$(provenance_value "$PACKAGE_PROVENANCE" "buildLibc")"
 [[ "$PACKAGE_BUILD_PLATFORM" == "$(host_package_platform)" ]] || { echo "Next.js package helper output must identify the current host build platform." >&2; exit 1; }
 [[ "$PACKAGE_PROVENANCE" == *'"nodeModuleAbi": "115"'* ]] || { echo "Next.js package helper output must identify the Node native module ABI." >&2; exit 1; }
 
-MUSL_PROVENANCE_BIN="$TEST_ROOT/musl-provenance-bin"
-MUSL_PACKAGE_PATH="$TEST_ROOT/package/example-next-musl.tar.gz"
-mkdir -p "$MUSL_PROVENANCE_BIN"
-write_file "$MUSL_PROVENANCE_BIN/getconf" '#!/bin/sh
+if [[ "$(host_package_platform)" == "linux" ]]; then
+  MUSL_PROVENANCE_BIN="$TEST_ROOT/musl-provenance-bin"
+  MUSL_PACKAGE_PATH="$TEST_ROOT/package/example-next-musl.tar.gz"
+  mkdir -p "$MUSL_PROVENANCE_BIN"
+  write_file "$MUSL_PROVENANCE_BIN/getconf" '#!/bin/sh
 exit 1'
-write_file "$MUSL_PROVENANCE_BIN/ldd" '#!/bin/sh
+  write_file "$MUSL_PROVENANCE_BIN/ldd" '#!/bin/sh
 echo "musl libc"
 exit 1'
-chmod 0755 "$MUSL_PROVENANCE_BIN/getconf" "$MUSL_PROVENANCE_BIN/ldd"
-expect_success "package helper musl libc detection" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$MUSL_PACKAGE_PATH" --node-bin "$PACKAGE_NODE_BIN"
-MUSL_PACKAGE_PROVENANCE="$(tar -xOzf "$MUSL_PACKAGE_PATH" ./.node-enterprise-package.json)"
-[[ "$MUSL_PACKAGE_PROVENANCE" == *'"buildLibc": "musl"'* ]] || { echo "Next.js package helper must detect musl even when ldd --version exits nonzero." >&2; exit 1; }
+  chmod 0755 "$MUSL_PROVENANCE_BIN/getconf" "$MUSL_PROVENANCE_BIN/ldd"
+  expect_success "package helper musl libc detection" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$PACKAGE_PROJECT" --output-path "$MUSL_PACKAGE_PATH" --node-bin "$PACKAGE_NODE_BIN"
+  MUSL_PACKAGE_PROVENANCE="$(tar -xOzf "$MUSL_PACKAGE_PATH" ./.node-enterprise-package.json)"
+  [[ "$MUSL_PACKAGE_PROVENANCE" == *'"buildLibc": "musl"'* ]] || { echo "Next.js package helper must detect musl even when ldd --version exits nonzero." >&2; exit 1; }
+fi
 
 PROVENANCE_STATUS_ROOT="$TEST_ROOT/provenance-status"
 mkdir -p "$PROVENANCE_STATUS_ROOT"
@@ -1108,12 +1110,14 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   assert_not_contains "$STATUS_IMPORT_JSON" "$PACKAGE_PATH"
   assert_not_contains "$STATUS_IMPORT_JSON" "$IMPORT_ROOT"
 
-  MUSL_IMPORT_ROOT="$TEST_ROOT/import-musl-ok"
-  mkdir -p "$MUSL_IMPORT_ROOT"
-  write_env "$MUSL_IMPORT_ROOT/app.env" "$MUSL_IMPORT_ROOT" 39223 "standalone" "server.js" "launchd"
-  printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$MUSL_IMPORT_ROOT/app.env"
-  expect_success "strict musl package import" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$MUSL_IMPORT_ROOT/app.env" "$MUSL_PACKAGE_PATH"
-  assert_contains "$MUSL_IMPORT_ROOT/app/.node-enterprise-deploy.json" '"buildLibc": "musl"'
+  if [[ "$(host_package_platform)" == "linux" ]]; then
+    MUSL_IMPORT_ROOT="$TEST_ROOT/import-musl-ok"
+    mkdir -p "$MUSL_IMPORT_ROOT"
+    write_env "$MUSL_IMPORT_ROOT/app.env" "$MUSL_IMPORT_ROOT" 39223 "standalone" "server.js" "launchd"
+    printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$MUSL_IMPORT_ROOT/app.env"
+    expect_success "strict musl package import" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$MUSL_IMPORT_ROOT/app.env" "$MUSL_PACKAGE_PATH"
+    assert_contains "$MUSL_IMPORT_ROOT/app/.node-enterprise-deploy.json" '"buildLibc": "musl"'
+  fi
 
 else
   echo "Skipping root package import manifest smoke; package import intentionally requires root."
