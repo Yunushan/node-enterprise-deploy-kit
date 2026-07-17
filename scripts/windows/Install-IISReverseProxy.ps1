@@ -218,15 +218,23 @@ function Ensure-WebsiteStarted([string]$SiteName) {
 }
 
 Assert-Admin
+$nativeWindowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+if ($PSVersionTable.PSEdition -eq "Core") {
+    if (-not (Test-Path -LiteralPath $nativeWindowsPowerShell -PathType Leaf)) {
+        throw "IIS reverse-proxy configuration requires Windows PowerShell, but powershell.exe was not found: $nativeWindowsPowerShell"
+    }
+    & $nativeWindowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -ConfigPath $ConfigPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native Windows PowerShell failed while configuring the IIS reverse proxy."
+    }
+    return
+}
+
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $templatePath = Join-Path $repoRoot "templates\windows\iis-web.config.tpl"
 
-if ($PSVersionTable.PSEdition -eq "Core") {
-    Import-Module WebAdministration -SkipEditionCheck -ErrorAction Stop
-} else {
-    Import-Module WebAdministration -ErrorAction Stop
-}
+Import-Module WebAdministration -ErrorAction Stop
 
 $siteName = [string](Get-ConfigValue $config "IisSiteName" $config.AppName)
 $appPoolName = [string](Get-ConfigValue $config "IisAppPoolName" "$($config.AppName)-AppPool")

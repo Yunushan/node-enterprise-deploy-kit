@@ -134,6 +134,8 @@ jobs:
     name: linux-container-real-nextjs (${{ matrix.platform }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -155,21 +157,41 @@ jobs:
       - name: Linux container real Next.js package/runtime integration
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}" --real-nextjs
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-${{ matrix.platform }}
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-systemv:
     name: linux-container-real-nextjs-systemv (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Install, run, and remove a real Next.js System V service
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-systemv-ubuntu
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-systemv-proxy:
     name: linux-container-real-nextjs-systemv-proxy (${{ matrix.proxy }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     strategy:
       fail-fast: false
       matrix:
@@ -188,21 +210,41 @@ jobs:
             *) proxy_flag=--${{ matrix.proxy }}-proxy-integration ;;
           esac
           bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration "$proxy_flag"
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-systemv-proxy-ubuntu-${{ matrix.proxy }}
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-openrc:
     name: linux-container-real-nextjs-openrc (alpine)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Install, run, and remove a real Next.js OpenRC service
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-openrc-alpine
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-openrc-proxy:
     name: linux-container-real-nextjs-openrc-proxy (${{ matrix.proxy }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     strategy:
       fail-fast: false
       matrix:
@@ -221,51 +263,102 @@ jobs:
             *) proxy_flag=--${{ matrix.proxy }}-proxy-integration ;;
           esac
           bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration "$proxy_flag"
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-openrc-proxy-alpine-${{ matrix.proxy }}
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-apache:
     name: linux-container-real-nextjs-apache (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Run a real Next.js package through Apache
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --apache-proxy-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-apache-ubuntu
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-nginx:
     name: linux-container-real-nextjs-nginx (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Run a real Next.js package through Nginx
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --nginx-proxy-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-nginx-ubuntu
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-haproxy:
     name: linux-container-real-nextjs-haproxy (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Run a real Next.js package through HAProxy
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --haproxy-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-haproxy-ubuntu
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux-container-real-nextjs-traefik:
     name: linux-container-real-nextjs-traefik (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
       - uses: actions/checkout@v7
       - name: Run a real Next.js package through Traefik
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --traefik-proxy-integration
+      - name: Upload Linux container Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: linux-container-real-nextjs-traefik-ubuntu
+          path: .tmp/nextjs-container-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-linux-systemd-nextjs:
     name: real-linux-systemd-nextjs (ubuntu, nginx)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+      NEXTJS_INTEGRATION_TARGET: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Set up Node.js 22
@@ -277,7 +370,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends nginx
       - name: Build, package, and run real Next.js through systemd and Nginx
         shell: bash
-        run: sudo env RUN_SYSTEMD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_WORKFLOW="$GITHUB_WORKFLOW" GITHUB_JOB="$GITHUB_JOB" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" NEXTJS_INTEGRATION_TARGET="$NEXTJS_INTEGRATION_TARGET" RUN_SYSTEMD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true NEXTJS_INTEGRATION_RESULT_PATH="$NEXTJS_INTEGRATION_RESULT_PATH" NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-linux-systemd-nextjs
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   macos-checks:
     runs-on: macos-15
@@ -301,6 +402,8 @@ jobs:
     timeout-minutes: 45
     env:
       RUN_LAUNCHD_SERVICE_INTEGRATION: ${{ matrix.os == 'macos-15' && 'true' || 'false' }}
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+      NEXTJS_INTEGRATION_TARGET: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -318,6 +421,14 @@ jobs:
       - name: Build, package, and run a real Next.js application
         shell: bash
         run: node scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-nextjs-integration-${{ matrix.os }}
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-windows-service-nextjs:
     name: real-windows-service-nextjs (${{ matrix.os }})
@@ -339,7 +450,17 @@ jobs:
         shell: pwsh
         env:
           RUN_WINSW_SERVICE_INTEGRATION: "true"
+          NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+          NEXTJS_INTEGRATION_TARGET: ${{ matrix.os }}
         run: node scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-windows-service-nextjs-${{ matrix.os }}
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-windows-service-iis-nextjs:
     name: real-windows-service-iis-nextjs (${{ matrix.os }}, ${{ matrix.manager }})
@@ -378,6 +499,8 @@ jobs:
         shell: pwsh
         env:
           RUN_WINDOWS_IIS_INTEGRATION: "true"
+          NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+          NEXTJS_INTEGRATION_TARGET: ${{ matrix.os }}
         run: |
           if ('${{ matrix.manager }}' -eq 'winsw') {
             $env:RUN_WINSW_SERVICE_INTEGRATION = 'true'
@@ -385,21 +508,43 @@ jobs:
             $env:RUN_NSSM_SERVICE_INTEGRATION = 'true'
           }
           node scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-windows-service-iis-nextjs-${{ matrix.os }}-${{ matrix.manager }}
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-macos-service-nextjs:
     name: real-macos-service-nextjs (macos-15)
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+      NEXTJS_INTEGRATION_TARGET: macos-15
     steps:
       - uses: actions/checkout@v7
       - name: Build, package, and run real Next.js through launchd
         shell: bash
-        run: sudo env RUN_LAUNCHD_SERVICE_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_WORKFLOW="$GITHUB_WORKFLOW" GITHUB_JOB="$GITHUB_JOB" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" NEXTJS_INTEGRATION_TARGET="$NEXTJS_INTEGRATION_TARGET" NEXTJS_INTEGRATION_RESULT_PATH="$NEXTJS_INTEGRATION_RESULT_PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-macos-service-nextjs
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-macos-service-nginx-nextjs:
     name: real-macos-service-nginx-nextjs (macos-15)
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+      NEXTJS_INTEGRATION_TARGET: macos-15
     steps:
       - uses: actions/checkout@v7
       - name: Set up Node.js 22
@@ -411,12 +556,23 @@ jobs:
         run: brew install nginx
       - name: Build, package, and run real Next.js through launchd and Nginx
         shell: bash
-        run: sudo env PATH="$PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+        run: sudo env PATH="$PATH" GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_WORKFLOW="$GITHUB_WORKFLOW" GITHUB_JOB="$GITHUB_JOB" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" NEXTJS_INTEGRATION_TARGET="$NEXTJS_INTEGRATION_TARGET" NEXTJS_INTEGRATION_RESULT_PATH="$NEXTJS_INTEGRATION_RESULT_PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true RUN_NGINX_PROXY_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-macos-service-nginx-nextjs
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
 
   real-macos-service-proxy-nextjs:
     name: real-macos-service-proxy-nextjs (macos-15, ${{ matrix.proxy }})
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
+      NEXTJS_INTEGRATION_TARGET: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -445,4 +601,68 @@ jobs:
             traefik) proxy_env=RUN_TRAEFIK_PROXY_INTEGRATION=true ;;
             *) echo "Unsupported macOS proxy matrix value." >&2; exit 1 ;;
           esac
-          sudo env PATH="$PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true "$proxy_env" "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+          sudo env PATH="$PATH" GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_WORKFLOW="$GITHUB_WORKFLOW" GITHUB_JOB="$GITHUB_JOB" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" NEXTJS_INTEGRATION_TARGET="$NEXTJS_INTEGRATION_TARGET" NEXTJS_INTEGRATION_RESULT_PATH="$NEXTJS_INTEGRATION_RESULT_PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true "$proxy_env" "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+      - name: Upload real Next.js integration result
+        if: always()
+        uses: ./.github/actions/upload-nextjs-integration-result
+        with:
+          name: real-macos-service-proxy-nextjs-${{ matrix.proxy }}
+          path: .tmp/nextjs-integration-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  nextjs-integration-summary:
+    name: Next.js integration result summary
+    if: ${{ always() }}
+    needs:
+      - linux-container-real-nextjs
+      - linux-container-real-nextjs-systemv
+      - linux-container-real-nextjs-systemv-proxy
+      - linux-container-real-nextjs-openrc
+      - linux-container-real-nextjs-openrc-proxy
+      - linux-container-real-nextjs-apache
+      - linux-container-real-nextjs-nginx
+      - linux-container-real-nextjs-haproxy
+      - linux-container-real-nextjs-traefik
+      - real-linux-systemd-nextjs
+      - real-nextjs-integration
+      - real-windows-service-nextjs
+      - real-windows-service-iis-nextjs
+      - real-macos-service-nextjs
+      - real-macos-service-nginx-nextjs
+      - real-macos-service-proxy-nextjs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Download hosted Next.js integration results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: '*nextjs*'
+          path: .tmp/nextjs-integration-artifacts
+      - name: Build Next.js integration summary
+        shell: bash
+        env:
+          NEXTJS_INTEGRATION_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          mkdir -p .tmp/nextjs-integration-artifacts
+          node scripts/dev/New-NextJsIntegrationSummary.mjs \
+            --input .tmp/nextjs-integration-artifacts \
+            --output .tmp/nextjs-integration-summary
+          cat .tmp/nextjs-integration-summary/nextjs-integration-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce hosted Next.js integration result coverage
+        shell: bash
+        run: node scripts/dev/New-NextJsIntegrationSummary.mjs --validate-summary .tmp/nextjs-integration-summary/nextjs-integration-summary.json
+      - name: Upload Next.js integration summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextjs-integration-summary
+          path: .tmp/nextjs-integration-summary
+          if-no-files-found: warn
+          retention-days: 14

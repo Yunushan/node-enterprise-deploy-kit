@@ -1,0 +1,39 @@
+name: Upload Next.js Integration Result
+description: Validates and uploads a safe real Next.js integration result without treating it as host evidence.
+
+inputs:
+  name:
+    description: Artifact name.
+    required: true
+  path:
+    description: Relative path to the integration result JSON file.
+    required: true
+  if-no-files-found:
+    description: Artifact action behavior when no result file exists.
+    required: false
+    default: warn
+  retention-days:
+    description: Artifact retention period in days.
+    required: false
+    default: '14'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate integration result when present
+      shell: bash
+      run: |
+        set -euo pipefail
+        result_path='${{ inputs.path }}'
+        if [[ ! -f "$result_path" ]]; then
+          echo "::warning::No Next.js integration result was written at $result_path."
+          exit 0
+        fi
+        node scripts/dev/Test-NextJsIntegrationResult.mjs "$result_path"
+    - name: Upload integration result
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}

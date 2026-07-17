@@ -190,6 +190,8 @@ if [ "${RUN_REAL_NEXTJS:-false}" = "true" ]; then
   node --version
   export NODE_OPTIONS="--dns-result-order=ipv4first --use-system-ca"
   export NEXTJS_INTEGRATION_TEMP_ROOT="/tmp/node-enterprise-deploy-kit-real-nextjs-$PLATFORM_CASE"
+  export NEXTJS_INTEGRATION_EXECUTION="container"
+  export NEXTJS_INTEGRATION_TARGET="$PLATFORM_CASE"
   node scripts/dev/test-real-nextjs-integration.mjs
 fi
 CONTAINER
@@ -214,7 +216,7 @@ resolve_image() {
 
 run_container_smoke() {
   local platform="$1" image_override="$2" dry_run="$3" real_nextjs="$4" systemv_service_integration="$5" openrc_service_integration="$6" apache_proxy_integration="$7" nginx_proxy_integration="$8" haproxy_integration="$9" traefik_proxy_integration="${10}"
-  local image container_script docker_bin
+  local image container_script docker_bin result_path
 
   if ! image="$(resolve_image "$platform" "$image_override")"; then
     echo "Unsupported Linux container smoke platform: $platform" >&2
@@ -266,6 +268,7 @@ run_container_smoke() {
   fi
 
   docker_bin="${DOCKER_BIN:-docker}"
+  result_path="${NEXTJS_INTEGRATION_RESULT_PATH:-}"
   if ! command -v "$docker_bin" >/dev/null 2>&1; then
     echo "Docker was not found. Install Docker or run this check on a GitHub-hosted Ubuntu runner." >&2
     return 1
@@ -312,6 +315,13 @@ run_container_smoke() {
     -e RUN_NGINX_PROXY_INTEGRATION="$nginx_proxy_integration" \
     -e RUN_HAPROXY_INTEGRATION="$haproxy_integration" \
     -e RUN_TRAEFIK_PROXY_INTEGRATION="$traefik_proxy_integration" \
+    -e NEXTJS_INTEGRATION_RESULT_PATH="$result_path" \
+    -e GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" \
+    -e GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-}" \
+    -e GITHUB_JOB="${GITHUB_JOB:-}" \
+    -e GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
+    -e GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-}" \
+    -e GITHUB_SHA="${GITHUB_SHA:-}" \
     -v "$docker_repo_root:/repo" \
     -w /repo \
     "$image" \

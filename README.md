@@ -159,6 +159,15 @@ The Traefik job downloads the pinned upstream Linux binary and validates its
 published SHA-256 because Ubuntu does not provide a Traefik package.
 Traefik reports the standard HTTP forwarded port (`80`) for its HTTP entrypoint;
 the live test asserts that provider behavior explicitly.
+Native real-runtime jobs retain a 14-day `nextjs-integration-result.json`
+artifact with the verified runner, runtime versions, package modes, selected
+manager/proxy, forwarded-header check, target label/job ID, and CI run provenance. It is hosted CI
+verification metadata only; final support claims still require the separate
+self-hosted status-evidence workflow.
+The Linux distribution-container jobs retain the same result with the tested
+target distribution and `container` execution mode.
+CI also publishes a `nextjs-integration-summary` artifact with observed result
+counts and upstream job outcomes; it is review metadata, not host evidence.
 
 To validate the container smoke wrapper locally without Docker pulls:
 

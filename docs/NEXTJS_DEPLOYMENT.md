@@ -489,6 +489,23 @@ integration assertion verifies explicitly.
 Real-host release claims still require collected status evidence from the exact
 platform rows in the support matrix.
 
+Each native hosted real-runtime job also uploads a 14-day
+`nextjs-integration-result.json` artifact. It records the runner platform,
+Node.js and installed Next.js versions, both package modes, selected service
+manager/reverse proxy, forwarded-header check, and GitHub Actions run
+provenance including the exact target label and job ID. This is hosted CI verification metadata, not deployment status
+evidence: it cannot satisfy the self-hosted uptime and exact-host requirements
+for a release support claim.
+The Linux distribution-container jobs upload the same safe result, labeled with
+the tested target distribution and `container` execution mode, for every real
+Next.js package/runtime check and managed System V/OpenRC proxy check.
+After those jobs complete, CI writes a single `nextjs-integration-summary`
+artifact and GitHub Actions summary with observed passed, failed, invalid, and
+missing-result context plus upstream job outcomes. A successful upstream job
+without a valid result artifact fails the summary job, while the diagnostic
+summary is still uploaded. It remains hosted CI review metadata, not a release
+support claim.
+
 The repository verifier also starts a tiny local standalone-style Node.js
 server and probes `/health` to prove that the managed `PORT`, `APP_PORT`,
 `HOST`, and `HOSTNAME` values produce an actual loopback HTTP listener. Set

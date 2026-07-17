@@ -22,12 +22,103 @@ const runApacheProxyIntegration = process.env.RUN_APACHE_PROXY_INTEGRATION === '
 const runNginxProxyIntegration = process.env.RUN_NGINX_PROXY_INTEGRATION === 'true';
 const runHaProxyIntegration = process.env.RUN_HAPROXY_INTEGRATION === 'true';
 const runTraefikProxyIntegration = process.env.RUN_TRAEFIK_PROXY_INTEGRATION === 'true';
+const resultPath = process.env.NEXTJS_INTEGRATION_RESULT_PATH
+  ? path.resolve(process.cwd(), process.env.NEXTJS_INTEGRATION_RESULT_PATH)
+  : null;
+const nativeWindowsPowerShell = process.platform === 'win32'
+  ? path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  : 'pwsh';
 const testRootBase = process.env.NEXTJS_INTEGRATION_TEMP_ROOT
   || (process.platform === 'linux' && runLinuxSystemdServiceIntegration
     ? '/srv/node-enterprise-deploy-kit-ci'
     : null)
   || (process.platform === 'win32' ? path.join(repoRoot, '.tmp') : os.tmpdir());
 const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.platform}-${Date.now()}`);
+const startedAt = new Date().toISOString();
+
+function getIntegrationProfile() {
+  const serviceManager = runWindowsServiceIntegration
+    ? 'winsw'
+    : runWindowsNssmServiceIntegration
+      ? 'nssm'
+      : runLinuxSystemdServiceIntegration
+        ? 'systemd'
+        : runLinuxSystemVServiceIntegration
+          ? 'systemv'
+          : runLinuxOpenRcServiceIntegration
+            ? 'openrc'
+            : runLaunchdServiceIntegration
+              ? 'launchd'
+              : 'direct';
+  const reverseProxy = runWindowsIisIntegration
+    ? 'iis'
+    : runApacheProxyIntegration
+      ? 'apache'
+      : runNginxProxyIntegration
+        ? 'nginx'
+        : runHaProxyIntegration
+          ? 'haproxy'
+          : runTraefikProxyIntegration
+            ? 'traefik'
+            : 'none';
+
+  return { serviceManager, reverseProxy };
+}
+
+async function writeIntegrationResult(status, installedVersion) {
+  if (!resultPath) {
+    return;
+  }
+
+  const verificationPassed = status === 'passed';
+  const result = {
+    schemaVersion: 1,
+    kind: 'hosted-nextjs-integration',
+    status,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    platform: {
+      os: process.platform,
+      arch: process.arch,
+      release: os.release()
+    },
+    node: {
+      version: process.version
+    },
+    nextJs: {
+      requestedVersion: nextVersion,
+      installedVersion: installedVersion || null,
+      expectedModes: ['standalone', 'next-start'],
+      verifiedModes: verificationPassed ? ['standalone', 'next-start'] : []
+    },
+    verification: {
+      ...getIntegrationProfile(),
+      packageImport: verificationPassed,
+      loopbackHttp: verificationPassed,
+      forwardedHeaders: verificationPassed
+    },
+    execution: {
+      kind: process.env.NEXTJS_INTEGRATION_EXECUTION || 'native',
+      target: process.env.NEXTJS_INTEGRATION_TARGET || null
+    },
+    ci: {
+      provider: process.env.GITHUB_ACTIONS === 'true' ? 'github-actions' : 'local',
+      workflow: process.env.GITHUB_WORKFLOW || null,
+      job: process.env.GITHUB_JOB || null,
+      runId: process.env.GITHUB_RUN_ID || null,
+      runAttempt: process.env.GITHUB_RUN_ATTEMPT || null,
+      sha: process.env.GITHUB_SHA || null
+    }
+  };
+
+  try {
+    await fs.mkdir(path.dirname(resultPath), { recursive: true });
+    await fs.writeFile(resultPath, JSON.stringify(result, null, 2) + '\n');
+    console.log(`Wrote real Next.js integration result: ${resultPath}`);
+  } catch (error) {
+    console.warn(`Could not write real Next.js integration result: ${error.message}`);
+  }
+}
 
 function usage() {
   console.log('Usage: node scripts/dev/test-real-nextjs-integration.mjs [--help]');
@@ -526,7 +617,7 @@ async function removeTemporaryWindowsIisSite(config) {
     `if (Test-Path -LiteralPath "IIS:\\Sites\\${config.IisSiteName}") { Stop-Website -Name "${config.IisSiteName}" -ErrorAction SilentlyContinue; Remove-Website -Name "${config.IisSiteName}" -ErrorAction SilentlyContinue }`,
     `if (Test-Path -LiteralPath "IIS:\\AppPools\\${config.IisAppPoolName}") { Remove-WebAppPool -Name "${config.IisAppPoolName}" -ErrorAction SilentlyContinue }`
   ].join('; ');
-  await run('pwsh', ['-NoProfile', '-Command', command], { allowFailure: true });
+  await run(nativeWindowsPowerShell, ['-NoProfile', '-Command', command], { allowFailure: true });
 }
 
 async function verifyWindowsIisProxy(config, configPath) {
@@ -534,7 +625,7 @@ async function verifyWindowsIisProxy(config, configPath) {
     return;
   }
 
-  await run('pwsh', [
+  await run(nativeWindowsPowerShell, [
     '-NoProfile',
     '-File', path.join(repoRoot, 'scripts', 'windows', 'Install-ReverseProxy.ps1'),
     '-ConfigPath', configPath
@@ -822,6 +913,7 @@ async function verifyLinuxApacheProxy(runtimePath, mode, appPort, backend = null
     `LoadModule mpm_event_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mpm_event.so')}`,
     ...(apacheInstallation.unixdModulePath ? [`LoadModule unixd_module ${apacheInstallation.unixdModulePath}`] : []),
     `LoadModule authz_core_module ${path.join(apacheInstallation.moduleDirectory, 'mod_authz_core.so')}`,
+    `LoadModule log_config_module ${path.join(apacheInstallation.moduleDirectory, 'mod_log_config.so')}`,
     `LoadModule mime_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mime.so')}`,
     `LoadModule proxy_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy.so')}`,
     `LoadModule proxy_http_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy_http.so')}`,
@@ -860,6 +952,7 @@ async function resolveMacosHttpdInstallation() {
       await Promise.all([
         fs.access(binaryPath),
         fs.access(path.join(moduleDirectory, 'mod_mpm_event.so')),
+        fs.access(path.join(moduleDirectory, 'mod_unixd.so')),
         fs.access(path.join(moduleDirectory, 'mod_proxy_http.so'))
       ]);
       return { binaryPath, moduleDirectory };
@@ -893,6 +986,7 @@ async function verifyMacosApacheProxy(runtimePath, mode, appPort, backend = null
     .replaceAll('{{FORWARDED_PORT}}', String(proxyPort));
 
   await fs.mkdir(logDirectory, { recursive: true });
+  await fs.chmod(apacheRoot, 0o777);
   await fs.chmod(logDirectory, 0o777);
   await fs.writeFile(vhostPath, vhost);
   await fs.writeFile(configPath, [
@@ -902,6 +996,7 @@ async function verifyMacosApacheProxy(runtimePath, mode, appPort, backend = null
     'ServerName localhost',
     `Listen 127.0.0.1:${proxyPort}`,
     `LoadModule mpm_event_module "${path.join(moduleDirectory, 'mod_mpm_event.so')}"`,
+    `LoadModule unixd_module "${path.join(moduleDirectory, 'mod_unixd.so')}"`,
     `LoadModule authz_core_module "${path.join(moduleDirectory, 'mod_authz_core.so')}"`,
     `LoadModule authz_host_module "${path.join(moduleDirectory, 'mod_authz_host.so')}"`,
     `LoadModule log_config_module "${path.join(moduleDirectory, 'mod_log_config.so')}"`,
@@ -910,6 +1005,8 @@ async function verifyMacosApacheProxy(runtimePath, mode, appPort, backend = null
     `LoadModule proxy_http_module "${path.join(moduleDirectory, 'mod_proxy_http.so')}"`,
     `LoadModule headers_module "${path.join(moduleDirectory, 'mod_headers.so')}"`,
     `LoadModule rewrite_module "${path.join(moduleDirectory, 'mod_rewrite.so')}"`,
+    'User _www',
+    'Group _www',
     `ErrorLog "${path.join(logDirectory, 'apache-bootstrap-error.log')}"`,
     `Include "${vhostPath}"`
   ].join('\n') + '\n');
@@ -1346,24 +1443,42 @@ if (runWindowsIisIntegration && !runWindowsServiceIntegration && !runWindowsNssm
 await fs.mkdir(testRoot, { recursive: true });
 const standaloneProjectPath = path.join(testRoot, 'standalone-project');
 const nextStartProjectPath = path.join(testRoot, 'next-start-project');
+let installedVersion = '';
+let integrationStatus = 'failed';
+let primaryFailure = false;
 
 try {
   console.log(`==> Real Next.js integration (${process.platform}, Next.js ${nextVersion})`);
   await verifyNpmRegistryAccess();
   await writeFixture(standaloneProjectPath, true);
   await buildProject(standaloneProjectPath, true);
-  const installedVersion = JSON.parse(await fs.readFile(path.join(standaloneProjectPath, 'node_modules', 'next', 'package.json'), 'utf8')).version;
+  installedVersion = JSON.parse(await fs.readFile(path.join(standaloneProjectPath, 'node_modules', 'next', 'package.json'), 'utf8')).version;
   console.log(`Built real Next.js ${installedVersion}.`);
   await verifyMode(standaloneProjectPath, 'standalone', installedVersion);
 
   await writeFixture(nextStartProjectPath, false);
   await buildProject(nextStartProjectPath, false);
   await verifyMode(nextStartProjectPath, 'next-start', installedVersion);
+  integrationStatus = 'passed';
   console.log('Real Next.js integration checks OK.');
+} catch (error) {
+  primaryFailure = true;
+  throw error;
 } finally {
-  if (!keepTestRoot) {
-    await fs.rm(testRoot, { recursive: true, force: true });
-  } else {
-    console.log(`Kept integration test root: ${testRoot}`);
+  try {
+    if (!keepTestRoot) {
+      await fs.rm(testRoot, { recursive: true, force: true });
+    } else {
+      console.log(`Kept integration test root: ${testRoot}`);
+    }
+  } catch (error) {
+    integrationStatus = 'failed';
+    if (primaryFailure) {
+      console.warn(`Could not clean up real Next.js integration root: ${error.message}`);
+    } else {
+      throw error;
+    }
+  } finally {
+    await writeIntegrationResult(integrationStatus, installedVersion);
   }
 }

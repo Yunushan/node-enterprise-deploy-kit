@@ -256,6 +256,11 @@ function Get-WindowsArchitecture {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
     }
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        if ([Environment]::Is64BitOperatingSystem -or [Environment]::Is64BitProcess) {
+            $raw = "amd64"
+        }
+    }
     if ($null -eq $raw) { $raw = "" }
     switch ($raw.Trim().ToLowerInvariant()) {
         { $_ -in @("amd64", "x64") } { return "x64" }
