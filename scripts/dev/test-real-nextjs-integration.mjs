@@ -35,6 +35,32 @@ const testRootBase = process.env.NEXTJS_INTEGRATION_TEMP_ROOT
   || (process.platform === 'win32' ? path.join(repoRoot, '.tmp') : os.tmpdir());
 const testRoot = path.join(testRootBase, `real-nextjs-integration-${process.platform}-${Date.now()}`);
 const startedAt = new Date().toISOString();
+const ciProvider = process.env.GITHUB_ACTIONS === 'true' ? 'github-actions' : 'local';
+const runnerEnvironment = process.env.NEXTJS_INTEGRATION_RUNNER_ENVIRONMENT
+  || (ciProvider === 'github-actions' ? 'github-hosted' : 'local');
+const defaultCommandTimeoutMs = readTimeout('NEXTJS_INTEGRATION_COMMAND_TIMEOUT_MS', 600000);
+const npmInstallTimeoutMs = readTimeout('NEXTJS_INTEGRATION_NPM_INSTALL_TIMEOUT_MS', 360000);
+const npmBuildTimeoutMs = readTimeout('NEXTJS_INTEGRATION_NPM_BUILD_TIMEOUT_MS', 360000);
+const npmRegistryTimeoutMs = readTimeout('NEXTJS_INTEGRATION_NPM_REGISTRY_TIMEOUT_MS', 30000);
+let hostIdentity = {
+  family: expectedBuildPlatform(),
+  id: null,
+  version: null,
+  variant: null
+};
+
+function readTimeout(name, defaultValue) {
+  const value = process.env[name];
+  if (!value) {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1000 || parsed > 3600000) {
+    throw new Error(`${name} must be an integer between 1000 and 3600000 milliseconds.`);
+  }
+  return parsed;
+}
 
 function getIntegrationProfile() {
   const serviceManager = runWindowsServiceIntegration
@@ -65,6 +91,97 @@ function getIntegrationProfile() {
   return { serviceManager, reverseProxy };
 }
 
+function parseOsRelease(content) {
+  const values = {};
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1).replace(/\\([\\"$`])/g, '$1');
+    }
+    values[match[1]] = value;
+  }
+  return values;
+}
+
+async function collectHostIdentity() {
+  const identity = {
+    family: expectedBuildPlatform(),
+    id: null,
+    version: null,
+    variant: null
+  };
+  if (process.platform === 'linux') {
+    try {
+      const values = parseOsRelease(await fs.readFile('/etc/os-release', 'utf8'));
+      identity.id = values.ID ? values.ID.toLowerCase() : null;
+      identity.version = values.VERSION_ID || null;
+      identity.variant = values.VARIANT_ID ? values.VARIANT_ID.toLowerCase() : null;
+    } catch (error) {
+      console.warn(`Could not read /etc/os-release for self-hosted target verification: ${error.message}`);
+    }
+  } else if (process.platform === 'win32') {
+    identity.id = os.version().trim().toLowerCase() || null;
+    identity.version = os.release();
+  } else if (process.platform === 'darwin') {
+    identity.id = 'macos';
+    identity.version = os.release();
+  }
+  return identity;
+}
+
+function assertSelfHostedTargetIdentity(identity) {
+  if (runnerEnvironment !== 'self-hosted' || !process.env.NEXTJS_INTEGRATION_TARGET) {
+    return;
+  }
+
+  const target = process.env.NEXTJS_INTEGRATION_TARGET.trim().toLowerCase();
+  const id = (identity.id || '').toLowerCase();
+  const variant = (identity.variant || '').toLowerCase();
+  const requireIdentity = (expected, message) => {
+    if (!expected) {
+      throw new Error(`Self-hosted runner identity does not match target '${target}': ${message}. Observed ${JSON.stringify(identity)}.`);
+    }
+  };
+
+  if (target === 'macos') {
+    requireIdentity(identity.family === 'macos' && id === 'macos', 'expected macOS');
+    return;
+  }
+  if (target.startsWith('windows-server-')) {
+    const version = target.slice('windows-server-'.length).replace(/-/g, ' ');
+    requireIdentity(identity.family === 'windows' && id.includes('windows server') && id.includes(version), `expected Windows Server ${version}`);
+    return;
+  }
+  if (target === 'windows-10' || target === 'windows-11') {
+    requireIdentity(identity.family === 'windows' && id.includes(`windows ${target.slice('windows-'.length)}`) && !id.includes('server'), `expected Windows ${target.slice('windows-'.length)} client`);
+    return;
+  }
+
+  const linuxIds = {
+    ubuntu: ['ubuntu'],
+    debian: ['debian'],
+    'linux-mint': ['linuxmint'],
+    rhel: ['rhel'],
+    'oracle-linux': ['ol', 'oracle'],
+    centos: ['centos'],
+    rocky: ['rocky'],
+    almalinux: ['almalinux'],
+    fedora: ['fedora'],
+    alpine: ['alpine']
+  };
+  if (target === 'centos-stream') {
+    requireIdentity(identity.family === 'linux' && (id === 'centos-stream' || (id === 'centos' && variant.includes('stream'))), 'expected CentOS Stream');
+    return;
+  }
+  if (linuxIds[target]) {
+    requireIdentity(identity.family === 'linux' && linuxIds[target].includes(id), `expected Linux target ${target}`);
+    return;
+  }
+  throw new Error(`Self-hosted target '${target}' has no recognized platform identity rule.`);
+}
+
 async function writeIntegrationResult(status, installedVersion) {
   if (!resultPath) {
     return;
@@ -80,7 +197,8 @@ async function writeIntegrationResult(status, installedVersion) {
     platform: {
       os: process.platform,
       arch: process.arch,
-      release: os.release()
+      release: os.release(),
+      identity: hostIdentity
     },
     node: {
       version: process.version
@@ -99,10 +217,11 @@ async function writeIntegrationResult(status, installedVersion) {
     },
     execution: {
       kind: process.env.NEXTJS_INTEGRATION_EXECUTION || 'native',
-      target: process.env.NEXTJS_INTEGRATION_TARGET || null
+      target: process.env.NEXTJS_INTEGRATION_TARGET || null,
+      runnerEnvironment
     },
     ci: {
-      provider: process.env.GITHUB_ACTIONS === 'true' ? 'github-actions' : 'local',
+      provider: ciProvider,
       workflow: process.env.GITHUB_WORKFLOW || null,
       job: process.env.GITHUB_JOB || null,
       runId: process.env.GITHUB_RUN_ID || null,
@@ -127,7 +246,15 @@ function usage() {
 }
 
 function run(command, args, options = {}) {
-  const { cwd = repoRoot, env = process.env, allowFailure = false } = options;
+  const {
+    cwd = repoRoot,
+    env = process.env,
+    allowFailure = false,
+    timeoutMs = defaultCommandTimeoutMs
+  } = options;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000) {
+    throw new Error(`Timeout for ${command} must be an integer of at least 1000 milliseconds.`);
+  }
   const isWindowsCommandShim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
   const executable = isWindowsCommandShim ? (process.env.ComSpec || 'cmd.exe') : command;
   const executableArgs = isWindowsCommandShim
@@ -141,13 +268,31 @@ function run(command, args, options = {}) {
       stdio: 'inherit',
       windowsHide: true
     });
-    child.on('error', reject);
+    let settled = false;
+    const commandText = `${command} ${args.join(' ')}`;
+    const finish = (callback, value) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        callback(value);
+      }
+    };
+    const timeout = setTimeout(() => {
+      if (process.platform === 'win32') {
+        const taskkill = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
+        taskkill.on('error', () => {});
+      } else {
+        child.kill('SIGKILL');
+      }
+      finish(reject, new Error(`${commandText} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    child.on('error', (error) => finish(reject, error));
     child.on('exit', (code, signal) => {
       const result = { code: code ?? -1, signal };
       if (result.code === 0 || allowFailure) {
-        resolve(result);
+        finish(resolve, result);
       } else {
-        reject(new Error(`${command} ${args.join(' ')} failed with exit code ${result.code}${signal ? ` (${signal})` : ''}.`));
+        finish(reject, new Error(`${commandText} failed with exit code ${result.code}${signal ? ` (${signal})` : ''}.`));
       }
     });
   });
@@ -283,8 +428,12 @@ async function buildProject(projectPath, standalone) {
     npm_config_fetch_timeout: '30000'
   };
 
-  await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, 'react@latest', 'react-dom@latest'], { cwd: projectPath, env });
-  await run(npm, ['run', 'build'], { cwd: projectPath, env });
+  await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, 'react@latest', 'react-dom@latest'], {
+    cwd: projectPath,
+    env,
+    timeoutMs: npmInstallTimeoutMs
+  });
+  await run(npm, ['run', 'build'], { cwd: projectPath, env, timeoutMs: npmBuildTimeoutMs });
 
   await assertExists(path.join(projectPath, '.next', 'BUILD_ID'), 'Next.js build ID');
   await assertExists(path.join(projectPath, '.next', 'static'), 'Next.js static assets');
@@ -334,7 +483,7 @@ async function verifyNpmRegistryAccess() {
     npm_config_fetch_timeout: '20000'
   };
   try {
-    await run(npm, ['ping', '--fetch-retries=0', '--fetch-timeout=20000'], { env });
+    await run(npm, ['ping', '--fetch-retries=0', '--fetch-timeout=20000'], { env, timeoutMs: npmRegistryTimeoutMs });
   } catch {
     throw new Error('Cannot reach the configured npm registry with a trusted TLS certificate. Check the host CA trust chain, HTTPS inspection policy, or npm registry configuration before running real Next.js integration.');
   }
@@ -833,6 +982,37 @@ async function resolveNginxMimeTypes() {
   throw new Error('Could not locate nginx mime.types. Install nginx before running the reverse-proxy integration.');
 }
 
+async function getApacheBuiltInModules(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, ['-l'], { cwd: repoRoot, env: process.env, windowsHide: true });
+    let output = '';
+    let errorOutput = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { errorOutput += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`${command} -l failed with exit code ${code}: ${errorOutput.trim()}`));
+        return;
+      }
+      const modules = new Set();
+      for (const match of output.matchAll(/^\s+mod_([a-z0-9_]+)\.c$/gim)) {
+        modules.add(match[1].toLowerCase());
+      }
+      resolve(modules);
+    });
+  });
+}
+
+function apacheLoadModuleDirective(installation, moduleName, directiveName, fileName) {
+  if (installation.builtInModules.has(moduleName)) {
+    return null;
+  }
+  return `LoadModule ${directiveName} ${path.join(installation.moduleDirectory, fileName)}`;
+}
+
 async function resolveLinuxApacheInstallation() {
   const candidates = [
     {
@@ -853,24 +1033,26 @@ async function resolveLinuxApacheInstallation() {
 
   for (const candidate of candidates) {
     try {
+      const builtInModules = await getApacheBuiltInModules(candidate.command);
+      const requiredModules = [
+        ['mpm_event', 'mod_mpm_event.so'],
+        ['unixd', 'mod_unixd.so'],
+        ['authz_core', 'mod_authz_core.so'],
+        ['log_config', 'mod_log_config.so'],
+        ['mime', 'mod_mime.so'],
+        ['proxy', 'mod_proxy.so'],
+        ['proxy_http', 'mod_proxy_http.so'],
+        ['proxy_wstunnel', 'mod_proxy_wstunnel.so'],
+        ['headers', 'mod_headers.so'],
+        ['rewrite', 'mod_rewrite.so']
+      ];
       await Promise.all([
         fs.access(candidate.mimeTypesPath),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_mpm_event.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_authz_core.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_mime.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy_http.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_proxy_wstunnel.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_headers.so')),
-        fs.access(path.join(candidate.moduleDirectory, 'mod_rewrite.so'))
+        ...requiredModules
+          .filter(([moduleName]) => !builtInModules.has(moduleName))
+          .map(([, fileName]) => fs.access(path.join(candidate.moduleDirectory, fileName)))
       ]);
-      const unixdModulePath = path.join(candidate.moduleDirectory, 'mod_unixd.so');
-      try {
-        await fs.access(unixdModulePath);
-        return { ...candidate, unixdModulePath };
-      } catch {
-        return candidate;
-      }
+      return { ...candidate, builtInModules };
     } catch {
       // Try the next supported Apache/httpd layout.
     }
@@ -910,21 +1092,21 @@ async function verifyLinuxApacheProxy(runtimePath, mode, appPort, backend = null
     'ServerName localhost',
     `Listen 127.0.0.1:${proxyPort}`,
     `TypesConfig ${apacheInstallation.mimeTypesPath}`,
-    `LoadModule mpm_event_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mpm_event.so')}`,
-    ...(apacheInstallation.unixdModulePath ? [`LoadModule unixd_module ${apacheInstallation.unixdModulePath}`] : []),
-    `LoadModule authz_core_module ${path.join(apacheInstallation.moduleDirectory, 'mod_authz_core.so')}`,
-    `LoadModule log_config_module ${path.join(apacheInstallation.moduleDirectory, 'mod_log_config.so')}`,
-    `LoadModule mime_module ${path.join(apacheInstallation.moduleDirectory, 'mod_mime.so')}`,
-    `LoadModule proxy_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy.so')}`,
-    `LoadModule proxy_http_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy_http.so')}`,
-    `LoadModule proxy_wstunnel_module ${path.join(apacheInstallation.moduleDirectory, 'mod_proxy_wstunnel.so')}`,
-    `LoadModule headers_module ${path.join(apacheInstallation.moduleDirectory, 'mod_headers.so')}`,
-    `LoadModule rewrite_module ${path.join(apacheInstallation.moduleDirectory, 'mod_rewrite.so')}`,
+    apacheLoadModuleDirective(apacheInstallation, 'mpm_event', 'mpm_event_module', 'mod_mpm_event.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'unixd', 'unixd_module', 'mod_unixd.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'authz_core', 'authz_core_module', 'mod_authz_core.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'log_config', 'log_config_module', 'mod_log_config.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'mime', 'mime_module', 'mod_mime.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'proxy', 'proxy_module', 'mod_proxy.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'proxy_http', 'proxy_http_module', 'mod_proxy_http.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'proxy_wstunnel', 'proxy_wstunnel_module', 'mod_proxy_wstunnel.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'headers', 'headers_module', 'mod_headers.so'),
+    apacheLoadModuleDirective(apacheInstallation, 'rewrite', 'rewrite_module', 'mod_rewrite.so'),
     `User ${apacheInstallation.user}`,
     `Group ${apacheInstallation.group}`,
     `ErrorLog "${path.join(logDirectory, 'apache-bootstrap-error.log')}"`,
     `Include "${vhostPath}"`
-  ].join('\n') + '\n');
+  ].filter(Boolean).join('\n') + '\n');
   await run(apacheInstallation.command, ['-t', '-f', configPath]);
 
   let apache;
@@ -1449,6 +1631,8 @@ let primaryFailure = false;
 
 try {
   console.log(`==> Real Next.js integration (${process.platform}, Next.js ${nextVersion})`);
+  hostIdentity = await collectHostIdentity();
+  assertSelfHostedTargetIdentity(hostIdentity);
   await verifyNpmRegistryAccess();
   await writeFixture(standaloneProjectPath, true);
   await buildProject(standaloneProjectPath, true);

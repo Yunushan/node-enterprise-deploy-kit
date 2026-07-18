@@ -1,0 +1,267 @@
+name: Next.js Self-Hosted Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'JSON array containing self-hosted, exact target, manager, and proxy labels, for example ["self-hosted","windows-server-2022","nextjs-manager-winsw","nextjs-proxy-iis"]'
+        required: true
+        default: '["self-hosted"]'
+      platform:
+        description: Native runner family for the selected support target
+        required: true
+        type: choice
+        options:
+          - windows
+          - unix
+      expected_target_id:
+        description: Support matrix target ID, for example windows-server-2022, ubuntu, or macos
+        required: true
+      expected_service_manager:
+        description: Primary service manager declared by the selected target
+        required: true
+        type: choice
+        options:
+          - winsw
+          - nssm
+          - systemd
+          - systemv
+          - openrc
+          - launchd
+      expected_reverse_proxy:
+        description: Reverse proxy declared by the selected target
+        required: true
+        type: choice
+        options:
+          - iis
+          - nginx
+          - apache
+          - haproxy
+          - traefik
+          - none
+      evidence_name:
+        description: Artifact-safe target-nextjs-manager-proxy name
+        required: true
+      matrix_path:
+        description: Tracked support matrix used to authorize the selected combination
+        required: true
+        default: config/support-matrix.example.json
+      upload_retention_days:
+        description: Artifact retention days
+        required: true
+        default: '14'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextjs-host-integration-${{ inputs.expected_target_id }}-${{ inputs.expected_service_manager }}-${{ inputs.expected_reverse_proxy }}
+  cancel-in-progress: false
+
+jobs:
+  validate-dispatch:
+    name: validate dispatch inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require the protected default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/$DEFAULT_BRANCH"
+          if [[ "$SOURCE_REF" != "$expected_ref" ]]; then
+            echo "::error::Self-hosted Next.js integration can run only from the protected default branch '$DEFAULT_BRANCH'."
+            exit 1
+          fi
+      - name: Validate self-hosted target and service combination
+        shell: pwsh
+        env:
+          EVIDENCE_NAME: ${{ inputs.evidence_name }}
+          EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+          EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+          EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
+          PLATFORM: ${{ inputs.platform }}
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+          UPLOAD_RETENTION_DAYS: ${{ inputs.upload_retention_days }}
+        run: ./scripts/dev/Test-NextJsHostIntegrationWorkflowInputs.ps1
+
+  collect:
+    name: collect native Next.js integration proof
+    needs: validate-dispatch
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 45
+    env:
+      EVIDENCE_NAME: ${{ inputs.evidence_name }}
+      EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+      EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+      EXPECTED_TARGET_ID: ${{ inputs.expected_target_id }}
+      RESULT_PATH: .tmp/nextjs-host-integration-result.json
+    steps:
+      - name: Checkout clean repository workspace
+        uses: actions/checkout@v7
+        with:
+          clean: true
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Validate Unix native integration prerequisites
+        if: ${{ inputs.platform == 'unix' }}
+        shell: bash
+        env:
+          EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+          EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          node scripts/dev/Test-NextJsHostIntegrationPrerequisites.mjs \
+            --platform "$PLATFORM" \
+            --manager "$EXPECTED_SERVICE_MANAGER" \
+            --proxy "$EXPECTED_REVERSE_PROXY"
+      - name: Verify Windows administrator context
+        if: ${{ inputs.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw "The self-hosted Windows runner must run as an administrator for service and IIS integration."
+          }
+      - name: Validate Windows native integration prerequisites
+        if: ${{ inputs.platform == 'windows' }}
+        shell: pwsh
+        env:
+          EXPECTED_REVERSE_PROXY: ${{ inputs.expected_reverse_proxy }}
+          EXPECTED_SERVICE_MANAGER: ${{ inputs.expected_service_manager }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          node scripts/dev/Test-NextJsHostIntegrationPrerequisites.mjs `
+            --platform $env:PLATFORM `
+            --manager $env:EXPECTED_SERVICE_MANAGER `
+            --proxy $env:EXPECTED_REVERSE_PROXY
+      - name: Run native Windows Next.js integration
+        if: ${{ inputs.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:NEXTJS_INTEGRATION_EXECUTION = 'native'
+          $env:NEXTJS_INTEGRATION_RUNNER_ENVIRONMENT = 'self-hosted'
+          $env:NEXTJS_INTEGRATION_RESULT_PATH = $env:RESULT_PATH
+          $env:NEXTJS_INTEGRATION_TARGET = $env:EXPECTED_TARGET_ID
+          if ($env:EXPECTED_SERVICE_MANAGER -eq 'winsw') {
+            $env:RUN_WINSW_SERVICE_INTEGRATION = 'true'
+          } elseif ($env:EXPECTED_SERVICE_MANAGER -eq 'nssm') {
+            $env:RUN_NSSM_SERVICE_INTEGRATION = 'true'
+          } else {
+            throw "Unsupported Windows self-hosted manager: $env:EXPECTED_SERVICE_MANAGER"
+          }
+          if ($env:EXPECTED_REVERSE_PROXY -eq 'iis') {
+            $env:RUN_WINDOWS_IIS_INTEGRATION = 'true'
+          } elseif ($env:EXPECTED_REVERSE_PROXY -ne 'none') {
+            throw "Unsupported Windows self-hosted reverse proxy: $env:EXPECTED_REVERSE_PROXY"
+          }
+          node scripts/dev/test-real-nextjs-integration.mjs
+      - name: Verify Unix sudo context
+        if: ${{ inputs.platform == 'unix' }}
+        shell: bash
+        run: sudo -n true
+      - name: Run native Unix Next.js integration
+        if: ${{ inputs.platform == 'unix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EXPECTED_SERVICE_MANAGER" in
+            systemd) manager_env='RUN_SYSTEMD_SERVICE_INTEGRATION=true'; temp_root='/srv/node-enterprise-deploy-kit-nextjs-host-integration' ;;
+            systemv) manager_env='RUN_SYSTEMV_SERVICE_INTEGRATION=true'; temp_root='/tmp/node-enterprise-deploy-kit-nextjs-host-integration' ;;
+            openrc) manager_env='RUN_OPENRC_SERVICE_INTEGRATION=true'; temp_root='/tmp/node-enterprise-deploy-kit-nextjs-host-integration' ;;
+            launchd) manager_env='RUN_LAUNCHD_SERVICE_INTEGRATION=true'; temp_root='/tmp/node-enterprise-deploy-kit-nextjs-host-integration' ;;
+            *) echo "Unsupported Unix self-hosted manager: $EXPECTED_SERVICE_MANAGER" >&2; exit 1 ;;
+          esac
+          proxy_env=()
+          case "$EXPECTED_REVERSE_PROXY" in
+            none) ;;
+            nginx) proxy_env=('RUN_NGINX_PROXY_INTEGRATION=true') ;;
+            apache) proxy_env=('RUN_APACHE_PROXY_INTEGRATION=true') ;;
+            haproxy) proxy_env=('RUN_HAPROXY_INTEGRATION=true') ;;
+            traefik) proxy_env=('RUN_TRAEFIK_PROXY_INTEGRATION=true') ;;
+            *) echo "Unsupported Unix self-hosted reverse proxy: $EXPECTED_REVERSE_PROXY" >&2; exit 1 ;;
+          esac
+          sudo -n env \
+            PATH="$PATH" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            GITHUB_WORKFLOW="$GITHUB_WORKFLOW" \
+            GITHUB_JOB="$GITHUB_JOB" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            NEXTJS_INTEGRATION_EXECUTION='native' \
+            NEXTJS_INTEGRATION_RUNNER_ENVIRONMENT='self-hosted' \
+            NEXTJS_INTEGRATION_RESULT_PATH="$RESULT_PATH" \
+            NEXTJS_INTEGRATION_TARGET="$EXPECTED_TARGET_ID" \
+            NEXTJS_INTEGRATION_TEMP_ROOT="$temp_root" \
+            "$manager_env" \
+            "${proxy_env[@]}" \
+            "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
+      - name: Validate safe Windows integration result when present
+        if: ${{ always() && inputs.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath $env:RESULT_PATH -PathType Leaf) {
+            node scripts/dev/Test-NextJsHostIntegrationResult.mjs --result $env:RESULT_PATH --target $env:EXPECTED_TARGET_ID --manager $env:EXPECTED_SERVICE_MANAGER --proxy $env:EXPECTED_REVERSE_PROXY --sha $env:GITHUB_SHA --workflow $env:GITHUB_WORKFLOW --job collect --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT
+          } else {
+            Write-Warning "No Next.js host integration result was written at $env:RESULT_PATH."
+          }
+      - name: Validate safe Unix integration result when present
+        if: ${{ always() && inputs.platform == 'unix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$RESULT_PATH" ]]; then
+            node scripts/dev/Test-NextJsHostIntegrationResult.mjs --result "$RESULT_PATH" --target "$EXPECTED_TARGET_ID" --manager "$EXPECTED_SERVICE_MANAGER" --proxy "$EXPECTED_REVERSE_PROXY" --sha "$GITHUB_SHA" --workflow "$GITHUB_WORKFLOW" --job collect --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          else
+            echo "::warning::No Next.js host integration result was written at $RESULT_PATH."
+          fi
+      - name: Upload native Next.js integration result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.evidence_name }}
+          path: .tmp/nextjs-host-integration-result.json
+          if-no-files-found: warn
+          retention-days: ${{ inputs.upload_retention_days }}
+
+  validate:
+    name: validate native Next.js integration proof
+    if: ${{ always() }}
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Download native Next.js integration result
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.evidence_name }}
+          path: .tmp/nextjs-host-integration-result
+      - name: Validate target-specific native integration result
+        shell: bash
+        run: |
+          node scripts/dev/Test-NextJsHostIntegrationResult.mjs \
+            --result .tmp/nextjs-host-integration-result/nextjs-host-integration-result.json \
+            --target '${{ inputs.expected_target_id }}' \
+            --manager '${{ inputs.expected_service_manager }}' \
+            --proxy '${{ inputs.expected_reverse_proxy }}' \
+            --sha "$GITHUB_SHA" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --job collect \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"

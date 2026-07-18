@@ -1,0 +1,89 @@
+name: Next.js Self-Hosted Integration Coverage
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ids:
+        description: JSON array of completed Next.js Self-Hosted Integration workflow run IDs for the assessed commit
+        required: true
+      matrix_path:
+        description: Tracked support matrix used to derive the expected native integration dispatches
+        required: true
+        default: config/support-matrix.example.json
+      upload_retention_days:
+        description: Artifact retention days
+        required: true
+        default: '14'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  collect-and-verify:
+    name: collect and verify native coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require the protected default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/$DEFAULT_BRANCH"
+          if [[ "$SOURCE_REF" != "$expected_ref" ]]; then
+            echo "::error::Next.js self-hosted coverage can run only from the protected default branch '$DEFAULT_BRANCH'."
+            exit 1
+          fi
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Validate selected native evidence runs
+        env:
+          RUN_IDS: ${{ inputs.run_ids }}
+        run: |
+          node scripts/dev/Invoke-NextJsHostIntegrationArtifactDownload.mjs \
+            --validate \
+            --run-ids "$RUN_IDS" \
+            --repository "$GITHUB_REPOSITORY"
+      - name: Download selected native evidence artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_IDS: ${{ inputs.run_ids }}
+        run: |
+          node scripts/dev/Invoke-NextJsHostIntegrationArtifactDownload.mjs \
+            --run-ids "$RUN_IDS" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output .tmp/nextjs-host-integration-artifacts
+      - name: Verify matrix-derived native coverage
+        env:
+          MATRIX_PATH: ${{ inputs.matrix_path }}
+          RUN_IDS: ${{ inputs.run_ids }}
+        run: |
+          pwsh ./scripts/dev/New-NextJsHostIntegrationPlan.ps1 \
+            -MatrixPath "$MATRIX_PATH" \
+            -ProductionRecommendedOnly \
+            -Format Json \
+            -OutputPath .tmp/nextjs-host-integration-plan.json \
+            -Quiet
+          node scripts/dev/New-NextJsHostIntegrationCoverage.mjs \
+            --plan .tmp/nextjs-host-integration-plan.json \
+            --input .tmp/nextjs-host-integration-artifacts \
+            --sha "$GITHUB_SHA" \
+            --run-ids "$RUN_IDS" \
+            --output .tmp/nextjs-host-integration-coverage
+          node scripts/dev/New-NextJsHostIntegrationCoverage.mjs \
+            --validate-summary .tmp/nextjs-host-integration-coverage/nextjs-host-integration-coverage.json \
+            --sha "$GITHUB_SHA"
+      - name: Upload native coverage report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextjs-self-hosted-integration-coverage
+          path: .tmp/nextjs-host-integration-coverage
+          if-no-files-found: warn
+          retention-days: ${{ inputs.upload_retention_days }}

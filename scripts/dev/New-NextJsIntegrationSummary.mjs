@@ -72,6 +72,7 @@ function toRecord(result) {
     platform: result.platform.os,
     arch: result.platform.arch,
     execution: result.execution.kind,
+    runnerEnvironment: result.execution.runnerEnvironment,
     target: result.execution.target || '-',
     serviceManager: result.verification.serviceManager,
     reverseProxy: result.verification.reverseProxy,
@@ -79,6 +80,12 @@ function toRecord(result) {
     nodeVersion: result.node.version,
     nextVersion: result.nextJs.installedVersion || '-'
   };
+}
+
+function validateHostedIntegrationResult(result) {
+  validateIntegrationResult(result);
+  assert(result.ci.provider === 'github-actions', 'Hosted integration summary only accepts GitHub Actions result artifacts.');
+  assert(result.execution.runnerEnvironment === 'github-hosted', 'Hosted integration summary only accepts GitHub-hosted result artifacts.');
 }
 
 function findCoverageGaps(records, upstreamJobs) {
@@ -112,10 +119,10 @@ function createMarkdown(summary) {
   ];
 
   if (summary.records.length > 0) {
-    lines.push('| Status | Platform | Execution | Target | Job | Service | Proxy | Node | Next.js |');
-    lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    lines.push('| Status | Platform | Execution | Runner | Target | Job | Service | Proxy | Node | Next.js |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const record of summary.records) {
-      lines.push(`| ${record.status} | ${record.platform}/${record.arch} | ${record.execution} | ${record.target} | ${record.job} | ${record.serviceManager} | ${record.reverseProxy} | ${record.nodeVersion} | ${record.nextVersion} |`);
+      lines.push(`| ${record.status} | ${record.platform}/${record.arch} | ${record.execution} | ${record.runnerEnvironment} | ${record.target} | ${record.job} | ${record.serviceManager} | ${record.reverseProxy} | ${record.nodeVersion} | ${record.nextVersion} |`);
     }
     lines.push('');
   } else {
@@ -163,7 +170,7 @@ export async function buildSummary(inputPath) {
   for (const filePath of files) {
     try {
       const result = JSON.parse(await readFile(filePath, 'utf8'));
-      validateIntegrationResult(result);
+      validateHostedIntegrationResult(result);
       records.push(toRecord(result));
     } catch (error) {
       invalidArtifacts.push({ name: path.basename(filePath), error: error.message });
@@ -205,7 +212,7 @@ function selfTestResult(status) {
     status,
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
-    platform: { os: 'linux', arch: 'x64', release: '6.8.0' },
+    platform: { os: 'linux', arch: 'x64', release: '6.8.0', identity: { family: 'linux', id: 'ubuntu', version: '24.04', variant: null } },
     node: { version: 'v24.17.0' },
     nextJs: {
       requestedVersion: 'latest',
@@ -214,7 +221,7 @@ function selfTestResult(status) {
       verifiedModes: passed ? ['standalone', 'next-start'] : []
     },
     verification: { serviceManager: 'systemd', reverseProxy: 'nginx', packageImport: passed, loopbackHttp: passed, forwardedHeaders: passed },
-    execution: { kind: 'container', target: 'ubuntu' },
+    execution: { kind: 'container', target: 'ubuntu', runnerEnvironment: 'github-hosted' },
     ci: { provider: 'github-actions', workflow: 'ci', job: status === 'passed' ? 'passed-job' : 'failed-job', runId: '123', runAttempt: '1', sha: 'a'.repeat(40) }
   };
 }
@@ -236,6 +243,11 @@ async function runSelfTest() {
     assert(summary.passedCount === 1 && summary.failedCount === 1, 'Summary self-test did not preserve result status counts.');
     assert(summary.invalidCount === 1, 'Summary self-test did not report malformed artifacts.');
     assert(summary.missingSuccessfulJobs.length === 1 && summary.missingSuccessfulJobs[0] === 'missing-job', 'Summary self-test did not detect a missing successful job result.');
+    const localResult = selfTestResult('passed');
+    localResult.execution.runnerEnvironment = 'local';
+    await writeFile(path.join(root, 'local.json'), JSON.stringify(localResult));
+    const withLocalArtifact = await buildSummary(root);
+    assert(withLocalArtifact.invalidCount === 2, 'Summary self-test accepted a local result as GitHub-hosted evidence.');
   } finally {
     if (previousNeeds === undefined) {
       delete process.env.NEXTJS_INTEGRATION_NEEDS_JSON;

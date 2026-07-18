@@ -151,6 +151,7 @@ foreach ($expected in @(
     "writeIntegrationResult(integrationStatus, installedVersion)",
     "NEXTJS_INTEGRATION_EXECUTION",
     "NEXTJS_INTEGRATION_TARGET",
+    "NEXTJS_INTEGRATION_RUNNER_ENVIRONMENT",
     "GITHUB_JOB",
     "await verifyMode(standaloneProjectPath, 'standalone', installedVersion)",
     "await verifyMode(nextStartProjectPath, 'next-start', installedVersion)",
@@ -210,6 +211,9 @@ foreach ($expected in @(
     "RUN_APACHE_PROXY_INTEGRATION",
     "verifyLinuxApacheProxy",
     "resolveLinuxApacheInstallation",
+    "getApacheBuiltInModules",
+    "apacheLoadModuleDirective",
+    "builtInModules",
     "verifyMacosApacheProxy",
     "resolveMacosHttpdInstallation",
     "mod_log_config.so",
@@ -242,6 +246,15 @@ foreach ($expected in @(
     "NEXT_TELEMETRY_DISABLED",
     "verifyNpmRegistryAccess",
     "npm_config_fetch_retries",
+    "NEXTJS_INTEGRATION_COMMAND_TIMEOUT_MS",
+    "NEXTJS_INTEGRATION_NPM_INSTALL_TIMEOUT_MS",
+    "NEXTJS_INTEGRATION_NPM_BUILD_TIMEOUT_MS",
+    "NEXTJS_INTEGRATION_NPM_REGISTRY_TIMEOUT_MS",
+    "timed out after",
+    "collectHostIdentity",
+    "assertSelfHostedTargetIdentity",
+    "/etc/os-release",
+    "Self-hosted runner identity does not match target",
     "Cannot reach the configured npm registry with a trusted TLS certificate"
   )) {
   Assert-Contains -Text $script -Expected $expected -Context "scripts/dev/test-real-nextjs-integration.mjs"
@@ -268,6 +281,10 @@ foreach ($expected in @(
     "hosted-nextjs-integration",
     "expectedModes",
     "verifiedModes",
+    "runnerEnvironment",
+    "platform.identity",
+    "isMainModule",
+    "pathToFileURL",
     "must match the overall result status.",
     "--self-test"
   )) {
@@ -280,6 +297,8 @@ foreach ($expected in @(
     "invalidArtifacts",
     "upstreamJobs",
     "This summarizes observed GitHub-hosted integration artifacts.",
+    "Hosted integration summary only accepts GitHub Actions result artifacts.",
+    "Hosted integration summary only accepts GitHub-hosted result artifacts.",
     "--self-test"
   )) {
   Assert-Contains -Text $resultSummary -Expected $expected -Context "scripts/dev/New-NextJsIntegrationSummary.mjs"

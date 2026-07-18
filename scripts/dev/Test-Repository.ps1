@@ -325,6 +325,30 @@ function Test-RealNextJsIntegrationWorkflow {
   & (Join-Path $ScriptDir "Test-RealNextJsIntegrationWorkflow.ps1")
 }
 
+function Test-NextJsHostIntegrationWorkflow {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationWorkflow.ps1")
+}
+
+function Test-NextJsHostIntegrationPlan {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationPlan.ps1")
+}
+
+function Test-NextJsHostIntegrationRunnerInventory {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationRunnerInventory.ps1")
+}
+
+function Test-NextJsHostIntegrationRunnerOnboarding {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationRunnerOnboarding.ps1")
+}
+
+function Test-NextJsHostIntegrationCoverage {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationCoverage.ps1")
+}
+
+function Test-NextJsHostIntegrationCoverageWorkflow {
+  & (Join-Path $ScriptDir "Test-NextJsHostIntegrationCoverageWorkflow.ps1")
+}
+
 function Test-ReactSupport {
   & (Join-Path $ScriptDir "Test-ReactSupport.ps1")
 }
@@ -497,6 +521,12 @@ Test-LinuxContainerSmokeSelfTest
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
 Test-RealNextJsIntegrationWorkflow
+Test-NextJsHostIntegrationWorkflow
+Test-NextJsHostIntegrationPlan
+Test-NextJsHostIntegrationRunnerInventory
+Test-NextJsHostIntegrationRunnerOnboarding
+Test-NextJsHostIntegrationCoverage
+Test-NextJsHostIntegrationCoverageWorkflow
 Test-ReactSupport
 Test-StaticIisSupport
 Test-NextJsRuntimeSmoke

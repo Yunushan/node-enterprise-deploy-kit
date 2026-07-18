@@ -493,7 +493,8 @@ Each native hosted real-runtime job also uploads a 14-day
 `nextjs-integration-result.json` artifact. It records the runner platform,
 Node.js and installed Next.js versions, both package modes, selected service
 manager/reverse proxy, forwarded-header check, and GitHub Actions run
-provenance including the exact target label and job ID. This is hosted CI verification metadata, not deployment status
+provenance including the exact target label, job ID, and runner environment.
+This is hosted CI verification metadata, not deployment status
 evidence: it cannot satisfy the self-hosted uptime and exact-host requirements
 for a release support claim.
 The Linux distribution-container jobs upload the same safe result, labeled with
@@ -505,6 +506,191 @@ missing-result context plus upstream job outcomes. A successful upstream job
 without a valid result artifact fails the summary job, while the diagnostic
 summary is still uploaded. It remains hosted CI review metadata, not a release
 support claim.
+
+The real integration runner bounds external work so a registry, package, or
+build stall fails with a command-specific diagnostic rather than waiting
+indefinitely. Its defaults are 30 seconds for `npm ping`, six minutes each for
+the temporary `npm install` and `npm run build`, and ten minutes for other
+helper commands. On a slower but trusted self-hosted runner, set the applicable
+millisecond environment variable before dispatching:
+`NEXTJS_INTEGRATION_NPM_REGISTRY_TIMEOUT_MS`,
+`NEXTJS_INTEGRATION_NPM_INSTALL_TIMEOUT_MS`,
+`NEXTJS_INTEGRATION_NPM_BUILD_TIMEOUT_MS`, or
+`NEXTJS_INTEGRATION_COMMAND_TIMEOUT_MS`. Values must be whole milliseconds
+between 1,000 and 3,600,000.
+
+## Self-Hosted Native Integration
+
+Use `.github/workflows/nextjs-host-integration.yml` when an exact Windows,
+Linux, or macOS target host is available as a self-hosted runner. The manual
+workflow builds a temporary real Next.js application, packages both
+`standalone` and `next-start` modes, installs the selected primary service
+manager, optionally configures the selected reverse proxy, checks loopback and
+forwarded headers, removes the temporary resources, and uploads one safe JSON
+result. Its `execution.runnerEnvironment` field is always `self-hosted`; the
+target-specific validator rejects a result that reports GitHub-hosted or local
+execution.
+
+Because this workflow runs privileged service and proxy operations, it accepts
+dispatches only from the repository's protected default branch. Merge the
+candidate commit there before collecting native self-hosted evidence; GitHub-
+hosted validation still catches pull-request regressions without exposing a
+self-hosted runner to branch-controlled workflow code.
+
+The result also records safe platform identity metadata: Windows product name
+and build, Linux `/etc/os-release` ID/version/variant, or the macOS family and
+kernel release. Before installing or starting a temporary service, the runner
+checks that this observed identity matches the requested target label. A runner
+labeled `ubuntu`, for example, cannot submit self-hosted evidence when its
+observed Linux ID is Fedora; Windows client, Windows Server, and CentOS Stream
+labels are likewise distinguished. This metadata contains no hostname, user,
+path, environment, or application configuration.
+
+The dispatched `runner_labels` must contain `self-hosted`, the exact support
+matrix target ID, `nextjs-manager-<manager>`, and `nextjs-proxy-<proxy>`. For
+example, an Ubuntu systemd/Nginx worker uses
+`self-hosted`, `ubuntu`, `nextjs-manager-systemd`, and `nextjs-proxy-nginx`.
+This prevents a target-matched runner without the selected service-manager or
+proxy prerequisite from receiving the job. The workflow rejects GitHub-hosted
+runner labels, conflicting target labels, local-command-only BSD targets,
+fallback managers, and manager/proxy combinations absent from the support
+matrix. Its artifact name must be `target-nextjs-manager-proxy`, such as
+`windows-server-2022-nextjs-winsw-iis` or `ubuntu-nextjs-systemd-nginx`.
+Dispatches for the same target, service manager, and proxy are serialized and
+an in-progress verification is never canceled. This prevents overlapping manual
+runs from mutating the same temporary service or proxy state on a shared host.
+
+Windows runners must run as Administrator; the prerequisite command verifies the
+current Windows process token before any package build or service mutation. Unix
+runners must provide passwordless `sudo`; systemd hosts use `/srv/node-enterprise-deploy-kit-nextjs-host-integration`
+because the production unit isolates `/tmp` with `PrivateTmp=true`. Install the
+selected service manager and proxy prerequisites before dispatching the
+workflow. For IIS, this includes URL Rewrite and ARR; for Unix proxies, it
+includes the matching proxy executable and its required modules.
+
+When a runner is behind corporate HTTPS inspection, repair the operating-system
+trust store and configure its Node.js process with `NODE_OPTIONS=--use-system-ca`.
+Do not disable certificate verification with `npm config set strict-ssl false` or
+`NODE_TLS_REJECT_UNAUTHORIZED=0`; the real Next.js integration intentionally
+fails closed when it cannot verify the npm registry certificate chain.
+
+Before any temporary package, service, or proxy is created, the workflow checks
+the Node.js 20.9.0 floor, the selected service-manager command, and the selected
+proxy executable. It also checks Windows Service Control Manager, NSSM when
+selected, IIS WebAdministration plus URL Rewrite and ARR for IIS dispatches,
+and the Unix passwordless `sudo` path. A host that is not ready therefore
+fails with a specific prerequisite error before it can change service state.
+
+This workflow proves the native deployment-kit package, service, and proxy path
+on the selected machine. It does not replace the 72-hour status evidence from a
+deployed application that is required for a final release support claim.
+
+Generate a matrix-derived review plan rather than manually reconstructing every
+target combination:
+
+```powershell
+.\scripts\dev\New-NextJsHostIntegrationPlan.ps1 `
+  -ProductionRecommendedOnly `
+  -Format Markdown `
+  -OutputPath .\evidence\nextjs-host-integration-dispatch.md
+```
+
+The plan emits one dispatch per declared primary manager/proxy combination and
+covers both Next.js modes in each dispatch. It excludes fallback managers and
+BSD local-command-only targets. It fails rather than silently omitting a target
+whose category is not workflow-capable, or a manager/proxy not implemented by
+the self-hosted workflow. To prepare a review-first PowerShell dispatcher:
+
+```powershell
+.\scripts\dev\New-NextJsHostIntegrationPlan.ps1 `
+  -ProductionRecommendedOnly `
+  -Format DispatchPowerShell `
+  -OutputPath .\evidence\nextjs-host-integration-dispatch.ps1
+```
+
+Run the generated script without parameters to review the target list. With
+`-Run`, it first queries the repository runner inventory for every planned
+target/manager/proxy combination and refuses to dispatch unless each one has an
+online, idle runner carrying all required capability labels. Run it from the repository root, or pass
+`-RepositoryRoot` explicitly. It also requires a clean worktree on the
+protected workflow branch and verifies that `origin` contains the exact local
+commit, so a native host never validates stale workflow code.
+Use `-Run` only after the corresponding self-hosted runners, Administrator or
+passwordless `sudo` access, and service/proxy prerequisites are ready.
+
+Before dispatching, inspect the repository runner inventory. It reports only
+target-level configured, online, and idle counts; it does not print runner names
+or host details. A target is ready only when an online, non-busy runner has both
+the `self-hosted` and exact target labels:
+
+```powershell
+.\scripts\dev\Get-NextJsHostIntegrationRunnerInventory.ps1 `
+  -Repository Yunushan/node-enterprise-deploy-kit `
+  -Format Markdown
+```
+
+Use `-FailOnMissing` only when every workflow-capable target is expected to be
+registered. It exits nonzero for missing target labels, which is useful as a
+release-readiness gate but should not be used while provisioning a partial fleet.
+
+To create review-first onboarding instructions for a compatible validation host,
+generate a profile for the exact target, manager, and proxy. The output includes
+the four required runner labels and the prerequisite check, but never obtains or
+prints a GitHub runner registration token:
+
+```powershell
+.\scripts\dev\New-NextJsHostIntegrationRunnerOnboarding.ps1 `
+  -TargetId windows-server-2022 `
+  -ServiceManager winsw `
+  -ReverseProxy iis `
+  -OutputPath .\evidence\windows-server-2022-runner-onboarding.md
+```
+
+Register the dedicated verification host through the repository's GitHub Actions
+runner settings using those labels. The generated onboarding document contains
+the platform-specific runner `config` and service commands; replace only its
+`<issued-token>` placeholder with the short-lived token from GitHub, then run
+the generated prerequisite command after checkout. Do not place these validation labels on an unrelated production
+workload host because native integration creates and removes temporary services
+and proxy configuration.
+
+After downloading the result artifacts from the completed workflow runs, compare
+them with the same plan. The collector reports missing, duplicate, malformed,
+or unplanned results and refuses to validate an incomplete matrix:
+
+```powershell
+.\scripts\dev\New-NextJsHostIntegrationPlan.ps1 `
+  -ProductionRecommendedOnly `
+  -Format Json `
+  -OutputPath .\evidence\nextjs-host-integration-plan.json
+
+node .\scripts\dev\New-NextJsHostIntegrationCoverage.mjs `
+  --plan .\evidence\nextjs-host-integration-plan.json `
+  --input .\evidence\nextjs-host-integration-artifacts `
+  --sha (git rev-parse HEAD) `
+  --run-ids '["123456789","123456790"]' `
+  --output .\evidence\nextjs-host-integration-coverage
+
+node .\scripts\dev\New-NextJsHostIntegrationCoverage.mjs `
+  --validate-summary .\evidence\nextjs-host-integration-coverage\nextjs-host-integration-coverage.json `
+  --sha (git rev-parse HEAD)
+```
+
+Coverage verifies only the deployment-kit synthetic integration path. It binds
+every accepted artifact and summary to the supplied 40-character commit SHA,
+and rejects artifacts from another commit, workflow, job, run ID, or run
+attempt. The generated report retains the accepted source run ID and attempt
+for each target combination. Keep
+the separate host status evidence for the deployed application and required
+uptime.
+
+For normal collection, use the manual `Next.js Self-Hosted Integration
+Coverage` workflow on the protected default branch instead of downloading
+artifacts by hand. Supply the JSON array of completed native evidence run IDs;
+the workflow uses the GitHub Actions token only to download those artifacts,
+requires every result to match the current default-branch commit, and uploads
+the generated coverage report. It cannot accept a result from an unlisted run,
+another workflow, another job, or another commit.
 
 The repository verifier also starts a tiny local standalone-style Node.js
 server and probes `/health` to prove that the managed `PORT`, `APP_PORT`,
