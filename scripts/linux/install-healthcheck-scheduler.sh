@@ -32,18 +32,22 @@ if [[ ! "$HEALTHCHECK_INTERVAL" =~ ^[0-9]+$ || "$HEALTHCHECK_INTERVAL" -lt 1 ]];
 fi
 
 prepare_healthcheck_files() {
+  local root_group
+  root_group="$(root_group_name)"
   mkdir -p /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$LOG_DIR" "$BACKUP_DIR"
-  chown root:root /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR" 2>/dev/null || true
+  chown root:"$root_group" /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
   chmod 0750 /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
   copy_file_with_backup "$CONFIG_FILE" "$HC_CONFIG" "$BACKUP_DIR"
   copy_file_with_backup "$REPO_ROOT/scripts/linux/node-healthcheck.sh" "$HC_SCRIPT" "$BACKUP_DIR"
-  chown root:root "$HC_CONFIG" "$HC_SCRIPT" 2>/dev/null || true
+  chown root:"$root_group" "$HC_CONFIG" "$HC_SCRIPT"
   chmod 0640 "$HC_CONFIG"
   chmod 0755 "$HC_SCRIPT"
 }
 
 install_launchd_scheduler() {
   require_command launchctl "launchd is required on macOS."
+  local root_group
+  root_group="$(root_group_name)"
   prepare_healthcheck_files
 
   local plist_file="/Library/LaunchDaemons/${APP_NAME}-healthcheck.plist"
@@ -54,13 +58,13 @@ install_launchd_scheduler() {
     HEALTHCHECK_INTERVAL "$HEALTHCHECK_INTERVAL" \
     LOG_DIR "$LOG_DIR"
   chmod 0644 "$plist_file"
-  chown root:wheel "$plist_file" 2>/dev/null || true
+  chown root:"$root_group" "$plist_file"
 
   launchctl bootout system "$plist_file" >/dev/null 2>&1 || true
   launchctl bootstrap system "$plist_file"
-  launchctl enable "system/${APP_NAME}-healthcheck" 2>/dev/null || true
-  launchctl kickstart -k "system/${APP_NAME}-healthcheck" 2>/dev/null || true
-  launchctl print "system/${APP_NAME}-healthcheck" >/dev/null 2>&1 || true
+  launchctl enable "system/${APP_NAME}-healthcheck"
+  launchctl kickstart -k "system/${APP_NAME}-healthcheck"
+  launchctl print "system/${APP_NAME}-healthcheck" >/dev/null
   echo "Installed launchd healthcheck scheduler: ${APP_NAME}-healthcheck"
 }
 
@@ -88,7 +92,7 @@ install_cron_scheduler() {
   if crontab -l > "$current_file" 2>/dev/null; then
     backup_path="${BACKUP_DIR}/root-crontab.$(timestamp_utc).$$.bak"
     cp -p "$current_file" "$backup_path"
-    chmod 0600 "$backup_path" 2>/dev/null || true
+    chmod 0600 "$backup_path"
     echo "Backed up root crontab to $backup_path"
   else
     : > "$current_file"
@@ -107,6 +111,10 @@ install_cron_scheduler() {
     printf '%s\n' "$marker_end"
   } >> "$new_file"
   crontab "$new_file"
+  if ! crontab -l | grep -Fq -- "$marker_start"; then
+    echo "Healthcheck cron entry verification failed for ${APP_NAME}." >&2
+    return 1
+  fi
   rm -f "$current_file" "$new_file"
   echo "Installed cron healthcheck scheduler: ${APP_NAME}"
 }

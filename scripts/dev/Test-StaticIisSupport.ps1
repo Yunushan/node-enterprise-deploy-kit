@@ -131,6 +131,10 @@ function New-WindowsStaticIisConfig {
     [string]$PackagePath = ""
   )
 
+  $packageExpectedSha256 = ""
+  if (-not [string]::IsNullOrWhiteSpace($PackagePath) -and (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
+    $packageExpectedSha256 = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+  }
   $config = [ordered]@{
     AppName = "ExampleStaticSpa"
     DisplayName = "Example Static SPA"
@@ -141,6 +145,8 @@ function New-WindowsStaticIisConfig {
     SpaShellFile = "_shell.html"
     AppDirectory = $AppDirectory
     PackagePath = $PackagePath
+    RequirePackageSha256 = $true
+    PackageExpectedSha256 = $packageExpectedSha256
     PackageExpectedFiles = @("dist/client/_shell.html", "dist/client/assets", "dist/client/web.config")
     PackageStripSingleTopLevelDirectory = $true
     InstallCommand = "npm ci --include=dev"
@@ -255,6 +261,55 @@ try {
   $dispatcherOutput = & (Join-Path $RepoRoot "scripts/windows/Install-ReverseProxy.ps1") -ConfigPath $windowsConfig -DryRun 2>&1 | Out-String
   if ($dispatcherOutput -notmatch "Install-IISStaticSite\.ps1") {
     throw "Install-ReverseProxy.ps1 dry-run did not route DeploymentMode=static_iis to Install-IISStaticSite.ps1."
+  }
+
+  Write-Step "Windows static_iis transactional recovery contract"
+  . (Join-Path $RepoRoot "scripts/windows/Install-IISStaticSite.ps1") -LoadFunctionsOnly
+  $transactionRoot = Join-Path $tempRoot "transaction"
+  $transactionSite = Join-Path $transactionRoot "site"
+  $transactionSource = Join-Path $transactionRoot "source"
+  $transactionBackups = Join-Path $transactionRoot "backups"
+  New-Directory $transactionSite
+  New-Directory $transactionSource
+  Write-Utf8NoBom -Path (Join-Path $transactionSite "old.txt") -Text "old release`n"
+  Write-Utf8NoBom -Path (Join-Path $transactionSource "new.txt") -Text "new release`n"
+  $transactionBackup = Backup-StaticSiteIfPresent -SitePath $transactionSite -BackupDirectory $transactionBackups
+  Clear-DirectoryContents -Path $transactionSite
+  Copy-StaticOutputContents -SourcePath $transactionSource -DestinationPath $transactionSite
+  Restore-StaticSiteContent -SitePath $transactionSite -BackupPath $transactionBackup -SitePathExisted $true
+  if (-not (Test-Path -LiteralPath (Join-Path $transactionSite "old.txt") -PathType Leaf) -or
+      (Test-Path -LiteralPath (Join-Path $transactionSite "new.txt"))) {
+    throw "Static IIS content rollback did not restore only the previous release."
+  }
+  Invoke-ExpectFailure -ExpectedText "BackupDirectory must not be inside IisSitePath" -Script {
+    Assert-StaticDeploymentPathsDoNotOverlap `
+      -SourcePath $transactionSource `
+      -SitePath $transactionSite `
+      -BackupDirectory (Join-Path $transactionSite "backups")
+  }
+
+  $installerText = Get-Content -LiteralPath (Join-Path $RepoRoot "scripts/windows/Install-IISStaticSite.ps1") -Raw
+  foreach ($expected in @(
+      'Stop-StaticIisSiteForDeployment -SiteName $siteName -Snapshot $snapshot',
+      'Assert-StaticIisTargetReady',
+      'Restore-StaticSiteContent',
+      'Restore-StaticIisDeploymentSnapshot',
+      'Rollback also failed'
+    )) {
+    if ($installerText -notmatch [regex]::Escape($expected)) {
+      throw "Static IIS installer is missing transactional recovery contract: $expected"
+    }
+  }
+
+  Write-Step "Windows static_iis TLS fails closed"
+  $tlsConfig = Get-Content -LiteralPath $windowsConfig -Raw | ConvertFrom-Json
+  $tlsConfig.TlsEnabled = $true
+  $tlsConfig.PublicPort = 443
+  $tlsConfig.IisCertificateThumbprint = ""
+  $tlsConfigPath = Join-Path $windowsRoot "tls-missing-certificate.json"
+  Write-Utf8NoBom -Path $tlsConfigPath -Text (($tlsConfig | ConvertTo-Json -Depth 20) + "`n")
+  Invoke-ExpectFailure -ExpectedText "TlsEnabled is true but IisCertificateThumbprint is empty" -Script {
+    & (Join-Path $RepoRoot "scripts/windows/Test-DeploymentPreflight.ps1") -ConfigPath $tlsConfigPath -SkipHealthCheck
   }
 }
 finally {

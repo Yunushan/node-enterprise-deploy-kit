@@ -155,16 +155,17 @@ function Get-NormalizedHealthPath([string]$Path) {
 function Write-GeneratedConfig($Config, [string]$Path) {
     $directory = Split-Path -Parent $Path
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
-    $Config | ConvertTo-Json -Depth 40 | Set-Content -Path $Path -Encoding UTF8
+    $Config | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function Get-DefaultGeneratedConfigPath($Config) {
     $safeName = ([string]$Config.AppName) -replace '[^A-Za-z0-9_.-]', '_'
     $serviceDirectory = [string](Get-ConfigValue $Config "ServiceDirectory" "")
+    $nonce = [Guid]::NewGuid().ToString("N")
     if (-not [string]::IsNullOrWhiteSpace($serviceDirectory)) {
-        return (Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.json")
+        return (Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.$nonce.json")
     }
-    return (Join-Path $repoRoot ".tmp\windows-live-deploy\$safeName.latest-release.json")
+    return (Join-Path $repoRoot ".tmp\windows-live-deploy\$safeName.latest-release.$nonce.json")
 }
 
 function Get-ServiceXmlPath($Config) {
@@ -299,11 +300,18 @@ if ([string]::IsNullOrWhiteSpace($GeneratedConfigPath)) {
 } else {
     $GeneratedConfigPath = Resolve-RepoPath $GeneratedConfigPath
 }
+$GeneratedConfigPath = [System.IO.Path]::GetFullPath($GeneratedConfigPath)
+if ($GeneratedConfigPath -ieq [System.IO.Path]::GetFullPath($ConfigPath)) {
+    throw "GeneratedConfigPath must not be the source deployment config path."
+}
+if (Test-Path -LiteralPath $GeneratedConfigPath) {
+    throw "Refusing to overwrite an existing generated config path: $GeneratedConfigPath"
+}
 Write-GeneratedConfig -Config $runtimeConfig -Path $GeneratedConfigPath
 
 Write-Host "Selected release folder: $selectedReleasePath" -ForegroundColor Cyan
 Write-Host "Generated config: $GeneratedConfigPath"
-Write-Host "Generated config is retained because the Windows health-check task uses it."
+Write-Host "Generated config is temporary unless -KeepGeneratedConfig is specified."
 Write-Host "Service: $($runtimeConfig.AppName)"
 Write-Host "IIS site: $($runtimeConfig.IisSiteName)"
 Write-Host "IIS path: $($runtimeConfig.IisSitePath)"
@@ -356,6 +364,9 @@ try {
     throw
 } finally {
     if (-not $KeepGeneratedConfig -and (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $GeneratedConfigPath -Force
+        Write-Host "Removed temporary generated config: $GeneratedConfigPath"
+    } elseif (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf) {
         Write-Host "Generated config retained: $GeneratedConfigPath"
     }
 }

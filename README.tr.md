@@ -254,6 +254,9 @@ Copy-Item .\config\windows\app.config.example.json .\config\windows\app.config.j
   "Port": 3000,
   "BindAddress": "127.0.0.1",
   "HealthUrl": "http://127.0.0.1:3000/health",
+  "RequirePostDeployHealthCheck": true,
+  "PostDeployHealthAttempts": 12,
+  "PostDeployHealthDelaySeconds": 5,
   "ServiceManager": "winsw",
   "ReverseProxy": "iis"
 }
@@ -283,6 +286,41 @@ uygulama klasörünü değiştirmeden önce uygun Next.js validator'ını otomat
 shim'leri çoğunlukla sembolik link olarak oluşturur. Servis Next'i doğrudan
 `node_modules/next/dist/bin/next` üzerinden başlatır ve deploy arşivleri
 sembolik link veya hardlink girdilerini bilinçli olarak reddeder.
+
+Paket import işlemi ayrıca arşiv boyutu, açılmış toplam boyut, girdi sayısı,
+sıkıştırma oranı ve boş disk rezervi sınırlarını uygular. Varsayılanlar sırasıyla
+2048 MiB, 8192 MiB, 200000 girdi, 200:1 oran ve işlem sonunda en az 1024 MiB boş
+alandır. Preflight, staged arşiv ve açılmış klasör kontrolleri mevcut servis
+durdurulmadan ve canlı uygulama klasörü değiştirilmeden önce tamamlanır. Windows
+için `PackageMaxArchiveSizeMB`, `PackageMaxExtractedSizeMB`,
+`PackageMaxEntryCount`, `PackageMaxCompressionRatio` ve
+`PackageMinimumFreeSpaceMB`; Unix için aynı adların büyük harfli
+`PACKAGE_*` karşılıkları kullanılır.
+
+Kesinti başladıktan sonra paket değiştirme işlemi transaction olarak yürütülür.
+Importer çalışan process'in durduğunu doğrular, canlı uygulama klasörünü
+yedekler ve replacement ya da deployment manifest yazımı başarısız olursa eski
+klasörü ve önceki çalışma durumunu geri yükler. Klasör rollback işlemi de
+başarısız olursa servis kısmi bir release ile başlamaması için bilinçli olarak
+stopped durumda bırakılır. Bu recovery sözleşmesi Windows'ta WinSW ve PM2,
+Unix-benzeri sistemlerde yönetilen native service manager'lar için geçerlidir.
+
+Üst seviye deploy wrapper'ları bu package transaction'ı app preparation,
+service kurulumu, proxy konfigürasyonu ve health scheduler kurulumu tamamlanana
+kadar açık tutar. Daha sonraki bir adım başarısız olursa önceki uygulama klasörü
+ile running/stopped durumu geri yüklenir; ilk kurulum başarısızlığında yeni
+oluşturulan service veya PM2 kaydı da kaldırılır. Transaction metadata'sı secret
+ve environment value içermez; yalnızca operasyonel path ve state bilgisi taşır.
+Başarıdan veya başarılı rollback'ten sonra silinir, rollback de başarısız olursa
+raporlanan korumalı path altında saklanır. Static IIS akışı ayrıca önceki content,
+site, app pool, binding ve TLS durumunu geri yükler. Diğer service/proxy
+yöneticilerinde sonraki bir adım konfigürasyonu değiştirdiyse timestamp'li
+managed-config backup'larını kullanın.
+
+Unix service ve health scheduler installer'lari ownership, reboot registration
+ve post-start manager state hatalarında da fail closed davranır. Bu nedenle
+başarılı installer çıkışı, native service'in ve seçilen health scheduler'ın
+gerçekten kaydedildiği ve active olarak doğrulandığı anlamına gelir.
 
 Import veya manuel kopyalama sonrası canlı runtime klasörünü servis durumuna
 dokunmadan kontrol etmek için:
@@ -418,6 +456,13 @@ bash scripts/linux/validate-nextjs-standalone-package.sh \
   --package-path /opt/releases/example-node-app.tar.gz
 
 PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256="<64 karakter SHA-256 özeti>"
+PACKAGE_MAX_ARCHIVE_SIZE_MB="2048"
+PACKAGE_MAX_EXTRACTED_SIZE_MB="8192"
+PACKAGE_MAX_ENTRY_COUNT="200000"
+PACKAGE_MAX_COMPRESSION_RATIO="200"
+PACKAGE_MINIMUM_FREE_SPACE_MB="1024"
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 bash deploy.sh config/linux/app.env
 ```
@@ -446,6 +491,15 @@ yayın klasörünü taşımayın. En yeni klasörü otomatik seçmek için:
   -TakeOverPublicPortBinding `
   -SkipWinSWDownload
 ```
+
+Bu yardimci her calismada benzersiz bir gecici runtime config dosyasi olusturur,
+mevcut acik bir yolu ezmez ve dosyayi deployment sonunda varsayilan olarak
+siler. Yalniz denetlenmis bir operasyon ihtiyaci varsa `-KeepGeneratedConfig`
+kullanin ve kalan dosyayi ozel deployment config'i olarak koruyun. Windows
+health-check gorevi tam config dosyasini `SYSTEM` ile okumaz; yalniz izinli
+operasyon alanlarini iceren minimal config ve script kopyasi
+`%ProgramData%\node-enterprise-deploy-kit\healthchecks\<AppName>` altinda
+korumali ACL ile tutulur. Health state ve monitor logu da bu korumali dizindedir.
 
 5. Servisi ve logları kontrol edin:
 
@@ -579,6 +633,21 @@ Linux healthcheck scripti başarısızlık durumunu state dizininde tutar. Öner
 ```bash
 HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 ```
+
+Windows servis kurulumu ile Linux/macOS/BSD Node ve Tomcat kurulumlari, varsayilan
+olarak basarili sayilmadan once loopback health URL'sinden HTTP `2xx` bekler.
+Yonlendirmeler basarili kabul edilmez. `RequirePostDeployHealthCheck` /
+`REQUIRE_POST_DEPLOY_HEALTH_CHECK` degerini yalnizca baska denetlenmis bir health
+gate varsa kapatin. IIS icin `TlsEnabled=true` kullanildiginda gercek ve mevcut
+bir `LocalMachine\My` sertifika thumbprint'i zorunludur; eksik sertifika kurulumu
+uyariyla devam etmek yerine durdurur.
+
+Ust seviye `deploy.ps1` ve `deploy.sh`, ayni uygulama icin eszamanli ikinci
+dagitimi engelleyen bir deployment lock alir. Varsayilan bekleme suresi sifirdir;
+gerekiyorsa `DeploymentLockTimeoutSeconds` veya
+`DEPLOYMENT_LOCK_TIMEOUT_SECONDS` ile sinirli bekleme tanimlanabilir. Unix'te
+rollback-failure kaydı lock klasörünün içine değil yanına yazılır; böylece
+operatör recovery yaparken deployment lock güvenli biçimde bırakılabilir.
 
 ## Günlerce Çalıştığını Nasıl Kontrol Edersiniz
 

@@ -25,6 +25,8 @@ Create React App commonly outputs `build/index.html`; Vite commonly outputs
   "AppFramework": "reactjs",
   "ReactDocumentRoot": "build",
   "StartCommand": "server.js",
+  "RequirePackageSha256": true,
+  "PackageExpectedSha256": "",
   "PackageExpectedFiles": [
     "server.js",
     "build/index.html"
@@ -36,6 +38,8 @@ Create React App commonly outputs `build/index.html`; Vite commonly outputs
 APP_FRAMEWORK="reactjs"
 REACT_DOCUMENT_ROOT="build"
 START_SCRIPT="server.js"
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256=""
 PACKAGE_EXPECTED_FILES="server.js build/index.html"
 ```
 

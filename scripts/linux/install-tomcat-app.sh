@@ -52,4 +52,5 @@ else
   echo "Tomcat WAR deployed without service restart because TOMCAT_RESTART=false."
 fi
 
+bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$CONFIG_FILE"
 echo "Installed Tomcat application: $target_war"

@@ -199,6 +199,11 @@ app directory path, host name, or environment values.
 Package import intentionally rejects archive symlinks, NTFS reparse points, and
 special-file entries. Keep deployment artifacts as regular files and
 directories so Windows and Unix-like targets import the same runtime tree.
+Import also rejects packages that exceed configured archive size, extracted
+size, entry count, or compression-ratio limits, and requires enough disk space
+for staging, extraction, installation, backup, and the configured reserve.
+These checks run before the current service is stopped. See
+[Variables](VARIABLES.md) for the Windows and Unix setting names and defaults.
 
 Manual Linux/macOS packaging equivalent:
 
@@ -246,11 +251,19 @@ Use the normal Windows deployment flow with these Next.js-specific fields:
   "NextjsDeploymentMode": "standalone",
   "NextjsRequireStaticAssets": true,
   "NextjsRequirePublicDirectory": false,
+  "NextjsRequirePackageProvenance": true,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
   "NextjsMinimumNodeVersion": "20.9.0",
   "StartCommand": "server.js",
   "BindAddress": "127.0.0.1",
+  "RequirePackageSha256": true,
+  "PackageExpectedSha256": "",
+  "PackageMaxArchiveSizeMB": 2048,
+  "PackageMaxExtractedSizeMB": 8192,
+  "PackageMaxEntryCount": 200000,
+  "PackageMaxCompressionRatio": 200,
+  "PackageMinimumFreeSpaceMB": 1024,
   "PackageExpectedFiles": [
     "server.js",
     ".next/BUILD_ID",
@@ -298,8 +311,11 @@ You can also start from the committed Windows example:
 Deploy a built artifact:
 
 ```powershell
+$package = "C:\deploy\example-node-app.zip"
+$packageSha256 = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
 .\install.ps1 -ConfigPath .\config\windows\app.config.json `
-  -PackagePath C:\deploy\example-node-app.zip `
+  -PackagePath $package `
+  -PackageExpectedSha256 $packageSha256 `
   -SkipInstall -SkipBuild
 ```
 
@@ -331,12 +347,20 @@ APP_FRAMEWORK="nextjs"
 NEXTJS_DEPLOYMENT_MODE="standalone"
 NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
 NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 START_SCRIPT="server.js"
 APP_PORT="3000"
 BIND_ADDRESS="127.0.0.1"
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256=""
+PACKAGE_MAX_ARCHIVE_SIZE_MB="2048"
+PACKAGE_MAX_EXTRACTED_SIZE_MB="8192"
+PACKAGE_MAX_ENTRY_COUNT="200000"
+PACKAGE_MAX_COMPRESSION_RATIO="200"
+PACKAGE_MINIMUM_FREE_SPACE_MB="1024"
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static node_modules/next/package.json"
 ```
 
@@ -367,11 +391,14 @@ of the CLI default.
 Deploy a built artifact:
 
 ```bash
-PACKAGE_PATH="/opt/releases/example-node-app.tar.gz" \
-SKIP_INSTALL="true" \
-SKIP_BUILD="true" \
-bash deploy.sh config/linux/app.env
+package="/opt/releases/example-node-app.tar.gz"
+package_sha256="$(sha256sum "$package" | awk '{print $1}')"
+bash deploy.sh config/linux/app.env "$package" "$package_sha256"
 ```
+
+Both importers require the expected SHA-256 by default and verify a staged copy
+before package validation or service interruption. Use `shasum -a 256` instead
+of `sha256sum` on hosts where only `shasum` is installed.
 
 Choose the service manager by host type:
 

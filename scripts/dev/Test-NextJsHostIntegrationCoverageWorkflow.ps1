@@ -28,8 +28,8 @@ foreach ($expected in @(
     'contents: read',
     'Require the protected default branch',
     'Next.js self-hosted coverage can run only from the protected default branch',
-    'actions/checkout@v7',
-    'actions/setup-node@v6',
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
     "node-version: '22'",
     'Invoke-NextJsHostIntegrationArtifactDownload.mjs',
     '--validate',
@@ -38,7 +38,7 @@ foreach ($expected in @(
     'New-NextJsHostIntegrationCoverage.mjs',
     '--run-ids "$RUN_IDS"',
     '--sha "$GITHUB_SHA"',
-    'actions/upload-artifact@v7',
+    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
     'nextjs-self-hosted-integration-coverage'
   )) {
   Assert-Contains -Text $workflow -Expected $expected -Context '.github/workflows/nextjs-host-integration-coverage.yml'

@@ -24,8 +24,15 @@ Preferred full check:
 ```powershell
 .\scripts\dev\Test-Repository.ps1
 .\scripts\dev\Test-DocsConsistency.ps1
+.\scripts\dev\Test-GitHubActionsSecurity.ps1
 .\scripts\dev\Test-ReleasePackage.ps1
 ```
+
+When updating a GitHub Action, keep its `uses:` reference pinned to the
+reviewed 40-character commit SHA and update the adjacent major-version
+comment. Update the allowlist in `Test-GitHubActionsSecurity.ps1` in the same
+change; never merge a Dependabot action update without reviewing the upstream
+release and commit.
 
 For release handoff, build a sanitized package:
 

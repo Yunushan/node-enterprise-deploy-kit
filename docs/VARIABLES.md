@@ -21,6 +21,13 @@
 | Deployment ID | `DeploymentId` | `DEPLOYMENT_ID` | Optional safe release/build identifier emitted in status evidence; prefer a sanitized release ID, not a private hostname or ticket URL |
 | App directory | `AppDirectory` | `APP_DIR` | Application working directory |
 | Package path | `PackagePath` | `PACKAGE_PATH` | Optional deployment archive to import before install/build/service setup |
+| Require package SHA-256 | `RequirePackageSha256` | `REQUIRE_PACKAGE_SHA256` | Require a caller/config supplied artifact digest before archive validation or service interruption; defaults to `true` |
+| Expected package SHA-256 | `PackageExpectedSha256` | `PACKAGE_EXPECTED_SHA256` | Exact 64-character SHA-256 digest of the selected artifact; keep blank in committed examples and set it for each real release |
+| Maximum package archive size | `PackageMaxArchiveSizeMB` | `PACKAGE_MAX_ARCHIVE_SIZE_MB` | Maximum compressed/source archive size in MiB; defaults to `2048` |
+| Maximum extracted package size | `PackageMaxExtractedSizeMB` | `PACKAGE_MAX_EXTRACTED_SIZE_MB` | Maximum logical size of regular files after extraction in MiB; defaults to `8192` |
+| Maximum package entry count | `PackageMaxEntryCount` | `PACKAGE_MAX_ENTRY_COUNT` | Maximum number of archive/extracted entries; defaults to `200000` |
+| Maximum compression ratio | `PackageMaxCompressionRatio` | `PACKAGE_MAX_COMPRESSION_RATIO` | Maximum extracted-to-archive ratio; defaults to `200` |
+| Minimum free disk reserve | `PackageMinimumFreeSpaceMB` | `PACKAGE_MINIMUM_FREE_SPACE_MB` | Free space that must remain after projected staging, extraction, installation, and cross-volume backup work; defaults to `1024` MiB |
 | Package expected files | `PackageExpectedFiles` | `PACKAGE_EXPECTED_FILES` | Relative files or directories that must exist after extraction; Ansible can leave `node_deploy_package_expected_files: []` to use framework-aware defaults |
 | Strip single top directory | `PackageStripSingleTopLevelDirectory` | `PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR` | Use package contents when the archive has one wrapping directory |
 | Skip package import | script flag | `SKIP_PACKAGE_IMPORT` | Leave `AppDirectory`/`APP_DIR` unchanged even when package path is configured |
@@ -28,6 +35,14 @@
 | Node binary | `NodeExe` | `NODE_BIN` | Node executable path |
 | Node arguments | `NodeArguments` | `NODE_ARGUMENTS` | Extra arguments passed after the start script; for `next-start`, use `start -H <bind address>` |
 | Port | `Port` | `APP_PORT` | Local Node.js port |
+
+Package resource limits are checked during preflight and again against the
+staged artifact before service interruption. The extracted tree is measured a
+second time before replacement. Capacity checks combine projected workloads
+when the temporary directory, application directory, and backup directory are
+on the same volume, and preserve the configured free-space reserve after that
+workload. Raise a limit only for a reviewed release artifact; do not disable
+these checks to work around an unexpectedly large or highly compressed package.
 | Bind address | `BindAddress` | `BIND_ADDRESS` | Local address the Node.js service should bind to; Unix-like service env generation derives `HOST` and `HOSTNAME` from this value for Next.js |
 | Health URL | `HealthUrl` | `HEALTH_URL` | HTTP health probe URL |
 | Proxy health URL | `ProxyHealthUrl` | `PROXY_HEALTH_URL` | Optional explicit reverse-proxy health probe URL for status evidence |
@@ -53,18 +68,23 @@
 | Skip build | script flag | `SKIP_BUILD` | Skip build command during artifact-only deployments |
 | Skip preflight | script flag | `SKIP_PREFLIGHT` | Skip local deployment validation when intentionally bypassing checks |
 | Allow port in use | script flag | `ALLOW_PORT_IN_USE` | Permit updates while the configured port is already listening |
+| Deployment lock wait | `DeploymentLockTimeoutSeconds` | `DEPLOYMENT_LOCK_TIMEOUT_SECONDS` | Seconds to wait for another deployment of the same app; `0` fails immediately and the maximum is 3600 |
+| Deployment lock root | `DeploymentLockDirectory` | `DEPLOYMENT_LOCK_ROOT` | Optional absolute lock location; Windows defaults below `ServiceDirectory` or ProgramData, Unix-like hosts default to `/var/run/node-enterprise-deploy-kit` |
 | Skip reverse proxy | script flag | `SKIP_REVERSE_PROXY` | Install/update the service but leave proxy configuration unchanged |
 | Skip health check | script flag | `SKIP_HEALTH_CHECK` | Install/update the service but leave health-check scheduling unchanged |
 | Runtime env keys | `Environment` | `RUNTIME_ENV_KEYS` | Extra Linux config variables to write into the private service env file; the managed env already includes `NODE_ENV`, `PORT`, `APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME` |
 | Health failures | `HealthCheckFailureThreshold` | `HEALTHCHECK_FAILURE_THRESHOLD` | Consecutive failures before restart |
 | Restart cooldown | `HealthCheckRestartCooldownMinutes` | `HEALTHCHECK_RESTART_COOLDOWN` | Minimum time between health-check restarts |
 | Health timeout | `HealthCheckTimeoutSeconds` | `HEALTHCHECK_TIMEOUT` | HTTP health probe timeout |
+| Require post-deploy health | `RequirePostDeployHealthCheck` | `REQUIRE_POST_DEPLOY_HEALTH_CHECK` | Require a successful loopback HTTP 2xx response before service/Tomcat installation can report success; defaults to true |
+| Post-deploy attempts | `PostDeployHealthAttempts` | `POST_DEPLOY_HEALTH_ATTEMPTS` | Maximum startup health attempts; defaults to 12 |
+| Post-deploy delay | `PostDeployHealthDelaySeconds` | `POST_DEPLOY_HEALTH_DELAY_SECONDS` | Seconds between startup health attempts; defaults to 5 |
 | Log retention | `LogRetentionDays` | `LOG_RETENTION_DAYS` | Days to retain managed log files |
 | Backup retention | `BackupRetentionDays` | `BACKUP_RETENTION_DAYS` | Days to retain managed backup files |
 | Diagnostic retention | `DiagnosticRetentionDays` | `DIAGNOSTIC_RETENTION_DAYS` | Days to retain generated diagnostic bundles |
 | IIS site | `IisSiteName` | n/a | Windows IIS site name |
 | IIS app pool | `IisAppPoolName` | n/a | Windows IIS app pool name |
-| IIS certificate | `IisCertificateThumbprint` | n/a | Optional LocalMachine\My certificate thumbprint |
+| IIS certificate | `IisCertificateThumbprint` | n/a | Required 40-hex `LocalMachine\My` certificate thumbprint when `TlsEnabled=true`; preflight and install fail if it is empty, unavailable, or conflicts with the existing SSL binding |
 | Install/build-only environment | `PreparationEnvironment` | `PREPARATION_ENV_FILE` | Optional local-only configuration applied only to install/build commands. Windows uses an environment map; Unix-like hosts use an absolute path to a restricted `NAME=value` file. Neither is copied to the service environment or emitted in deployment evidence. |
 | IIS ARR proxy | `IisEnableArrProxy` | n/a | Enable and configure IIS ARR proxy mode for localhost reverse proxying |
 | IIS URL Rewrite required | `IisRequireUrlRewrite` | n/a | Fail Windows IIS proxy preflight/install if URL Rewrite is missing |

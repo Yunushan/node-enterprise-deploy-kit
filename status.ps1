@@ -133,9 +133,17 @@ $script:healthMonitorEvidence = [pscustomobject]@{
     Scheduled = $false
     ScheduleType = "windows-task"
     TaskExists = $false
+    TaskPrincipalChecked = $false
+    TaskRunsAsSystem = $null
+    TaskRunLevelHighest = $null
     TaskActionChecked = $false
+    TaskActionUsesSystemPowerShell = $null
+    TaskActionUsesWorkingDirectory = $null
     TaskActionUsesHealthCheckScript = $null
     TaskActionUsesConfigPath = $null
+    TaskScriptHashMatchesSource = $null
+    TaskConfigMatchesDeployment = $null
+    TaskFilesAclProtected = $null
     TaskLastResult = $null
     TaskMissedRuns = $null
     StateExists = $false
@@ -523,6 +531,83 @@ function Get-NormalizedPathForCompare([string]$Path) {
     } catch {
         return $expanded.TrimEnd([char[]]@('\', '/'))
     }
+}
+function Get-HealthTaskDirectory($Config) {
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if ([string]::IsNullOrWhiteSpace($programData)) { return "" }
+    return (Join-Path (Join-Path $programData "node-enterprise-deploy-kit\healthchecks") ([string]$Config.AppName))
+}
+function New-ExpectedHealthMonitorConfig($Config) {
+    return [ordered]@{
+        Schema = "node-enterprise-deploy-kit/windows-health-monitor/v1"
+        AppName = [string]$Config.AppName
+        HealthUrl = [string]$Config.HealthUrl
+        LogDirectory = [System.IO.Path]::GetFullPath([string]$Config.LogDirectory)
+        BackupDirectory = [System.IO.Path]::GetFullPath((Get-BackupDirectory $Config))
+        HealthCheckFailureThreshold = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckFailureThreshold" 2))
+        HealthCheckRestartCooldownMinutes = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckRestartCooldownMinutes" 5))
+        HealthCheckTimeoutSeconds = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckTimeoutSeconds" 10))
+        LogRetentionDays = [Math]::Max(1, (Get-ConfigInt $Config "LogRetentionDays" 30))
+        BackupRetentionDays = [Math]::Max(1, (Get-ConfigInt $Config "BackupRetentionDays" 90))
+        DiagnosticRetentionDays = [Math]::Max(1, (Get-ConfigInt $Config "DiagnosticRetentionDays" 14))
+    }
+}
+function Test-HealthMonitorConfigMatchesDeployment([string]$Path, $Config) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $actual = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        $expected = New-ExpectedHealthMonitorConfig $Config
+        $actualNames = @($actual.PSObject.Properties.Name)
+        if ($actualNames.Count -ne $expected.Keys.Count) { return $false }
+        foreach ($name in $expected.Keys) {
+            if (-not $actual.PSObject.Properties[$name]) { return $false }
+            if ($name -in @("LogDirectory", "BackupDirectory")) {
+                if ((Get-NormalizedPathForCompare ([string]$actual.$name)) -ine (Get-NormalizedPathForCompare ([string]$expected[$name]))) { return $false }
+            } elseif ($expected[$name] -is [int]) {
+                if ([int]$actual.$name -ne [int]$expected[$name]) { return $false }
+            } elseif ([string]$actual.$name -cne [string]$expected[$name]) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+function Test-PathAclPreventsUntrustedWrite([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        if (-not $acl.AreAccessRulesProtected) { return $false }
+        $trustedSids = @("S-1-5-18", "S-1-5-32-544")
+        # Use only atomic write rights here. Composite values such as FullControl
+        # overlap read bits and would incorrectly classify ReadAndExecute as writable.
+        $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+            [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+            [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+            [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+            [System.Security.AccessControl.FileSystemRights]::Delete -bor
+            [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+            [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+            [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+        foreach ($rule in $acl.Access) {
+            if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+            $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+            if ($sid -notin $trustedSids -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+function Test-HealthTaskFilesAclProtected([string]$TaskDirectory, [string]$ScriptPath, [string]$MonitorConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($TaskDirectory)) { return $false }
+    $healthRoot = Split-Path -Parent $TaskDirectory
+    $kitRoot = Split-Path -Parent $healthRoot
+    foreach ($path in @($kitRoot, $healthRoot, $TaskDirectory, $ScriptPath, $MonitorConfigPath)) {
+        if (-not (Test-PathAclPreventsUntrustedWrite $path)) { return $false }
+    }
+    return $true
 }
 function Get-CommandArgumentValue {
     param(
@@ -1427,33 +1512,83 @@ if ($script:reverseProxyEvidence.Iis -and $script:reverseProxyEvidence.Iis.Appli
 Write-Host ""
 Write-Host "Health check task" -ForegroundColor Yellow
 $taskName = "$serviceName-HealthCheck"
+$healthTaskDirectory = Get-HealthTaskDirectory $config
 $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($task) {
     $script:healthMonitorEvidence.Scheduled = $true
     $script:healthMonitorEvidence.TaskExists = $true
-    $expectedHealthCheckScript = Join-Path $repoRoot "scripts\windows\Invoke-NodeHealthCheck.ps1"
+    $expectedHealthCheckScript = Join-Path $healthTaskDirectory "Invoke-NodeHealthCheck.ps1"
+    $expectedHealthMonitorConfig = Join-Path $healthTaskDirectory "health-monitor.config.json"
+    $sourceHealthCheckScript = Join-Path $repoRoot "scripts\windows\Invoke-NodeHealthCheck.ps1"
+    $expectedSystemPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if ($task.Principal) {
+        $script:healthMonitorEvidence.TaskPrincipalChecked = $true
+        $taskPrincipalUser = [string]$task.Principal.UserId
+        $script:healthMonitorEvidence.TaskRunsAsSystem = ($taskPrincipalUser -in @("SYSTEM", "NT AUTHORITY\SYSTEM", "S-1-5-18"))
+        $script:healthMonitorEvidence.TaskRunLevelHighest = ([string]$task.Principal.RunLevel -ieq "Highest")
+        if ($script:healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task does not run as Windows SYSTEM."
+        }
+        if ($script:healthMonitorEvidence.TaskRunLevelHighest -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task is not registered at the highest run level."
+        }
+    } else {
+        Add-Finding -Severity Critical -Message "Health check scheduled task principal could not be read."
+    }
     $taskAction = @($task.Actions | Select-Object -First 1)
     if ($taskAction.Count -gt 0) {
         $script:healthMonitorEvidence.TaskActionChecked = $true
         $taskArguments = [string]$taskAction[0].Arguments
         $taskScriptPath = Get-CommandArgumentValue -Arguments $taskArguments -Name "File"
         $taskConfigPath = Get-CommandArgumentValue -Arguments $taskArguments -Name "ConfigPath"
+        $script:healthMonitorEvidence.TaskActionUsesSystemPowerShell = (
+            (Get-NormalizedPathForCompare ([string]$taskAction[0].Execute)) -ieq
+            (Get-NormalizedPathForCompare $expectedSystemPowerShell)
+        )
+        $script:healthMonitorEvidence.TaskActionUsesWorkingDirectory = (
+            (Get-NormalizedPathForCompare ([string]$taskAction[0].WorkingDirectory)) -ieq
+            (Get-NormalizedPathForCompare $healthTaskDirectory)
+        )
         $script:healthMonitorEvidence.TaskActionUsesHealthCheckScript = (
             (Get-NormalizedPathForCompare $taskScriptPath) -ieq
             (Get-NormalizedPathForCompare $expectedHealthCheckScript)
         )
         $script:healthMonitorEvidence.TaskActionUsesConfigPath = (
             (Get-NormalizedPathForCompare $taskConfigPath) -ieq
-            (Get-NormalizedPathForCompare $ConfigPath)
+            (Get-NormalizedPathForCompare $expectedHealthMonitorConfig)
         )
+        if ($script:healthMonitorEvidence.TaskActionUsesSystemPowerShell -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not use the System32 Windows PowerShell executable."
+        }
+        if ($script:healthMonitorEvidence.TaskActionUsesWorkingDirectory -ne $true) {
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not use the protected managed working directory."
+        }
         if ($script:healthMonitorEvidence.TaskActionUsesHealthCheckScript -ne $true) {
-            Add-Finding -Severity Critical -Message "Health check scheduled task action does not run this kit's Invoke-NodeHealthCheck.ps1 script."
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not run the protected managed Invoke-NodeHealthCheck.ps1 copy."
         }
         if ($script:healthMonitorEvidence.TaskActionUsesConfigPath -ne $true) {
-            Add-Finding -Severity Critical -Message "Health check scheduled task action does not use the current deployment config path."
+            Add-Finding -Severity Critical -Message "Health check scheduled task action does not use the protected minimal monitor config."
         }
     } else {
         Add-Finding -Severity Critical -Message "Health check scheduled task exists, but no task action could be read."
+    }
+    $script:healthMonitorEvidence.TaskScriptHashMatchesSource = $false
+    if ((Test-Path -LiteralPath $sourceHealthCheckScript -PathType Leaf) -and (Test-Path -LiteralPath $expectedHealthCheckScript -PathType Leaf)) {
+        $script:healthMonitorEvidence.TaskScriptHashMatchesSource = (
+            (Get-FileHash -LiteralPath $sourceHealthCheckScript -Algorithm SHA256).Hash -eq
+            (Get-FileHash -LiteralPath $expectedHealthCheckScript -Algorithm SHA256).Hash
+        )
+    }
+    $script:healthMonitorEvidence.TaskConfigMatchesDeployment = Test-HealthMonitorConfigMatchesDeployment -Path $expectedHealthMonitorConfig -Config $config
+    $script:healthMonitorEvidence.TaskFilesAclProtected = Test-HealthTaskFilesAclProtected -TaskDirectory $healthTaskDirectory -ScriptPath $expectedHealthCheckScript -MonitorConfigPath $expectedHealthMonitorConfig
+    if ($script:healthMonitorEvidence.TaskScriptHashMatchesSource -ne $true) {
+        Add-Finding -Severity Critical -Message "Protected health-check script is missing or does not match the current kit source."
+    }
+    if ($script:healthMonitorEvidence.TaskConfigMatchesDeployment -ne $true) {
+        Add-Finding -Severity Critical -Message "Protected health monitor config is missing, contains unexpected fields, or does not match the current deployment."
+    }
+    if ($script:healthMonitorEvidence.TaskFilesAclProtected -ne $true) {
+        Add-Finding -Severity Critical -Message "Health-task files or parent directories allow an untrusted identity to write, or ACL verification failed."
     }
     $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
     if ($taskInfo) {
@@ -1480,7 +1615,7 @@ if ($task) {
 
 Write-Host ""
 Write-Host "Health history" -ForegroundColor Yellow
-$statePath = if ($config.LogDirectory) { Join-Path $config.LogDirectory "healthcheck.state.json" } else { "" }
+$statePath = if ($healthTaskDirectory) { Join-Path $healthTaskDirectory "healthcheck.state.json" } else { "" }
 if ($statePath -and (Test-Path $statePath)) {
     try {
         $state = Get-Content $statePath -Raw | ConvertFrom-Json
@@ -1527,7 +1662,7 @@ if ($statePath -and (Test-Path $statePath)) {
     Write-Warning "Health state file not found yet."
 }
 
-$healthLogPath = if ($config.LogDirectory) { Join-Path $config.LogDirectory "healthcheck.log" } else { "" }
+$healthLogPath = if ($healthTaskDirectory) { Join-Path $healthTaskDirectory "healthcheck.log" } else { "" }
 $healthLogSummary = if ($healthLogPath) { Get-HealthLogSummary $healthLogPath } else { $null }
 if ($healthLogSummary) {
     $script:healthMonitorEvidence.LogExists = $true
@@ -1547,9 +1682,17 @@ if ($healthLogSummary) {
 
 $script:healthMonitorEvidence.Status = if (
     $script:healthMonitorEvidence.TaskExists -and
+    $script:healthMonitorEvidence.TaskPrincipalChecked -and
+    ($script:healthMonitorEvidence.TaskRunsAsSystem -eq $true) -and
+    ($script:healthMonitorEvidence.TaskRunLevelHighest -eq $true) -and
     $script:healthMonitorEvidence.TaskActionChecked -and
+    ($script:healthMonitorEvidence.TaskActionUsesSystemPowerShell -eq $true) -and
+    ($script:healthMonitorEvidence.TaskActionUsesWorkingDirectory -eq $true) -and
     ($script:healthMonitorEvidence.TaskActionUsesHealthCheckScript -eq $true) -and
     ($script:healthMonitorEvidence.TaskActionUsesConfigPath -eq $true) -and
+    ($script:healthMonitorEvidence.TaskScriptHashMatchesSource -eq $true) -and
+    ($script:healthMonitorEvidence.TaskConfigMatchesDeployment -eq $true) -and
+    ($script:healthMonitorEvidence.TaskFilesAclProtected -eq $true) -and
     $script:healthMonitorEvidence.StateExists -and
     $script:healthMonitorEvidence.LastSuccessFresh -and
     $script:healthMonitorEvidence.ConsecutiveFailures -eq 0 -and
@@ -1672,9 +1815,17 @@ $statusEvidence = [pscustomobject]@{
         Scheduled = [bool]$script:healthMonitorEvidence.Scheduled
         ScheduleType = [string]$script:healthMonitorEvidence.ScheduleType
         TaskExists = [bool]$script:healthMonitorEvidence.TaskExists
+        TaskPrincipalChecked = [bool]$script:healthMonitorEvidence.TaskPrincipalChecked
+        TaskRunsAsSystem = $script:healthMonitorEvidence.TaskRunsAsSystem
+        TaskRunLevelHighest = $script:healthMonitorEvidence.TaskRunLevelHighest
         TaskActionChecked = [bool]$script:healthMonitorEvidence.TaskActionChecked
+        TaskActionUsesSystemPowerShell = $script:healthMonitorEvidence.TaskActionUsesSystemPowerShell
+        TaskActionUsesWorkingDirectory = $script:healthMonitorEvidence.TaskActionUsesWorkingDirectory
         TaskActionUsesHealthCheckScript = $script:healthMonitorEvidence.TaskActionUsesHealthCheckScript
         TaskActionUsesConfigPath = $script:healthMonitorEvidence.TaskActionUsesConfigPath
+        TaskScriptHashMatchesSource = $script:healthMonitorEvidence.TaskScriptHashMatchesSource
+        TaskConfigMatchesDeployment = $script:healthMonitorEvidence.TaskConfigMatchesDeployment
+        TaskFilesAclProtected = $script:healthMonitorEvidence.TaskFilesAclProtected
         TaskLastResult = $script:healthMonitorEvidence.TaskLastResult
         TaskMissedRuns = $script:healthMonitorEvidence.TaskMissedRuns
         StateExists = [bool]$script:healthMonitorEvidence.StateExists

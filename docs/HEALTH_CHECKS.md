@@ -43,13 +43,50 @@ deployed app. For example, use `/health` for the App Router example or
 | Port check | Confirms process listens on expected port |
 | HTTP check | Confirms app can actually respond |
 
+## Deployment Health Gate
+
+Node service and Tomcat installers require the configured loopback health URL
+to return HTTP `2xx` before deployment succeeds. Redirects are not accepted.
+The default is 12 attempts, five seconds apart, with a ten-second request
+timeout. The URL must use HTTP(S), target loopback, and contain no credentials,
+query, or fragment.
+
+```json
+{
+  "RequirePostDeployHealthCheck": true,
+  "PostDeployHealthAttempts": 12,
+  "PostDeployHealthDelaySeconds": 5,
+  "HealthCheckTimeoutSeconds": 10
+}
+```
+
+```bash
+REQUIRE_POST_DEPLOY_HEALTH_CHECK="true"
+POST_DEPLOY_HEALTH_ATTEMPTS="12"
+POST_DEPLOY_HEALTH_DELAY_SECONDS="5"
+HEALTHCHECK_TIMEOUT="10"
+```
+
+Set the requirement to false only for an explicitly approved deployment whose
+health is enforced by another audited gate. Preflight warns about that opt-out.
+This startup gate is separate from the recurring scheduled health monitor.
+
 ## Windows
 
-Scheduled task runs `scripts/windows/Invoke-NodeHealthCheck.ps1`.
-When the task is registered, `Register-HealthCheckTask.ps1` resolves
-`-ConfigPath` to an absolute path before writing the scheduled task action.
-That keeps manually registered tasks working when Windows later runs them as
-`SYSTEM` from a different working directory.
+The scheduled task runs a protected copy of `Invoke-NodeHealthCheck.ps1` from
+`%ProgramData%\node-enterprise-deploy-kit\healthchecks\<AppName>`. Registration
+creates a minimal, allowlisted `health-monitor.config.json` beside the script;
+the full deployment config, environment values, preparation credentials, and
+service-account password are not copied into the task directory. The task uses
+the explicit System32 Windows PowerShell executable, runs as `SYSTEM` at the
+highest run level, and has the protected directory as its working directory.
+Only `SYSTEM` and Administrators receive write access; ordinary Users receive
+read and execute access.
+
+Health control state and the monitor log are stored in that protected directory
+so an account that can write application logs cannot spoof failure counters or
+restart cooldown timestamps. The active health log rotates at 10 MiB and keeps
+at most five rotated files.
 
 Recommended controls:
 
@@ -77,11 +114,12 @@ It reports scheduled task last run, next run, last result, consecutive failure
 state, last successful check, last failed check, summarized health log event
 counts, service startup mode, and a final operational verdict. It also verifies
 that the Windows service definition still matches the current `NodeExe`,
-`AppDirectory`, `StartCommand`, and `NodeArguments`, and that the scheduled task
-action points at this kit's health-check script and the current deployment
-config path. The configured port must be owned by the configured service process
-tree, which helps distinguish a proper service deployment from a manually
-started `node.exe`.
+`AppDirectory`, `StartCommand`, and `NodeArguments`. For the scheduled task it
+verifies the principal and run level, explicit PowerShell path, working
+directory, protected script/config paths, script hash, minimal config contents,
+and ACL trust boundary. The configured port must be owned by the configured
+service process tree, which helps distinguish a proper service deployment from
+a manually started `node.exe`.
 
 Use `-JsonPath` when you need auditable post-deploy evidence. The JSON output
 contains the verdict, counts, safe health URL, port ownership proof,
@@ -109,8 +147,9 @@ For long-running confidence after days of uptime, check these signals together:
 | Service uptime | Meets your expected runtime window, for example 72 hours |
 | Port ownership | Configured port is owned by the service process tree |
 | HTTP health | 2xx/3xx response inside the configured timeout |
-| Scheduled task | Recent successful run and no missed runs |
-| Health state | Recent `LastSuccess`, zero consecutive failures |
+| Scheduled task | Correct protected action/principal, recent successful run, no missed runs |
+| Health task trust | Managed script/config hashes and ACL checks pass |
+| Protected health state | Recent `LastSuccess`, zero consecutive failures |
 | Health log summary | No recent restart loops or repeated failures |
 
 ## Linux

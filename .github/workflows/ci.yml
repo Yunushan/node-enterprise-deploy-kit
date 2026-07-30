@@ -4,14 +4,17 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   basic-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Install CI tooling
@@ -36,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Release evidence self-tests
         shell: pwsh
         run: |
@@ -67,9 +70,9 @@ jobs:
           - windows-2022
           - windows-2025
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Windows repository verification
@@ -99,7 +102,7 @@ jobs:
           - openbsd
           - netbsd
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Platform family mapping
         shell: bash
         run: bash scripts/dev/test-platform-matrix.sh --case "${{ matrix.platform }}"
@@ -125,7 +128,7 @@ jobs:
           - fedora
           - alpine
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Linux container Unix/Next.js smoke
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}"
@@ -153,7 +156,7 @@ jobs:
           - fedora
           - alpine
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Linux container real Next.js package/runtime integration
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform "${{ matrix.platform }}" --real-nextjs
@@ -173,7 +176,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install, run, and remove a real Next.js System V service
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --systemv-service-integration
@@ -201,7 +204,7 @@ jobs:
           - haproxy
           - traefik
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js System V service through a reverse proxy
         shell: bash
         run: |
@@ -226,7 +229,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install, run, and remove a real Next.js OpenRC service
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform alpine --real-nextjs --openrc-service-integration
@@ -254,7 +257,7 @@ jobs:
           - haproxy
           - traefik
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js OpenRC service through a reverse proxy
         shell: bash
         run: |
@@ -279,7 +282,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js package through Apache
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --apache-proxy-integration
@@ -299,7 +302,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js package through Nginx
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --nginx-proxy-integration
@@ -319,7 +322,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js package through HAProxy
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --haproxy-integration
@@ -339,7 +342,7 @@ jobs:
     env:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-container-integration-result.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run a real Next.js package through Traefik
         shell: bash
         run: bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs --traefik-proxy-integration
@@ -360,9 +363,9 @@ jobs:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
       NEXTJS_INTEGRATION_TARGET: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Install Nginx
@@ -384,9 +387,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: macOS Unix/Next.js verification
@@ -413,9 +416,9 @@ jobs:
           - windows-2025
           - macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Build, package, and run a real Next.js application
@@ -441,9 +444,9 @@ jobs:
           - windows-2022
           - windows-2025
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Build, package, and run real Next.js through WinSW
@@ -476,9 +479,9 @@ jobs:
           - winsw
           - nssm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Install IIS and reverse-proxy dependencies
@@ -525,7 +528,7 @@ jobs:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
       NEXTJS_INTEGRATION_TARGET: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Build, package, and run real Next.js through launchd
         shell: bash
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_WORKFLOW="$GITHUB_WORKFLOW" GITHUB_JOB="$GITHUB_JOB" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" NEXTJS_INTEGRATION_TARGET="$NEXTJS_INTEGRATION_TARGET" NEXTJS_INTEGRATION_RESULT_PATH="$NEXTJS_INTEGRATION_RESULT_PATH" RUN_LAUNCHD_SERVICE_INTEGRATION=true "$(command -v node)" scripts/dev/test-real-nextjs-integration.mjs
@@ -546,9 +549,9 @@ jobs:
       NEXTJS_INTEGRATION_RESULT_PATH: .tmp/nextjs-integration-result.json
       NEXTJS_INTEGRATION_TARGET: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Install Nginx
@@ -584,9 +587,9 @@ jobs:
           - proxy: traefik
             package: traefik
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Install reverse proxy
@@ -634,14 +637,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - name: Download hosted Next.js integration results
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: '*nextjs*'
           path: .tmp/nextjs-integration-artifacts
@@ -660,7 +663,7 @@ jobs:
         run: node scripts/dev/New-NextJsIntegrationSummary.mjs --validate-summary .tmp/nextjs-integration-summary/nextjs-integration-summary.json
       - name: Upload Next.js integration summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nextjs-integration-summary
           path: .tmp/nextjs-integration-summary

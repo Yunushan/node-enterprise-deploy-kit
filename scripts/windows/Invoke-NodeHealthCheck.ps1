@@ -12,10 +12,71 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     throw "Config not found: $ConfigPath"
 }
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$expectedSchema = "node-enterprise-deploy-kit/windows-health-monitor/v1"
+$allowedProperties = @(
+    "Schema",
+    "AppName",
+    "HealthUrl",
+    "LogDirectory",
+    "BackupDirectory",
+    "HealthCheckFailureThreshold",
+    "HealthCheckRestartCooldownMinutes",
+    "HealthCheckTimeoutSeconds",
+    "LogRetentionDays",
+    "BackupRetentionDays",
+    "DiagnosticRetentionDays"
+)
+if ([string]$config.Schema -ne $expectedSchema) {
+    throw "Health monitor config schema is missing or unsupported. Re-register the managed health-check task."
+}
+foreach ($property in @($config.PSObject.Properties)) {
+    if ([string]$property.Name -notin $allowedProperties) {
+        throw "Health monitor config contains an unsupported property. Re-register the managed health-check task."
+    }
+}
+foreach ($required in @("AppName", "HealthUrl", "LogDirectory", "BackupDirectory")) {
+    if (-not $config.PSObject.Properties[$required] -or [string]::IsNullOrWhiteSpace([string]$config.$required)) {
+        throw "Health monitor config is missing a required operational property. Re-register the managed health-check task."
+    }
+}
+if ([string]$config.AppName -notmatch '^[A-Za-z0-9_.-]+$') {
+    throw "Health monitor AppName is invalid."
+}
+$healthUri = [Uri]$config.HealthUrl
+if ($healthUri.Scheme -notin @("http", "https") -or -not $healthUri.IsLoopback -or -not [string]::IsNullOrWhiteSpace($healthUri.UserInfo) -or -not [string]::IsNullOrWhiteSpace($healthUri.Query) -or -not [string]::IsNullOrWhiteSpace($healthUri.Fragment)) {
+    throw "Health monitor HealthUrl must be a loopback HTTP(S) URL without credentials, query text, or a fragment."
+}
+foreach ($pathProperty in @("LogDirectory", "BackupDirectory")) {
+    if (-not [System.IO.Path]::IsPathRooted([string]$config.$pathProperty)) {
+        throw "Health monitor $pathProperty must be an absolute path."
+    }
+}
+$healthStateDirectory = Split-Path -Parent $ConfigPath
+if ([string]::IsNullOrWhiteSpace($healthStateDirectory) -or -not (Test-Path -LiteralPath $healthStateDirectory -PathType Container)) {
+    throw "Protected health monitor state directory was not found. Re-register the managed health-check task."
+}
 New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
-$logFile = Join-Path $config.LogDirectory "healthcheck.log"
-$stateFile = Join-Path $config.LogDirectory "healthcheck.state.json"
-function Write-HealthLog([string]$Message) { "$(Get-Date -Format o) $Message" | Out-File $logFile -Append -Encoding UTF8 }
+$logFile = Join-Path $healthStateDirectory "healthcheck.log"
+$stateFile = Join-Path $healthStateDirectory "healthcheck.state.json"
+$healthLogMaxBytes = 10MB
+$healthLogFileCount = 5
+function Rotate-HealthLogIfNeeded {
+    if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { return }
+    if ((Get-Item -LiteralPath $logFile).Length -lt $healthLogMaxBytes) { return }
+    $oldest = "$logFile.$healthLogFileCount"
+    Remove-Item -LiteralPath $oldest -Force -ErrorAction SilentlyContinue
+    for ($index = $healthLogFileCount - 1; $index -ge 1; $index--) {
+        $source = "$logFile.$index"
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            Move-Item -LiteralPath $source -Destination "$logFile.$($index + 1)" -Force
+        }
+    }
+    Move-Item -LiteralPath $logFile -Destination "$logFile.1" -Force
+}
+function Write-HealthLog([string]$Message) {
+    Rotate-HealthLogIfNeeded
+    "$(Get-Date -Format o) $Message" | Out-File $logFile -Append -Encoding UTF8
+}
 function Get-ConfigInt($Config, [string]$Name, [int]$Default, [int]$Minimum) {
     if ($Config.PSObject.Properties[$Name] -and $Config.$Name) {
         try { return [Math]::Max($Minimum, [int]$Config.$Name) } catch {}
@@ -38,10 +99,18 @@ function Remove-OldFiles {
         [string[]]$Include = @("*")
     )
 
-    if ($RetentionDays -lt 1 -or [string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path $Path)) { return }
+    if ($RetentionDays -lt 1 -or [string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    $directory = Get-Item -LiteralPath $Path -Force
+    if (($directory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-HealthLog "RETENTION_SKIPPED_REPARSE_POINT path='$Path'"
+        return
+    }
     $cutoff = (Get-Date).AddDays(-1 * $RetentionDays)
-    Get-ChildItem -Path $Path -File -Include $Include -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -lt $cutoff } |
+    Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $fileName = $_.Name
+            $_.LastWriteTime -lt $cutoff -and @($Include | Where-Object { $fileName -like $_ }).Count -gt 0
+        } |
         ForEach-Object {
             try {
                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
@@ -89,7 +158,13 @@ function Read-HealthState {
     }
 }
 function Write-HealthState($State) {
-    $State | ConvertTo-Json -Depth 5 | Set-Content -Path $stateFile -Encoding UTF8
+    $temporaryStateFile = "$stateFile.$PID.tmp"
+    try {
+        $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryStateFile -Encoding UTF8
+        Move-Item -LiteralPath $temporaryStateFile -Destination $stateFile -Force
+    } finally {
+        Remove-Item -LiteralPath $temporaryStateFile -Force -ErrorAction SilentlyContinue
+    }
 }
 function Reset-HealthState {
     param([switch]$MarkSuccess)
@@ -161,7 +236,7 @@ try {
         Reset-HealthState
         exit 2
     }
-    $response = Invoke-WebRequest -Uri $config.HealthUrl -UseBasicParsing -TimeoutSec $timeoutSeconds
+    $response = Invoke-WebRequest -Uri $config.HealthUrl -UseBasicParsing -TimeoutSec $timeoutSeconds -MaximumRedirection 0
     if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
         Write-HealthLog "OK status=$($response.StatusCode) url=$($config.HealthUrl)"
         Reset-HealthState -MarkSuccess

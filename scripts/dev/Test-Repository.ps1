@@ -511,6 +511,10 @@ function Test-DocsConsistency {
   & (Join-Path $ScriptDir "Test-DocsConsistency.ps1")
 }
 
+function Test-GitHubActionsSecurity {
+  & (Join-Path $ScriptDir "Test-GitHubActionsSecurity.ps1")
+}
+
 Test-PowerShellSyntax
 Test-LineEndings
 Test-ShellSyntax
@@ -544,6 +548,7 @@ Test-SupportClaimSelfTest
 Test-SupportEvidencePlanSelfTest
 Test-HeavyReleaseEvidenceSelfTests
 Test-DocsConsistency
+Test-GitHubActionsSecurity
 Test-NoObviousSecrets
 Test-GitDiffCheck
 

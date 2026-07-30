@@ -377,6 +377,9 @@ function Assert-WindowsStaticIisRouting {
       'web.config contains an unsupported <rewrite> section',
       'managedRuntimeVersion -Value ""',
       'Restart-StaticIisTarget',
+      'Restore-StaticSiteContent',
+      'Restore-StaticIisDeploymentSnapshot',
+      'Assert-StaticIisTargetReady',
       'Static IIS deployment finished'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Install-IISStaticSite.ps1" -ExpectedText $expected
@@ -465,12 +468,12 @@ function Assert-WindowsServiceEnvironmentContract {
 
   foreach ($expected in @(
       "This installer supports ServiceManager='nssm'",
-      '& $nssm install $config.AppName $config.NodeExe',
-      '& $nssm set $config.AppName AppDirectory $config.AppDirectory',
-      '& $nssm set $config.AppName AppParameters "$($config.StartCommand) $($config.NodeArguments)"',
-      '& $nssm set $config.AppName AppEnvironmentExtra @environmentEntries',
-      'sc.exe config $config.AppName start= auto',
-      'sc.exe failure $config.AppName reset= 86400 actions= restart/60000/restart/60000/restart/300000'
+      'Invoke-CheckedNativeCommand $nssm @("install", $config.AppName, [string]$config.NodeExe) "NSSM install"',
+      'Invoke-CheckedNativeCommand $nssm @("set", $config.AppName, "AppDirectory", [string]$config.AppDirectory) "NSSM AppDirectory"',
+      'Invoke-CheckedNativeCommand $nssm @("set", $config.AppName, "AppParameters", "$($config.StartCommand) $($config.NodeArguments)") "NSSM AppParameters"',
+      'Invoke-CheckedNativeCommand $nssm (@("set", $config.AppName, "AppEnvironmentExtra") + $environmentEntries) "NSSM environment"',
+      'Invoke-CheckedNativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set NSSM startup mode"',
+      'Invoke-CheckedNativeCommand "sc.exe" @("failure", $config.AppName, "reset=", "86400", "actions=", "restart/60000/restart/60000/restart/300000") "Set NSSM recovery actions"'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Install-NSSMService.ps1" -ExpectedText $expected
   }
@@ -480,7 +483,7 @@ function Assert-WindowsServiceEnvironmentContract {
       'script = [string]$Config.StartCommand',
       'interpreter = [string]$Config.NodeExe',
       'args = Get-ConfigString $Config "NodeArguments" ""',
-      'pm2 start $ecosystemPath --only $config.AppName --update-env',
+      'Invoke-CheckedPm2Command $pm2CommandName @("start", $ecosystemPath, "--only", $config.AppName, "--update-env") "PM2 start"',
       'PM2 fallback selected. For Windows enterprise production, WinSW is recommended.'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Install-PM2Fallback.ps1" -ExpectedText $expected
@@ -553,7 +556,7 @@ function Assert-WindowsStatusEvidenceContract {
 }
 
 function Assert-WindowsHealthCheckTaskContract {
-  Write-Step "Windows health-check task config path contract"
+  Write-Step "Windows protected health-check task contract"
 
   foreach ($script in @(
       "scripts/windows/Register-HealthCheckTask.ps1",
@@ -566,29 +569,118 @@ function Assert-WindowsHealthCheckTaskContract {
     Assert-FileDoesNotContainText -Path $script -UnexpectedText 'Get-Content $ConfigPath -Raw'
   }
 
-  Assert-FileContainsText -Path "scripts/windows/Register-HealthCheckTask.ps1" -ExpectedText '-ConfigPath `"$ConfigPath`"'
+  foreach ($expected in @(
+      'node-enterprise-deploy-kit\healthchecks',
+      'health-monitor.config.json',
+      'Initialize-ProtectedTaskDirectories $taskDirectory',
+      'Set-ProtectedDirectoryAcl',
+      'Set-ProtectedFileAcl',
+      '-ConfigPath `"$deployedConfigPath`"',
+      'New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest',
+      'System32\WindowsPowerShell\v1.0\powershell.exe',
+      '-WorkingDirectory $taskDirectory',
+      '$taskExisted -and -not [string]::IsNullOrWhiteSpace($existingTaskXml)'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Register-HealthCheckTask.ps1" -ExpectedText $expected
+  }
+  Assert-FileDoesNotContainText -Path "scripts/windows/Register-HealthCheckTask.ps1" -UnexpectedText '-ConfigPath `"$ConfigPath`"'
+
+  foreach ($expected in @(
+      '$healthStateDirectory = Split-Path -Parent $ConfigPath',
+      '$logFile = Join-Path $healthStateDirectory "healthcheck.log"',
+      '$stateFile = Join-Path $healthStateDirectory "healthcheck.state.json"',
+      'Rotate-HealthLogIfNeeded',
+      'RETENTION_SKIPPED_REPARSE_POINT',
+      'Get-ChildItem -LiteralPath $Path -File',
+      '-MaximumRedirection 0'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Invoke-NodeHealthCheck.ps1" -ExpectedText $expected
+  }
 
   foreach ($expected in @(
       'TaskActionChecked',
+      'TaskPrincipalChecked',
+      'TaskRunsAsSystem',
+      'TaskRunLevelHighest',
+      'TaskActionUsesSystemPowerShell',
+      'TaskActionUsesWorkingDirectory',
       'TaskActionUsesHealthCheckScript',
       'TaskActionUsesConfigPath',
+      'TaskScriptHashMatchesSource',
+      'TaskConfigMatchesDeployment',
+      'TaskFilesAclProtected',
       'Get-CommandArgumentValue -Arguments $taskArguments -Name "File"',
       'Get-CommandArgumentValue -Arguments $taskArguments -Name "ConfigPath"',
-      'Health check scheduled task action does not run this kit''s Invoke-NodeHealthCheck.ps1 script.',
-      'Health check scheduled task action does not use the current deployment config path.'
+      'Health check scheduled task action does not run the protected managed Invoke-NodeHealthCheck.ps1 copy.',
+      'Health check scheduled task action does not use the protected minimal monitor config.',
+      'Health-task files or parent directories allow an untrusted identity to write, or ACL verification failed.'
     )) {
     Assert-FileContainsText -Path "status.ps1" -ExpectedText $expected
   }
 
   foreach ($expected in @(
       'TaskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked")',
+      'TaskPrincipalChecked = Get-BooleanValue -Object $monitor -Names @("TaskPrincipalChecked", "taskPrincipalChecked")',
+      'TaskRunsAsSystem = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsSystem", "taskRunsAsSystem")',
+      'TaskRunLevelHighest = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelHighest", "taskRunLevelHighest")',
+      'TaskActionUsesSystemPowerShell = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesSystemPowerShell", "taskActionUsesSystemPowerShell")',
+      'TaskActionUsesWorkingDirectory = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesWorkingDirectory", "taskActionUsesWorkingDirectory")',
       'TaskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript")',
       'TaskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath")',
+      'TaskScriptHashMatchesSource = Get-BooleanValue -Object $monitor -Names @("TaskScriptHashMatchesSource", "taskScriptHashMatchesSource")',
+      'TaskConfigMatchesDeployment = Get-BooleanValue -Object $monitor -Names @("TaskConfigMatchesDeployment", "taskConfigMatchesDeployment")',
+      'TaskFilesAclProtected = Get-BooleanValue -Object $monitor -Names @("TaskFilesAclProtected", "taskFilesAclProtected")',
       'does not prove the Windows health check scheduled task action was checked',
-      'does not prove the Windows health check scheduled task runs this kit''s health-check script',
-      'does not prove the Windows health check scheduled task uses the current config path'
+      'does not prove the Windows health check scheduled task runs the protected managed health-check script',
+      'does not prove the Windows health check scheduled task uses the protected minimal monitor config',
+      'does not prove the Windows health task files are protected from untrusted writes'
     )) {
     Assert-FileContainsText -Path "scripts/dev/Test-HostEvidence.ps1" -ExpectedText $expected
+  }
+
+  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-health-task-contract-" + [Guid]::NewGuid().ToString("N"))
+  try {
+    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+    $configPath = Join-Path $tempRoot "deployment.json"
+    $privateSentinel = "<do-not-emit>"
+    $renderConfig = [ordered]@{
+      AppName = "HealthTaskContract"
+      HealthUrl = "http://127.0.0.1:39171/health"
+      LogDirectory = (Join-Path $tempRoot "logs")
+      ServiceDirectory = (Join-Path $tempRoot "service")
+      BackupDirectory = (Join-Path $tempRoot "backups")
+      Environment = @{ API_TOKEN = $privateSentinel }
+      PreparationEnvironment = @{ NPM_TOKEN = $privateSentinel }
+      ServiceAccountPassword = $privateSentinel
+    }
+    $renderConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
+    $renderedText = (& (Resolve-RepoFile "scripts/windows/Register-HealthCheckTask.ps1") -ConfigPath $configPath -RenderMonitorConfigOnly | Out-String)
+    $rendered = $renderedText | ConvertFrom-Json
+    $expectedProperties = @(
+      "AppName", "BackupDirectory", "BackupRetentionDays", "DiagnosticRetentionDays",
+      "HealthCheckFailureThreshold", "HealthCheckRestartCooldownMinutes", "HealthCheckTimeoutSeconds",
+      "HealthUrl", "LogDirectory", "LogRetentionDays", "Schema"
+    ) | Sort-Object
+    $actualProperties = @($rendered.PSObject.Properties.Name | Sort-Object)
+    if (@(Compare-Object -ReferenceObject $expectedProperties -DifferenceObject $actualProperties).Count -ne 0) {
+      throw "Managed health monitor config must contain only the allowlisted operational properties."
+    }
+    if ($renderedText.Contains($privateSentinel)) {
+      throw "Managed health monitor config leaked a private deployment value."
+    }
+    if ([string]$rendered.Schema -ne "node-enterprise-deploy-kit/windows-health-monitor/v1") {
+      throw "Managed health monitor config schema is incorrect."
+    }
+  } finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  foreach ($expected in @(
+      'function Get-HealthTaskDirectory',
+      'Refusing to remove a managed health-task directory that is a reparse point',
+      'Remove-ManagedHealthTaskDirectory $config'
+    )) {
+    Assert-FileContainsText -Path "scripts/windows/Uninstall-NodeService.ps1" -ExpectedText $expected
   }
 }
 
@@ -630,9 +722,12 @@ function Assert-WindowsLatestReleaseHelperContract {
       'function Get-DefaultGeneratedConfigPath',
       'if (Get-ConfigBool $Config "TlsEnabled" $false) { return "https" }',
       '$defaultPort = if ($tlsEnabled) { 443 } else { 80 }',
-      'Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.json"',
-      'Generated config is retained because the Windows health-check task uses it.',
+      'Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.$nonce.json"',
+      'GeneratedConfigPath must not be the source deployment config path.',
+      'Refusing to overwrite an existing generated config path:',
+      'Generated config is temporary unless -KeepGeneratedConfig is specified.',
       'Generated config retained:',
+      'Removed temporary generated config:',
       '$protocol = Get-IisPublicProtocol $Config',
       '$publicPort = Get-IisPublicPort $Config',
       'Where-Object { $_.protocol -eq $protocol -and $_.bindingInformation -like "*:${publicPort}:*" }',
@@ -642,7 +737,8 @@ function Assert-WindowsLatestReleaseHelperContract {
     )) {
     Assert-FileContainsText -Path "scripts/windows/Deploy-LatestRelease.ps1" -ExpectedText $expected
   }
-  Assert-FileDoesNotContainText -Path "scripts/windows/Deploy-LatestRelease.ps1" -UnexpectedText 'Remove-Item -LiteralPath $GeneratedConfigPath'
+  Assert-FileContainsText -Path "scripts/windows/Deploy-LatestRelease.ps1" -ExpectedText 'Remove-Item -LiteralPath $GeneratedConfigPath -Force'
+  Assert-FileDoesNotContainText -Path "scripts/windows/Invoke-NodeHealthCheck.ps1" -UnexpectedText 'Get-ChildItem -Path $Path -File -Include $Include -Recurse'
 }
 
 function Assert-WindowsExampleConfigContract {
@@ -685,6 +781,307 @@ function Assert-WindowsExampleConfigContract {
   Assert-FileContainsText -Path "ansible/roles/windows_node_service/templates/app.config.json.j2" -ExpectedText $PinnedWinSWSha256
 }
 
+function Assert-WindowsPackageLifecycleRecovery {
+  Write-Step "Windows package lifecycle recovery"
+
+  $tempRoot = Join-Path $RepoRoot ".tmp\windows-package-lifecycle"
+  $sourceRoot = Join-Path $tempRoot "source"
+  $appDirectory = Join-Path $tempRoot "app"
+  $backupDirectory = Join-Path $tempRoot "backups"
+  if (Test-Path -LiteralPath $tempRoot) {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $sourceRoot, $appDirectory | Out-Null
+  Write-TestTextFile -Path (Join-Path $sourceRoot "new-release.txt") -Content "new release"
+  Write-TestTextFile -Path (Join-Path $appDirectory "active-release.txt") -Content "active release"
+
+  $global:NodeDeployMockServiceStatus = "Running"
+  $global:NodeDeployMockPm2Status = "online"
+  $global:NodeDeployMockPm2Exists = $true
+  try {
+    function Get-Service {
+      [CmdletBinding()]
+      param([string]$Name)
+      return [pscustomobject]@{ Status = $global:NodeDeployMockServiceStatus }
+    }
+    function Stop-Service {
+      [CmdletBinding()]
+      param([string]$Name, [switch]$Force)
+      $global:NodeDeployMockServiceStatus = "Stopped"
+    }
+    function Start-Service {
+      [CmdletBinding()]
+      param([string]$Name)
+      $global:NodeDeployMockServiceStatus = "Running"
+    }
+    function pm2 {
+      param([Parameter(ValueFromRemainingArguments=$true)] [object[]]$CommandArgs)
+      switch ([string]$CommandArgs[0]) {
+        "jlist" {
+          $global:LASTEXITCODE = 0
+          if ($global:NodeDeployMockPm2Exists) {
+            return ('[{"name":"ExamplePm2","pm2_env":{"status":"' + $global:NodeDeployMockPm2Status + '"}}]')
+          }
+          return '[]'
+        }
+        "stop" {
+          $global:NodeDeployMockPm2Status = "stopped"
+          $global:LASTEXITCODE = 0
+        }
+        "restart" {
+          $global:NodeDeployMockPm2Exists = $true
+          $global:NodeDeployMockPm2Status = "online"
+          $global:LASTEXITCODE = 0
+        }
+        "delete" {
+          $global:NodeDeployMockPm2Exists = $false
+          $global:NodeDeployMockPm2Status = "stopped"
+          $global:LASTEXITCODE = 0
+        }
+        "save" { $global:LASTEXITCODE = 0 }
+        default { $global:LASTEXITCODE = 1 }
+      }
+    }
+
+    . (Join-Path $RepoRoot "scripts\windows\AppPackageLifecycle.ps1")
+
+    $serviceConfig = [pscustomobject]@{
+      AppName = "ExampleService"
+      AppDirectory = $appDirectory
+      DeploymentMode = "service"
+      ServiceManager = "winsw"
+    }
+    $serviceState = Get-AppPackageServiceState -Config $serviceConfig
+    Stop-AppPackageService -State $serviceState
+    if ($global:NodeDeployMockServiceStatus -ne "Stopped") {
+      throw "Windows package lifecycle did not stop the previously running service."
+    }
+
+    $replacementFailed = $false
+    try {
+      Invoke-AppPackageDirectoryReplacement `
+        -SourceRoot $sourceRoot `
+        -AppDirectory $appDirectory `
+        -BackupDirectory $backupDirectory `
+        -WriteManifest { throw "simulated manifest failure" } | Out-Null
+    }
+    catch {
+      $replacementFailed = ($_.Exception.Message -match "simulated manifest failure")
+    }
+    if (-not $replacementFailed) {
+      throw "Windows package lifecycle should surface the simulated manifest failure."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $appDirectory "active-release.txt") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $appDirectory "new-release.txt") -PathType Leaf)) {
+      throw "Windows package lifecycle did not restore the previous AppDirectory after replacement failure."
+    }
+    Start-AppPackageServiceAfterFailure -State $serviceState
+    if ($global:NodeDeployMockServiceStatus -ne "Running") {
+      throw "Windows package lifecycle did not restart the previous service after rollback."
+    }
+
+    $serviceState = Get-AppPackageServiceState -Config $serviceConfig
+    Stop-AppPackageService -State $serviceState
+    $successfulBackupPath = Invoke-AppPackageDirectoryReplacement `
+      -SourceRoot $sourceRoot `
+      -AppDirectory $appDirectory `
+      -BackupDirectory $backupDirectory `
+      -WriteManifest { }
+    $global:NodeDeployMockServiceStatus = "Running"
+    $transactionState = [pscustomobject]@{
+      Schema = "node-enterprise-deploy-kit/package-transaction/v1"
+      AppName = "ExampleService"
+      AppDirectory = $appDirectory
+      BackupPath = $successfulBackupPath
+      PreviousAppExisted = $true
+      ServiceKind = "windows-service"
+      ServiceName = "ExampleService"
+      ServiceCommandName = ""
+      ServiceExisted = $true
+      ServiceWasRunning = $true
+    }
+    Invoke-AppPackageDeploymentRollback -Config $serviceConfig -TransactionState $transactionState
+    if (-not (Test-Path -LiteralPath (Join-Path $appDirectory "active-release.txt") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $appDirectory "new-release.txt") -PathType Leaf)) {
+      throw "Windows downstream-failure rollback did not restore the previous AppDirectory."
+    }
+    if ($global:NodeDeployMockServiceStatus -ne "Running") {
+      throw "Windows downstream-failure rollback did not restore the previous running service state."
+    }
+
+    $pm2AppDirectory = Join-Path $tempRoot "pm2-app"
+    New-Item -ItemType Directory -Force -Path $pm2AppDirectory | Out-Null
+    Write-TestTextFile -Path (Join-Path $pm2AppDirectory "failed-release.txt") -Content "failed release"
+    $pm2Config = [pscustomobject]@{
+      AppName = "ExamplePm2"
+      AppDirectory = $pm2AppDirectory
+      DeploymentMode = "service"
+      ServiceManager = "pm2"
+    }
+    $pm2State = Get-AppPackageServiceState -Config $pm2Config
+    Stop-AppPackageService -State $pm2State
+    if ($global:NodeDeployMockPm2Status -ne "stopped") {
+      throw "Windows package lifecycle did not stop the PM2 app."
+    }
+    Start-AppPackageServiceAfterFailure -State $pm2State
+    if ($global:NodeDeployMockPm2Status -ne "online") {
+      throw "Windows package lifecycle did not restart the PM2 app after failure."
+    }
+
+    $newPm2Transaction = [pscustomobject]@{
+      Schema = "node-enterprise-deploy-kit/package-transaction/v1"
+      AppName = "ExamplePm2"
+      AppDirectory = $pm2AppDirectory
+      BackupPath = ""
+      PreviousAppExisted = $false
+      ServiceKind = "pm2"
+      ServiceName = "ExamplePm2"
+      ServiceCommandName = "pm2"
+      ServiceExisted = $false
+      ServiceWasRunning = $false
+    }
+    Invoke-AppPackageDeploymentRollback -Config $pm2Config -TransactionState $newPm2Transaction
+    if (Test-Path -LiteralPath $pm2AppDirectory) {
+      throw "Windows first-deployment rollback did not remove the failed AppDirectory."
+    }
+    if ($global:NodeDeployMockPm2Exists) {
+      throw "Windows first-deployment rollback did not remove the newly created PM2 app."
+    }
+
+    New-Item -ItemType Directory -Force -Path $pm2AppDirectory | Out-Null
+    Write-TestTextFile -Path (Join-Path $pm2AppDirectory "keep.txt") -Content "keep"
+    $invalidTransaction = $newPm2Transaction | Select-Object *
+    $invalidTransaction.PreviousAppExisted = "false"
+    $invalidRejected = $false
+    try {
+      Invoke-AppPackageDeploymentRollback -Config $pm2Config -TransactionState $invalidTransaction
+    }
+    catch {
+      $invalidRejected = ($_.Exception.Message -match "must be a JSON boolean")
+    }
+    if (-not $invalidRejected -or -not (Test-Path -LiteralPath (Join-Path $pm2AppDirectory "keep.txt") -PathType Leaf)) {
+      throw "Windows transaction validation did not fail before changing AppDirectory."
+    }
+
+    foreach ($expected in @(
+        'TransactionStatePath = $packageTransactionStatePath',
+        'Invoke-AppPackageDeploymentRollback -Config $config -TransactionState $transactionState',
+        'Package rollback also failed',
+        '$preservePackageTransactionState = $true',
+        'Recovery state preserved at: $packageTransactionStatePath'
+      )) {
+      Assert-FileContainsText -Path "deploy.ps1" -ExpectedText $expected
+    }
+  }
+  finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Variable -Name NodeDeployMockServiceStatus -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name NodeDeployMockPm2Status -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name NodeDeployMockPm2Exists -Scope Global -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-WindowsPostDeployHealthContract {
+  Write-Step "Windows post-deploy health gate"
+
+  . (Join-Path $RepoRoot "scripts\windows\PostDeployHealth.ps1")
+  $config = [pscustomobject]@{
+    HealthUrl = "http://127.0.0.1:39999/health"
+    RequirePostDeployHealthCheck = $true
+    PostDeployHealthAttempts = 3
+    PostDeployHealthDelaySeconds = 0
+    HealthCheckTimeoutSeconds = 1
+  }
+
+  $retryState = [pscustomobject]@{ Count = 0 }
+  $retryProbe = {
+    param([Uri]$Uri, [int]$TimeoutSeconds)
+    $retryState.Count++
+    if ($retryState.Count -eq 1) { return [pscustomobject]@{ StatusCode = 503 } }
+    return [pscustomobject]@{ StatusCode = 204 }
+  }.GetNewClosure()
+  Test-PostDeployHealth -Config $config -Probe $retryProbe
+  if ($retryState.Count -ne 2) {
+    throw "Post-deploy health gate did not retry a non-2xx response before succeeding."
+  }
+
+  $failureConfig = $config | Select-Object *
+  $failureConfig.PostDeployHealthAttempts = 2
+  $failureCaught = $false
+  try {
+    Test-PostDeployHealth -Config $failureConfig -Probe { return [pscustomobject]@{ StatusCode = 302 } }
+  }
+  catch {
+    $failureCaught = $_.Exception.Message -match "failed after 2 attempt"
+  }
+  if (-not $failureCaught) {
+    throw "Post-deploy health gate must reject redirects and fail after the configured attempts."
+  }
+
+  $disabledConfig = $config | Select-Object *
+  $disabledConfig.RequirePostDeployHealthCheck = $false
+  Test-PostDeployHealth -Config $disabledConfig -Probe { throw "disabled probe should not run" }
+
+  foreach ($expected in @(
+      @{ Path = "scripts\windows\Install-NodeService.ps1"; Text = "Test-PostDeployHealth -Config `$config" },
+      @{ Path = "scripts\windows\Install-NSSMService.ps1"; Text = "Invoke-CheckedNativeCommand" },
+      @{ Path = "scripts\windows\Install-NSSMService.ps1"; Text = "Test-PostDeployHealth -Config `$config" },
+      @{ Path = "scripts\windows\Install-PM2Fallback.ps1"; Text = "Invoke-CheckedPm2Command" },
+      @{ Path = "scripts\windows\Install-PM2Fallback.ps1"; Text = "Test-PostDeployHealth -Config `$config" }
+    )) {
+    Assert-FileContainsText -Path $expected.Path -ExpectedText $expected.Text
+  }
+}
+
+function Assert-WindowsDeploymentLockContract {
+  Write-Step "Windows deployment concurrency lock"
+
+  . (Join-Path $RepoRoot "scripts\windows\DeploymentLock.ps1")
+  $tempRoot = Join-Path $RepoRoot ".tmp\windows-deployment-lock"
+  if (Test-Path -LiteralPath $tempRoot) {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+  $config = [pscustomobject]@{
+    AppName = "ExampleLock"
+    DeploymentLockDirectory = $tempRoot
+    DeploymentLockTimeoutSeconds = 0
+  }
+
+  $firstLock = $null
+  $secondLock = $null
+  try {
+    $firstLock = Enter-DeploymentLock -Config $config -SkipAclHardening
+    $contentionFailed = $false
+    try {
+      $secondLock = Enter-DeploymentLock -Config $config -SkipAclHardening
+    }
+    catch {
+      $contentionFailed = $_.Exception.Message -match "Another deployment is already active"
+    }
+    if (-not $contentionFailed) {
+      throw "A second Windows deployment acquired a lock that was already held."
+    }
+    Exit-DeploymentLock -Lock $firstLock
+    $firstLock = $null
+    $secondLock = Enter-DeploymentLock -Config $config -SkipAclHardening
+  }
+  finally {
+    Exit-DeploymentLock -Lock $firstLock
+    Exit-DeploymentLock -Lock $secondLock
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  foreach ($expected in @(
+      'scripts\windows\DeploymentLock.ps1',
+      'Enter-DeploymentLock -Config $config',
+      'finally {',
+      'Exit-DeploymentLock -Lock $deploymentLock'
+    )) {
+    Assert-FileContainsText -Path "deploy.ps1" -ExpectedText $expected
+  }
+}
+
 Assert-DeployRouting
 Assert-WindowsPm2FallbackPreflight
 Assert-WindowsReverseProxyRouting
@@ -696,6 +1093,9 @@ Assert-WindowsHealthCheckTaskContract
 Assert-WindowsSupportMatrixContract
 Assert-WindowsLatestReleaseHelperContract
 Assert-WindowsExampleConfigContract
+Assert-WindowsPackageLifecycleRecovery
+Assert-WindowsPostDeployHealthContract
+Assert-WindowsDeploymentLockContract
 
 Write-Host ""
 Write-Host "Windows service-manager checks OK"

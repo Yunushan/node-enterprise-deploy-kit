@@ -5,9 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
+# shellcheck source=scripts/linux/app-package-safety.sh
+source "$REPO_ROOT/scripts/linux/app-package-safety.sh"
+# shellcheck source=scripts/linux/app-package-lifecycle.sh
+source "$REPO_ROOT/scripts/linux/app-package-lifecycle.sh"
 
 CONFIG_FILE="${1:-config/linux/app.env}"
 PACKAGE_OVERRIDE="${2:-}"
+PACKAGE_EXPECTED_SHA256_OVERRIDE="${3:-}"
+PACKAGE_TRANSACTION_STATE_PATH="${4:-}"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 PACKAGE_PATH="${PACKAGE_OVERRIDE:-${PACKAGE_PATH:-}}"
@@ -37,6 +43,8 @@ APP_FRAMEWORK_NORMALIZED="$(normalize_name "${APP_FRAMEWORK:-node}")"
 NEXTJS_DEPLOYMENT_MODE_NORMALIZED="$(normalize_name "${NEXTJS_DEPLOYMENT_MODE:-standalone}")"
 REACT_DOCUMENT_ROOT_NORMALIZED="${REACT_DOCUMENT_ROOT:-build}"
 NEXTJS_REQUIRE_PACKAGE_PROVENANCE="${NEXTJS_REQUIRE_PACKAGE_PROVENANCE:-false}"
+REQUIRE_PACKAGE_SHA256="${REQUIRE_PACKAGE_SHA256:-true}"
+PACKAGE_EXPECTED_SHA256="${PACKAGE_EXPECTED_SHA256_OVERRIDE:-${PACKAGE_EXPECTED_SHA256:-}}"
 PACKAGE_PROVENANCE_FILE_NAME=".node-enterprise-package.json"
 PACKAGE_PROVENANCE_SCHEMA="node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 PACKAGE_PROVENANCE_SCHEMA_VALUE=""
@@ -46,6 +54,11 @@ PACKAGE_PROVENANCE_BUILD_LIBC=""
 PACKAGE_PROVENANCE_NODE_MODULE_ABI=""
 PACKAGE_PROVENANCE_NEXT_VERSION=""
 PACKAGE_PROVENANCE_NEXT_BUILD_ID=""
+
+if ! package_safety_load_policy; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
 
 safe_relative_path() {
   local path="${1//\\//}"
@@ -63,16 +76,38 @@ safe_relative_path() {
   return 0
 }
 
+canonical_archive_member_path() {
+  local path="${1//\\//}" part canonical=""
+  local -a parts
+  IFS='/' read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    [[ -z "$part" || "$part" == "." ]] && continue
+    canonical="${canonical:+$canonical/}$part"
+  done
+  printf '%s' "$canonical" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+
 validate_archive_member_paths() {
   local list_command=("$@")
-  local entry
+  local entry canonical duplicate entries_file="$work_root/archive-entry-names.txt"
+  : > "$entries_file"
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     if ! safe_relative_path "$entry"; then
       echo "Unsafe archive entry path detected: $entry" >&2
       exit 1
     fi
+    canonical="$(canonical_archive_member_path "$entry")"
+    [[ -z "$canonical" ]] && continue
+    printf '%s\n' "$canonical" >> "$entries_file"
   done < <("${list_command[@]}")
+
+  duplicate="$(LC_ALL=C awk 'seen[$0]++ == 1 { print; exit }' "$entries_file")"
+  rm -f -- "$entries_file"
+  if [[ -n "$duplicate" ]]; then
+    echo "Duplicate or case-colliding archive entry detected: $duplicate" >&2
+    exit 1
+  fi
 }
 
 validate_tar_has_no_links() {
@@ -87,6 +122,15 @@ validate_tar_has_no_links() {
         ;;
     esac
   done < <(tar -tvf "$archive_path")
+}
+
+validate_zip_has_no_special_entries() {
+  local archive_path="$1" unsafe_line
+  unsafe_line="$(LC_ALL=C unzip -Z -l "$archive_path" 2>/dev/null | awk '$1 ~ /^[bclps]/ { print; exit }')"
+  if [[ -n "$unsafe_line" ]]; then
+    echo "Unsafe zip entry type detected. Symlinks and special files are intentionally unsupported in deployment archives: $unsafe_line" >&2
+    exit 1
+  fi
 }
 
 validate_extracted_tree_has_no_links() {
@@ -284,28 +328,6 @@ validate_nextjs_package_provenance_if_needed() {
   echo "Next.js package provenance verified: $source_platform/$source_architecture/$source_libc"
 }
 
-stop_app_service_if_present() {
-  local manager
-  manager="$(normalize_name "$SERVICE_MANAGER")"
-  case "$manager" in
-    systemd)
-      if service_exists_systemd "$APP_NAME"; then systemctl stop "$APP_NAME" || true; fi
-      ;;
-    systemv|sysv|sysvinit|initd|init-d)
-      if command -v service >/dev/null 2>&1; then service "$APP_NAME" stop || true; elif [[ -x "/etc/init.d/$APP_NAME" ]]; then "/etc/init.d/$APP_NAME" stop || true; fi
-      ;;
-    openrc)
-      if command -v rc-service >/dev/null 2>&1; then rc-service "$APP_NAME" stop || true; fi
-      ;;
-    launchd)
-      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "system/${APP_NAME}" >/dev/null 2>&1 || true; fi
-      ;;
-    bsdrc|bsd-rc|rcd|rc.d)
-      if command -v service >/dev/null 2>&1; then service "$APP_NAME" stop || true; elif command -v rcctl >/dev/null 2>&1; then rcctl stop "$APP_NAME" || true; fi
-      ;;
-  esac
-}
-
 json_escape() {
   local value="${1:-}"
   value="${value//\\/\\\\}"
@@ -314,19 +336,6 @@ json_escape() {
   value="${value//$'\r'/\\r}"
   value="${value//$'\t'/\\t}"
   printf '%s' "$value"
-}
-
-package_sha256() {
-  local path="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$path" | awk '{ print tolower($1) }'
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$path" | awk '{ print tolower($1) }'
-  elif command -v openssl >/dev/null 2>&1; then
-    openssl dgst -sha256 -r "$path" | awk '{ print tolower($1) }'
-  else
-    echo ""
-  fi
 }
 
 next_build_id_from_app_dir() {
@@ -339,8 +348,8 @@ next_build_id_from_app_dir() {
 write_deployment_manifest() {
   local manifest_path package_name package_hash deployment_id next_build_id generated_at
   manifest_path="${APP_DIR%/}/.node-enterprise-deploy.json"
-  package_name="$(basename "$PACKAGE_PATH")"
-  package_hash="$(package_sha256 "$PACKAGE_PATH")"
+  package_name="$PACKAGE_ORIGINAL_NAME"
+  package_hash="$VERIFIED_PACKAGE_SHA256"
   deployment_id="${NEXT_DEPLOYMENT_ID:-${DEPLOYMENT_ID:-}}"
   next_build_id="$(next_build_id_from_app_dir 2>/dev/null || echo "")"
   generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -376,40 +385,94 @@ write_deployment_manifest() {
   echo "Deployment manifest written: $manifest_path"
 }
 
-safe_replace_app_dir() {
-  local source_root="$1" backup_path=""
-  if [[ -z "${APP_DIR:-}" || "$APP_DIR" != /* || "$APP_DIR" == "/" ]]; then
-    echo "APP_DIR must be a non-root absolute path before package import." >&2
-    exit 1
-  fi
-  if [[ "$BACKUP_DIR" == "$APP_DIR" || "$BACKUP_DIR" == "$APP_DIR"/* ]]; then
-    echo "BACKUP_DIR must not be inside APP_DIR when importing packages." >&2
-    exit 1
-  fi
-
-  mkdir -p "$BACKUP_DIR" "$(dirname "$APP_DIR")"
-  if [[ -e "$APP_DIR" ]]; then
-    backup_path="$BACKUP_DIR/app.$(timestamp_utc).$$.bak"
-    mv "$APP_DIR" "$backup_path"
-    echo "Backed up existing APP_DIR to: $backup_path"
-  fi
-
-  mkdir -p "$APP_DIR"
-  if ! (cd "$source_root" && tar -cf - .) | (cd "$APP_DIR" && tar -xf -); then
-    rm -rf -- "$APP_DIR"
-    if [[ -n "$backup_path" && -e "$backup_path" ]]; then
-      mv "$backup_path" "$APP_DIR"
-      echo "Restored previous APP_DIR after package import failure." >&2
-    fi
-    exit 1
-  fi
+write_package_transaction_state() {
+  local state_path="$1" temporary_path
+  [[ -n "$state_path" ]] || return 0
+  [[ "$state_path" == /* ]] || {
+    echo "Package transaction state path must be absolute." >&2
+    return 1
+  }
+  temporary_path="${state_path}.$$.tmp"
+  umask 077
+  mkdir -p "$(dirname "$state_path")"
+  {
+    printf '%s\n' "node-enterprise-deploy-kit/package-transaction/v2"
+    printf '%s\n' "$APP_DIR"
+    printf '%s\n' "$PACKAGE_APP_BACKUP_PATH"
+    if [[ -n "$PACKAGE_APP_BACKUP_PATH" ]]; then printf '%s\n' "true"; else printf '%s\n' "false"; fi
+    printf '%s\n' "$service_manager_normalized"
+    printf '%s\n' "$APP_NAME"
+    printf '%s\n' "$PACKAGE_APP_SERVICE_EXISTED"
+    printf '%s\n' "$PACKAGE_APP_SERVICE_WAS_RUNNING"
+  } > "$temporary_path"
+  chmod 0600 "$temporary_path"
+  mv -f -- "$temporary_path" "$state_path"
 }
 
-extract_root="$(mktemp -d)"
-cleanup() { rm -rf -- "$extract_root"; }
+PACKAGE_EXPECTED_SHA256="$(printf '%s' "$PACKAGE_EXPECTED_SHA256" | tr '[:upper:]' '[:lower:]')"
+case "$REQUIRE_PACKAGE_SHA256" in
+  true|TRUE|True|1|yes|YES|Yes) package_sha256_required="true" ;;
+  false|FALSE|False|0|no|NO|No) package_sha256_required="false" ;;
+  *)
+    echo "REQUIRE_PACKAGE_SHA256 must be true or false." >&2
+    exit 1
+    ;;
+esac
+if [[ "$package_sha256_required" == "true" && -z "$PACKAGE_EXPECTED_SHA256" ]]; then
+  echo "PACKAGE_EXPECTED_SHA256 is required when REQUIRE_PACKAGE_SHA256=true." >&2
+  exit 1
+fi
+if [[ -n "$PACKAGE_EXPECTED_SHA256" && ! "$PACKAGE_EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "PACKAGE_EXPECTED_SHA256 must contain exactly 64 hexadecimal characters." >&2
+  exit 1
+fi
+
+SOURCE_PACKAGE_PATH="$PACKAGE_PATH"
+PACKAGE_ORIGINAL_NAME="$(basename "$SOURCE_PACKAGE_PATH")"
+if [[ -z "${APP_DIR:-}" || "$APP_DIR" != /* || "$APP_DIR" == "/" ]]; then
+  echo "APP_DIR must be a non-root absolute path before package import." >&2
+  exit 1
+fi
+kind="$(archive_kind)"
+case "$kind" in
+  tar) require_command tar "Install tar before importing tar packages." ;;
+  zip) require_command unzip "Install unzip before importing zip packages on Linux/Unix." ;;
+esac
+if ! package_safety_inspect_archive "$kind" "$SOURCE_PACKAGE_PATH"; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
+if ! package_safety_assert_capacity "${TMPDIR:-/tmp}" "$APP_DIR" "$BACKUP_DIR" false; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
+
+work_root="$(mktemp -d)"
+extract_root="$work_root/extract"
+cleanup() { rm -rf -- "$work_root"; }
 trap cleanup EXIT
+mkdir -p "$extract_root"
+
+PACKAGE_PATH="$work_root/$PACKAGE_ORIGINAL_NAME"
+cp "$SOURCE_PACKAGE_PATH" "$PACKAGE_PATH"
+if ! VERIFIED_PACKAGE_SHA256="$(sha256_file "$PACKAGE_PATH")"; then
+  echo "Unable to calculate the application package SHA-256. Install sha256sum, shasum, or openssl." >&2
+  exit 1
+fi
+if [[ -n "$PACKAGE_EXPECTED_SHA256" && "$VERIFIED_PACKAGE_SHA256" != "$PACKAGE_EXPECTED_SHA256" ]]; then
+  echo "Application package SHA-256 does not match PACKAGE_EXPECTED_SHA256." >&2
+  exit 1
+fi
 
 kind="$(archive_kind)"
+if ! package_safety_inspect_archive "$kind" "$PACKAGE_PATH"; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
+if ! package_safety_assert_capacity "$work_root" "$APP_DIR" "$BACKUP_DIR" true; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
 validate_nextjs_package_if_needed
 validate_react_package_if_needed
 case "$kind" in
@@ -422,11 +485,16 @@ case "$kind" in
   zip)
     require_command unzip "Install unzip before importing zip packages on Linux/Unix."
     validate_archive_member_paths unzip -Z -1 "$PACKAGE_PATH"
+    validate_zip_has_no_special_entries "$PACKAGE_PATH"
     unzip -q "$PACKAGE_PATH" -d "$extract_root"
     ;;
 esac
 
 validate_extracted_tree_has_no_links "$extract_root"
+if ! package_safety_assert_extracted_tree "$extract_root"; then
+  echo "$PACKAGE_SAFETY_ERROR" >&2
+  exit 1
+fi
 
 source_root="$extract_root"
 if is_true "$PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR"; then
@@ -458,8 +526,41 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-stop_app_service_if_present
-safe_replace_app_dir "$source_root"
-write_deployment_manifest
+service_manager_normalized="$(normalize_name "$SERVICE_MANAGER")"
+if package_stop_app_service "$service_manager_normalized" "$APP_NAME"; then
+  :
+else
+  package_stop_exit=$?
+  if ! package_restart_app_service_after_failure "$service_manager_normalized" "$APP_NAME"; then
+    echo "CRITICAL: The previous service could not be restarted after its stop operation failed." >&2
+  fi
+  exit "$package_stop_exit"
+fi
+
+if package_replace_app_directory "$source_root" "$APP_DIR" "$BACKUP_DIR" write_deployment_manifest; then
+  if write_package_transaction_state "$PACKAGE_TRANSACTION_STATE_PATH"; then
+    :
+  else
+    state_exit=$?
+    if package_restore_previous_app_directory "$APP_DIR" "$PACKAGE_APP_BACKUP_PATH"; then
+      if ! package_restart_app_service_after_failure "$service_manager_normalized" "$APP_NAME"; then
+        echo "CRITICAL: Previous service recovery failed after transaction-state write failure." >&2
+      fi
+    else
+      echo "CRITICAL: APP_DIR recovery failed after transaction-state write failure; service remains stopped." >&2
+    fi
+    exit "$state_exit"
+  fi
+else
+  package_replace_exit=$?
+  if [[ "$PACKAGE_APP_DIRECTORY_RECOVERY_SUCCEEDED" == "true" ]]; then
+    if ! package_restart_app_service_after_failure "$service_manager_normalized" "$APP_NAME"; then
+      echo "CRITICAL: The previous service could not be restarted after package replacement failed." >&2
+    fi
+  elif [[ "$PACKAGE_APP_SERVICE_WAS_RUNNING" == "true" ]]; then
+    echo "CRITICAL: The previous APP_DIR could not be restored, so the service was intentionally left stopped." >&2
+  fi
+  exit "$package_replace_exit"
+fi
 
 echo "Imported package into APP_DIR: $APP_DIR"

@@ -16,6 +16,7 @@ param(
     [switch] $SkipPreflight,
     [switch] $AllowPortInUse,
     [string] $PackagePath = "",
+    [string] $PackageExpectedSha256 = "",
     [switch] $SkipPackageImport,
     [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
     [string] $WinSWDownloadUrl = "",
@@ -55,6 +56,7 @@ if ($SkipHealthCheck) { $deployArgs.SkipHealthCheck = $true }
 if ($SkipPreflight) { $deployArgs.SkipPreflight = $true }
 if ($AllowPortInUse) { $deployArgs.AllowPortInUse = $true }
 if (-not [string]::IsNullOrWhiteSpace($PackagePath)) { $deployArgs.PackagePath = $PackagePath }
+if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256)) { $deployArgs.PackageExpectedSha256 = $PackageExpectedSha256 }
 if ($SkipPackageImport) { $deployArgs.SkipPackageImport = $true }
 if (-not [string]::IsNullOrWhiteSpace($WinSWPath)) { $deployArgs.WinSWPath = $WinSWPath }
 if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $deployArgs.WinSWDownloadUrl = $WinSWDownloadUrl }

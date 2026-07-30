@@ -47,8 +47,11 @@ if [[ "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED" || "$HEALTHCH
   exit 1
 fi
 mkdir -p "$HEALTHCHECK_STATE_DIR"
-chmod 0750 "$HEALTHCHECK_STATE_DIR" 2>/dev/null || true
-chown root:root "$HEALTHCHECK_STATE_DIR" 2>/dev/null || true
+chmod 0750 "$HEALTHCHECK_STATE_DIR"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  ROOT_GROUP="$(id -gn root)"
+  chown root:"$ROOT_GROUP" "$HEALTHCHECK_STATE_DIR"
+fi
 STATE_FILE="$HEALTHCHECK_STATE_DIR/healthcheck.state"
 HEALTHCHECK_FAILURE_THRESHOLD="${HEALTHCHECK_FAILURE_THRESHOLD:-2}"
 HEALTHCHECK_RESTART_COOLDOWN="${HEALTHCHECK_RESTART_COOLDOWN:-300}"
@@ -119,8 +122,10 @@ write_state() {
     echo "LAST_FAILURE_EPOCH=${LAST_FAILURE_EPOCH:-0}"
     echo "LAST_CHECK_EPOCH=${LAST_CHECK_EPOCH:-0}"
   } > "$tmp"
-  chmod 0640 "$tmp" 2>/dev/null || true
-  chown root:root "$tmp" 2>/dev/null || true
+  chmod 0640 "$tmp"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    chown root:"$ROOT_GROUP" "$tmp"
+  fi
   mv "$tmp" "$STATE_FILE"
 }
 reset_failures() {

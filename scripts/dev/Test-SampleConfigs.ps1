@@ -137,6 +137,7 @@ function Test-WindowsExampleConfig {
     "ReactDocumentRoot",
     "NextjsRequireStaticAssets",
     "NextjsRequirePublicDirectory",
+    "NextjsRequirePackageProvenance",
     "NextjsRequireServerActionsEncryptionKey",
     "NextjsRequireDeploymentId",
     "NextjsMinimumNodeVersion",
@@ -177,9 +178,38 @@ function Test-WindowsExampleConfig {
       throw "$relativePathForMessage PreparationEnvironment contains a missing value."
     }
   }
-  foreach ($name in @("PackagePath", "PackageExpectedFiles", "PackageStripSingleTopLevelDirectory")) {
+  foreach ($name in @(
+      "PackagePath",
+      "RequirePackageSha256",
+      "PackageExpectedSha256",
+      "PackageMaxArchiveSizeMB",
+      "PackageMaxExtractedSizeMB",
+      "PackageMaxEntryCount",
+      "PackageMaxCompressionRatio",
+      "PackageMinimumFreeSpaceMB",
+      "PackageExpectedFiles",
+      "PackageStripSingleTopLevelDirectory"
+    )) {
     if (-not $config.PSObject.Properties[$name]) {
       throw "$relativePathForMessage is missing $name."
+    }
+  }
+  if ($config.RequirePackageSha256 -ne $true) {
+    throw "$relativePathForMessage must require application package SHA-256 verification by default."
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$config.PackageExpectedSha256)) {
+    throw "$relativePathForMessage must leave PackageExpectedSha256 empty until a real artifact is selected."
+  }
+  $packagePolicyDefaults = [ordered]@{
+    PackageMaxArchiveSizeMB = 2048
+    PackageMaxExtractedSizeMB = 8192
+    PackageMaxEntryCount = 200000
+    PackageMaxCompressionRatio = 200
+    PackageMinimumFreeSpaceMB = 1024
+  }
+  foreach ($entry in $packagePolicyDefaults.GetEnumerator()) {
+    if ([long]$config.($entry.Key) -ne [long]$entry.Value) {
+      throw "$relativePathForMessage $($entry.Key) must default to $($entry.Value)."
     }
   }
   if (-not $config.PSObject.Properties["WinSWDownloadSha256"]) {
@@ -193,11 +223,13 @@ function Test-WindowsExampleConfig {
   Assert-IntegerAtLeast ([string]$config.HealthCheckFailureThreshold) "HealthCheckFailureThreshold"
   Assert-IntegerAtLeast ([string]$config.HealthCheckRestartCooldownMinutes) "HealthCheckRestartCooldownMinutes"
   Assert-IntegerAtLeast ([string]$config.HealthCheckTimeoutSeconds) "HealthCheckTimeoutSeconds"
+  Assert-IntegerAtLeast ([string]$config.PostDeployHealthAttempts) "PostDeployHealthAttempts"
+  Assert-IntegerAtLeast ([string]$config.PostDeployHealthDelaySeconds) "PostDeployHealthDelaySeconds" 0
   Assert-IntegerAtLeast ([string]$config.LogRetentionDays) "LogRetentionDays"
   Assert-IntegerAtLeast ([string]$config.BackupRetentionDays) "BackupRetentionDays"
   Assert-IntegerAtLeast ([string]$config.DiagnosticRetentionDays) "DiagnosticRetentionDays"
   Assert-IntegerAtLeast ([string]$config.IisProxyTimeoutSeconds) "IisProxyTimeoutSeconds"
-  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport", "NextjsRequireStaticAssets", "NextjsRequirePublicDirectory", "NextjsRequireServerActionsEncryptionKey", "NextjsRequireDeploymentId", "RequireWinSWDownloadSha256")) {
+  foreach ($name in @("TlsEnabled", "IisEnableArrProxy", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisSetForwardedHeaders", "IisWebSocketSupport", "NextjsRequireStaticAssets", "NextjsRequirePublicDirectory", "NextjsRequirePackageProvenance", "NextjsRequireServerActionsEncryptionKey", "NextjsRequireDeploymentId", "RequirePackageSha256", "RequireWinSWDownloadSha256", "RequirePostDeployHealthCheck")) {
     Assert-BoolString ([string]$config.$name) $name
   }
   if ([string]$config.AppFramework -notin @("node", "nextjs", "reactjs")) {
@@ -329,6 +361,7 @@ function Test-WindowsStaticIisExampleConfig {
     "StaticOutputDirectory",
     "SpaShellFile",
     "AppDirectory",
+    "RequirePackageSha256",
     "PackageExpectedFiles",
     "PackageStripSingleTopLevelDirectory",
     "InstallCommand",
@@ -346,6 +379,35 @@ function Test-WindowsStaticIisExampleConfig {
     "IisStaticAllowUrlRewrite",
     "BackupDirectory"
   ) "config/windows/static-iis.app.config.example.json"
+
+  foreach ($name in @(
+      "PackagePath",
+      "PackageExpectedSha256",
+      "PackageMaxArchiveSizeMB",
+      "PackageMaxExtractedSizeMB",
+      "PackageMaxEntryCount",
+      "PackageMaxCompressionRatio",
+      "PackageMinimumFreeSpaceMB"
+    )) {
+    if (-not $config.PSObject.Properties[$name]) {
+      throw "static_iis example is missing $name."
+    }
+  }
+  if ($config.RequirePackageSha256 -ne $true -or -not [string]::IsNullOrWhiteSpace([string]$config.PackageExpectedSha256)) {
+    throw "static_iis example must require package SHA-256 verification and leave the artifact-specific digest empty."
+  }
+  $staticPackagePolicyDefaults = [ordered]@{
+    PackageMaxArchiveSizeMB = 2048
+    PackageMaxExtractedSizeMB = 8192
+    PackageMaxEntryCount = 200000
+    PackageMaxCompressionRatio = 200
+    PackageMinimumFreeSpaceMB = 1024
+  }
+  foreach ($entry in $staticPackagePolicyDefaults.GetEnumerator()) {
+    if ([long]$config.($entry.Key) -ne [long]$entry.Value) {
+      throw "static_iis example $($entry.Key) must default to $($entry.Value)."
+    }
+  }
 
   if ([string]$config.AppName -ne "ExampleStaticSpa") {
     throw "static_iis example AppName must use the neutral ExampleStaticSpa placeholder."
@@ -387,7 +449,7 @@ function Test-WindowsStaticIisExampleConfig {
     throw "static_iis example public host must use app.example.local."
   }
   Assert-Port ([string]$config.PublicPort) "Static IIS PublicPort"
-  foreach ($name in @("TlsEnabled", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisStaticAllowUrlRewrite", "PackageStripSingleTopLevelDirectory")) {
+  foreach ($name in @("TlsEnabled", "IisRequireUrlRewrite", "IisRequireArrProxy", "IisStaticAllowUrlRewrite", "RequirePackageSha256", "PackageStripSingleTopLevelDirectory")) {
     Assert-BoolString ([string]$config.$name) $name
   }
   if ($config.IisRequireUrlRewrite -ne $false -or $config.IisRequireArrProxy -ne $false) {
@@ -436,6 +498,7 @@ function Test-LinuxExampleConfig {
     "REACT_DOCUMENT_ROOT",
     "NEXTJS_REQUIRE_STATIC_ASSETS",
     "NEXTJS_REQUIRE_PUBLIC_DIR",
+    "NEXTJS_REQUIRE_PACKAGE_PROVENANCE",
     "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY",
     "NEXTJS_REQUIRE_DEPLOYMENT_ID",
     "NEXTJS_MINIMUM_NODE_VERSION",
@@ -443,6 +506,7 @@ function Test-LinuxExampleConfig {
     "SERVICE_MANAGER",
     "REVERSE_PROXY",
     "APP_DIR",
+    "REQUIRE_PACKAGE_SHA256",
     "PACKAGE_EXPECTED_FILES",
     "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR",
     "SKIP_PACKAGE_IMPORT",
@@ -451,6 +515,9 @@ function Test-LinuxExampleConfig {
     "APP_PORT",
     "BIND_ADDRESS",
     "HEALTH_URL",
+    "REQUIRE_POST_DEPLOY_HEALTH_CHECK",
+    "POST_DEPLOY_HEALTH_ATTEMPTS",
+    "POST_DEPLOY_HEALTH_DELAY_SECONDS",
     "SERVICE_USER",
     "SERVICE_GROUP",
     "LOG_DIR",
@@ -468,14 +535,39 @@ function Test-LinuxExampleConfig {
   Assert-Port $env.PUBLIC_PORT "Linux PUBLIC_PORT"
   Assert-Port $env.PROXY_LISTEN_PORT "Linux PROXY_LISTEN_PORT"
   Assert-Port $env.FORWARDED_PORT "Linux FORWARDED_PORT"
-  foreach ($name in @("HEALTHCHECK_INTERVAL", "HEALTHCHECK_FAILURE_THRESHOLD", "HEALTHCHECK_RESTART_COOLDOWN", "HEALTHCHECK_TIMEOUT", "FAILURE_RESTART_DELAY", "LOG_RETENTION_DAYS", "BACKUP_RETENTION_DAYS", "DIAGNOSTIC_RETENTION_DAYS")) {
+  foreach ($name in @("HEALTHCHECK_INTERVAL", "HEALTHCHECK_FAILURE_THRESHOLD", "HEALTHCHECK_RESTART_COOLDOWN", "HEALTHCHECK_TIMEOUT", "POST_DEPLOY_HEALTH_ATTEMPTS", "POST_DEPLOY_HEALTH_DELAY_SECONDS", "FAILURE_RESTART_DELAY", "LOG_RETENTION_DAYS", "BACKUP_RETENTION_DAYS", "DIAGNOSTIC_RETENTION_DAYS")) {
     Assert-IntegerAtLeast $env[$name] $name
   }
-  if (-not $env.ContainsKey("PACKAGE_PATH")) {
-    throw "$relativePathForMessage is missing PACKAGE_PATH."
+  foreach ($name in @(
+      "PACKAGE_PATH",
+      "PACKAGE_EXPECTED_SHA256",
+      "PACKAGE_MAX_ARCHIVE_SIZE_MB",
+      "PACKAGE_MAX_EXTRACTED_SIZE_MB",
+      "PACKAGE_MAX_ENTRY_COUNT",
+      "PACKAGE_MAX_COMPRESSION_RATIO",
+      "PACKAGE_MINIMUM_FREE_SPACE_MB"
+    )) {
+    if (-not $env.ContainsKey($name)) {
+      throw "$relativePathForMessage is missing $name."
+    }
   }
-  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "NEXTJS_REQUIRE_STATIC_ASSETS", "NEXTJS_REQUIRE_PUBLIC_DIR", "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY", "NEXTJS_REQUIRE_DEPLOYMENT_ID", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
+  foreach ($name in @("SKIP_PREFLIGHT", "ALLOW_PORT_IN_USE", "SKIP_PACKAGE_IMPORT", "REQUIRE_PACKAGE_SHA256", "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR", "SKIP_REVERSE_PROXY", "SKIP_HEALTH_CHECK", "SKIP_INSTALL", "SKIP_BUILD", "TLS_ENABLED", "REQUIRE_POST_DEPLOY_HEALTH_CHECK", "NEXTJS_REQUIRE_STATIC_ASSETS", "NEXTJS_REQUIRE_PUBLIC_DIR", "NEXTJS_REQUIRE_PACKAGE_PROVENANCE", "NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY", "NEXTJS_REQUIRE_DEPLOYMENT_ID", "HAPROXY_ALLOW_MAIN_CONFIG_REPLACE", "TOMCAT_RESTART")) {
     Assert-BoolString $env[$name] $name
+  }
+  if ($env.REQUIRE_PACKAGE_SHA256 -ne "true" -or -not [string]::IsNullOrWhiteSpace($env.PACKAGE_EXPECTED_SHA256)) {
+    throw "$relativePathForMessage must require package SHA-256 verification and leave the artifact-specific digest empty."
+  }
+  $packagePolicyDefaults = [ordered]@{
+    PACKAGE_MAX_ARCHIVE_SIZE_MB = "2048"
+    PACKAGE_MAX_EXTRACTED_SIZE_MB = "8192"
+    PACKAGE_MAX_ENTRY_COUNT = "200000"
+    PACKAGE_MAX_COMPRESSION_RATIO = "200"
+    PACKAGE_MINIMUM_FREE_SPACE_MB = "1024"
+  }
+  foreach ($entry in $packagePolicyDefaults.GetEnumerator()) {
+    if ($env[$entry.Key] -ne $entry.Value) {
+      throw "$relativePathForMessage $($entry.Key) must default to $($entry.Value)."
+    }
   }
   if ($env.APP_FRAMEWORK -notin @("node", "nextjs", "reactjs")) {
     throw "Linux APP_FRAMEWORK must be node, nextjs, or reactjs."
@@ -608,12 +700,20 @@ function Test-AnsibleDefaults {
     "node_deploy_react_document_root",
     "node_deploy_nextjs_require_static_assets",
     "node_deploy_nextjs_require_public_directory",
+    "node_deploy_nextjs_require_package_provenance",
     "node_deploy_nextjs_require_server_actions_encryption_key",
     "node_deploy_nextjs_require_deployment_id",
     "node_deploy_nextjs_minimum_node_version",
     "node_deploy_app_runtime",
     "node_deploy_package_path_windows",
     "node_deploy_package_path_linux",
+    "node_deploy_require_package_sha256",
+    "node_deploy_package_expected_sha256",
+    "node_deploy_package_max_archive_size_mb",
+    "node_deploy_package_max_extracted_size_mb",
+    "node_deploy_package_max_entry_count",
+    "node_deploy_package_max_compression_ratio",
+    "node_deploy_package_minimum_free_space_mb",
     "node_deploy_package_expected_files",
     "node_deploy_package_strip_single_top_level_directory",
     "node_deploy_skip_package_import",
@@ -673,6 +773,9 @@ function Test-AnsibleDefaults {
     "node_deploy_healthcheck_failure_threshold",
     "node_deploy_healthcheck_restart_cooldown_seconds",
     "node_deploy_healthcheck_timeout_seconds",
+    "node_deploy_require_post_deploy_health_check",
+    "node_deploy_post_deploy_health_attempts",
+    "node_deploy_post_deploy_health_delay_seconds",
     "node_deploy_log_retention_days",
     "node_deploy_backup_retention_days",
     "node_deploy_diagnostic_retention_days"
@@ -701,6 +804,17 @@ function Test-AnsibleDefaults {
         "node_modules/next/dist/bin/next",
         "configured_package_expected_files",
         "package_expected_files",
+        "node_deploy_require_package_sha256",
+        "node_deploy_package_expected_sha256",
+        "node_deploy_package_max_archive_size_mb",
+        "node_deploy_package_max_extracted_size_mb",
+        "node_deploy_package_max_entry_count",
+        "node_deploy_package_max_compression_ratio",
+        "node_deploy_package_minimum_free_space_mb",
+        "node_deploy_require_post_deploy_health_check",
+        "node_deploy_post_deploy_health_attempts",
+        "node_deploy_post_deploy_health_delay_seconds",
+        "node_deploy_nextjs_require_package_provenance",
         "default_node_arguments",
         "node_arguments",
         "start -H"

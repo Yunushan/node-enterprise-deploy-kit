@@ -712,10 +712,50 @@ This uses PowerShell for the real deployment logic and keeps the batch file as a
 For built artifacts, import a package before service setup:
 
 ```powershell
+$package = "C:\deploy\example-node-app.zip"
+$packageSha256 = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
 .\install.ps1 -ConfigPath .\config\windows\app.config.json `
-  -PackagePath C:\deploy\example-node-app.zip `
+  -PackagePath $package `
+  -PackageExpectedSha256 $packageSha256 `
   -SkipInstall -SkipBuild
 ```
+
+Application-package SHA-256 verification is required by default. The importer
+verifies a staged copy before archive validation, service interruption, or app
+directory replacement. Public examples intentionally leave the artifact-specific
+digest blank.
+
+Package imports also enforce bounded archive size, extracted size, entry count,
+compression ratio, and free-disk reserve. The defaults are 2048 MiB archive,
+8192 MiB extracted, 200000 entries, 200:1 compression, and 1024 MiB remaining
+free space. Preflight, staged-archive, and extracted-tree checks all complete
+before the active service or application directory is changed. See
+[Variables](docs/VARIABLES.md) for the Windows and Unix setting names.
+
+Once interruption begins, package replacement is transactional. The importer
+verifies the running process stops, backs up the active application directory,
+and restores that directory plus its previous running state if replacement or
+manifest creation fails. A failed directory rollback intentionally leaves the
+service stopped so it cannot start from a partial release. Windows supports
+this recovery contract for WinSW and PM2; Unix-like hosts support each managed
+native service manager.
+
+The top-level deploy wrappers keep that package transaction open through app
+preparation, service installation, proxy configuration, and health-scheduler
+setup. A downstream failure restores the previous application directory and
+running/stopped state; a failed first deployment also removes the newly created
+service or PM2 entry. Transaction metadata contains operational paths and state,
+not environment values or secrets. It is deleted after success or successful
+rollback and preserved at the reported protected path when rollback itself
+fails. Static IIS deployment additionally restores its prior content, site,
+app-pool, binding, and TLS state. For other service/proxy managers, use the
+timestamped managed-config backups if a later stage changed configuration that
+also needs restoration.
+
+Unix service and health-scheduler installers also fail closed on ownership,
+boot-registration, and post-start manager-state errors. A successful installer
+exit therefore means the native service and selected health scheduler were
+actually registered and observed active.
 
 For Next.js standalone deployments, package the contents of
 `.next\standalone` after copying `.next\static` into
@@ -761,7 +801,9 @@ Server + IIS, use `config/windows/static-iis.app.config.example.json` with
 `SpaShellFile: "_shell.html"`. This mode runs `npm ci --include=dev` and
 `npm run build`, copies only the static output contents to the IIS physical
 path, uses a No Managed Code app pool, and does not require URL Rewrite, ARR,
-or a Node service. See [Windows Deployment](docs/WINDOWS_DEPLOYMENT.md).
+or a Node service. Static IIS updates stop the existing site only for the live
+folder switch and restore both content and IIS state if any later step fails.
+See [Windows Deployment](docs/WINDOWS_DEPLOYMENT.md).
 
 After import or manual copy, validate the live runtime folder without touching
 service state:
@@ -785,6 +827,21 @@ updating it, and warn when WebSocket support is missing.
 `IisRequireUrlRewrite` and `IisRequireArrProxy` default to `true`, so preflight
 and direct IIS reverse-proxy install stop instead of writing a broken proxy
 config when required IIS modules are missing.
+When `TlsEnabled=true`, IIS deployment also requires a real 40-hex
+`IisCertificateThumbprint` present in `Cert:\LocalMachine\My`; certificate
+configuration is fail-closed rather than a warning-only manual step.
+
+Service installation has a separate mandatory startup gate: the configured
+loopback `HealthUrl` must return HTTP `2xx` within the configured retry window.
+Redirects do not pass. `RequirePostDeployHealthCheck` defaults to `true` on
+Windows, Linux, macOS, and BSD.
+
+Top-level `deploy.ps1` and `deploy.sh` also take a per-app deployment lock.
+A second deployment fails immediately by default, or waits up to the configured
+`DeploymentLockTimeoutSeconds` / `DEPLOYMENT_LOCK_TIMEOUT_SECONDS`, preventing
+concurrent package, service, and proxy changes. A Unix rollback-failure record
+is stored beside, rather than inside, the lock directory so the lock can still
+be released for an operator-led recovery.
 
 For artifact-only deployments where dependencies are already installed and the app is already built:
 
@@ -808,9 +865,11 @@ For IIS sites, the helper checks the configured public binding before changing
 the live site. It uses `TlsEnabled` to choose `http` or `https` and defaults the
 public port to `80` or `443` when `PublicPort` is not set. If deployment fails,
 rollback restores the previous IIS physical path, app pool, and started/stopped
-site state. The generated runtime config is retained under
-`<ServiceDirectory>\config` by default because the Windows scheduled health
-check task reads that exact config path after deployment.
+site state. A unique generated runtime config is removed after deployment by
+default; an existing explicit path is never overwritten. Pass
+`-KeepGeneratedConfig` only for an audited operational need. The Windows
+scheduled health task instead runs a protected script and minimal allowlisted
+config under `%ProgramData%\node-enterprise-deploy-kit\healthchecks`.
 
 If preflight reports a known, intentional listener on the configured port that is not the current service, use:
 
@@ -1167,10 +1226,19 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "ReactDocumentRoot": "build",
   "NextjsRequireStaticAssets": true,
   "NextjsRequirePublicDirectory": false,
+  "NextjsRequirePackageProvenance": true,
   "NextjsRequireServerActionsEncryptionKey": false,
   "NextjsRequireDeploymentId": false,
   "NextjsMinimumNodeVersion": "20.9.0",
   "AppDirectory": "C:\\apps\\ExampleNodeApp",
+  "PackagePath": "",
+  "RequirePackageSha256": true,
+  "PackageExpectedSha256": "",
+  "PackageMaxArchiveSizeMB": 2048,
+  "PackageMaxExtractedSizeMB": 8192,
+  "PackageMaxEntryCount": 200000,
+  "PackageMaxCompressionRatio": 200,
+  "PackageMinimumFreeSpaceMB": 1024,
   "PackageExpectedFiles": [
     "server.js",
     ".next/BUILD_ID",
@@ -1192,8 +1260,8 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "IisSiteName": "ExampleNodeApp",
   "IisAppPoolName": "ExampleNodeApp-AppPool",
   "PublicHostName": "app.example.local",
-  "PublicPort": 443,
-  "TlsEnabled": true,
+  "PublicPort": 80,
+  "TlsEnabled": false,
   "IisCertificateThumbprint": "",
   "IisEnableArrProxy": true,
   "IisRequireUrlRewrite": true,
@@ -1210,6 +1278,9 @@ If your app does not expose `/health`, set `HealthUrl` to `/` or another safe en
   "HealthCheckFailureThreshold": 2,
   "HealthCheckRestartCooldownMinutes": 5,
   "HealthCheckTimeoutSeconds": 10,
+  "RequirePostDeployHealthCheck": true,
+  "PostDeployHealthAttempts": 12,
+  "PostDeployHealthDelaySeconds": 5,
   "LogRetentionDays": 30,
   "BackupRetentionDays": 90,
   "DiagnosticRetentionDays": 14,
@@ -1237,11 +1308,19 @@ NEXTJS_DEPLOYMENT_MODE="standalone"
 REACT_DOCUMENT_ROOT="build"
 NEXTJS_REQUIRE_STATIC_ASSETS="true"
 NEXTJS_REQUIRE_PUBLIC_DIR="false"
+NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="false"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="false"
 NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
 SERVICE_MANAGER="systemd"
 PACKAGE_PATH=""
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256=""
+PACKAGE_MAX_ARCHIVE_SIZE_MB="2048"
+PACKAGE_MAX_EXTRACTED_SIZE_MB="8192"
+PACKAGE_MAX_ENTRY_COUNT="200000"
+PACKAGE_MAX_COMPRESSION_RATIO="200"
+PACKAGE_MINIMUM_FREE_SPACE_MB="1024"
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
 NODE_BIN="/usr/bin/node"
@@ -1268,6 +1347,9 @@ FORWARDED_PORT="443"
 HEALTHCHECK_FAILURE_THRESHOLD="2"
 HEALTHCHECK_RESTART_COOLDOWN="300"
 HEALTHCHECK_TIMEOUT="10"
+REQUIRE_POST_DEPLOY_HEALTH_CHECK="true"
+POST_DEPLOY_HEALTH_ATTEMPTS="12"
+POST_DEPLOY_HEALTH_DELAY_SECONDS="5"
 LOG_RETENTION_DAYS="30"
 BACKUP_RETENTION_DAYS="90"
 DIAGNOSTIC_RETENTION_DAYS="14"

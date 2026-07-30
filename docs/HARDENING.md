@@ -35,6 +35,12 @@
 - Keep Linux diagnostic bundles summary-only unless raw logs are explicitly
   needed for incident response.
 - Collect journald and log files into Wazuh, Graylog, or your logging platform.
+- Treat ownership changes and service registration as mandatory deployment
+  controls. The Unix installers fail if application/runtime ownership cannot be
+  applied, the service cannot be enabled for boot, or its native manager does
+  not report it active after start.
+- Health-check installation similarly requires root-owned control files and a
+  verified active systemd timer, launchd job, or managed root crontab entry.
 
 ## Preflight Hardening Warnings
 

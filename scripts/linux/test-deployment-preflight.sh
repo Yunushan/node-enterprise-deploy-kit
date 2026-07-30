@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
+# shellcheck source=scripts/linux/app-package-safety.sh
+source "$REPO_ROOT/scripts/linux/app-package-safety.sh"
 
 CONFIG_FILE="${1:-config/linux/app.env}"
 shift || true
@@ -15,6 +17,8 @@ SKIP_PACKAGE_IMPORT="${SKIP_PACKAGE_IMPORT:-false}"
 SKIP_REVERSE_PROXY="${SKIP_REVERSE_PROXY:-false}"
 SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
 SKIP_SERVICE_MANAGER_CHECK="${SKIP_SERVICE_MANAGER_CHECK:-false}"
+DEPLOYMENT_LOCK_TIMEOUT_SECONDS="${DEPLOYMENT_LOCK_TIMEOUT_SECONDS:-0}"
+DEPLOYMENT_LOCK_ROOT="${DEPLOYMENT_LOCK_ROOT:-/var/run/node-enterprise-deploy-kit}"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -22,6 +26,16 @@ while [[ "$#" -gt 0 ]]; do
     --skip-reverse-proxy) SKIP_REVERSE_PROXY="true" ;;
     --skip-health-check) SKIP_HEALTH_CHECK="true" ;;
     --skip-service-manager-check) SKIP_SERVICE_MANAGER_CHECK="true" ;;
+    --package-path)
+      [[ "$#" -ge 2 ]] || { echo "--package-path requires a value." >&2; exit 2; }
+      PACKAGE_PATH="$2"
+      shift
+      ;;
+    --package-expected-sha256)
+      [[ "$#" -ge 2 ]] || { echo "--package-expected-sha256 requires a value." >&2; exit 2; }
+      PACKAGE_EXPECTED_SHA256="$2"
+      shift
+      ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -63,12 +77,15 @@ service_main_pid() {
   esac
 }
 url_host() {
-  local url="${1:-}" host
-  host="${url#*://}"
-  host="${host%%/*}"
-  host="${host%%:*}"
-  host="${host#[}"
-  host="${host%]}"
+  local url="${1:-}" authority host
+  authority="${url#*://}"
+  authority="${authority%%/*}"
+  if [[ "$authority" == \[* ]]; then
+    host="${authority#\[}"
+    host="${host%%\]*}"
+  else
+    host="${authority%%:*}"
+  fi
   printf '%s\n' "$host"
 }
 is_loopback_host() {
@@ -404,11 +421,13 @@ validate_nextjs_layout
 validate_react_layout
 
 if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
+  package_kind=""
   if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
     add_error "PACKAGE_PATH imports are for APP_RUNTIME=node. Use TOMCAT_WAR_FILE for Tomcat deployments."
   fi
   case "$PACKAGE_PATH" in
-    *.zip|*.tar|*.tar.gz|*.tgz) ;;
+    *.zip) package_kind="zip" ;;
+    *.tar|*.tar.gz|*.tgz) package_kind="tar" ;;
     *.rar|*.7z) add_error "PACKAGE_PATH format is intentionally unsupported: use .zip, .tar.gz, .tgz, or .tar. .rar/.7z need external tooling." ;;
     *) add_error "Unsupported PACKAGE_PATH format. Use .zip, .tar.gz, .tgz, or .tar." ;;
   esac
@@ -417,7 +436,67 @@ if [[ -n "${PACKAGE_PATH:-}" ]] && ! is_true "$SKIP_PACKAGE_IMPORT"; then
   else
     package_candidate="$(dirname "$CONFIG_FILE")/$PACKAGE_PATH"
   fi
-  [[ -f "$package_candidate" ]] || add_warning "PACKAGE_PATH does not exist yet on this host: $package_candidate"
+  require_package_sha256="${REQUIRE_PACKAGE_SHA256:-true}"
+  package_sha256_required="true"
+  case "$require_package_sha256" in
+    true|TRUE|True|1|yes|YES|Yes) ;;
+    false|FALSE|False|0|no|NO|No) package_sha256_required="false" ;;
+    *)
+      add_error "REQUIRE_PACKAGE_SHA256 must be true or false."
+      package_sha256_required="true"
+      ;;
+  esac
+  package_expected_sha256="$(printf '%s' "${PACKAGE_EXPECTED_SHA256:-}" | tr '[:upper:]' '[:lower:]')"
+  package_expected_sha256_valid="true"
+  if [[ "$package_sha256_required" == "true" && -z "$package_expected_sha256" ]]; then
+    add_error "PACKAGE_EXPECTED_SHA256 is required when REQUIRE_PACKAGE_SHA256=true."
+    package_expected_sha256_valid="false"
+  elif [[ -n "$package_expected_sha256" && ! "$package_expected_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    add_error "PACKAGE_EXPECTED_SHA256 must contain exactly 64 hexadecimal characters."
+    package_expected_sha256_valid="false"
+  fi
+  package_exists="true"
+  if [[ ! -f "$package_candidate" ]]; then
+    package_exists="false"
+    add_error "PACKAGE_PATH does not exist on this host."
+  elif [[ "$package_expected_sha256_valid" == "true" && -n "$package_expected_sha256" ]]; then
+    if actual_package_sha256="$(sha256_file "$package_candidate")"; then
+      if [[ "$actual_package_sha256" != "$package_expected_sha256" ]]; then
+        add_error "Application package SHA-256 does not match PACKAGE_EXPECTED_SHA256."
+      fi
+    else
+      add_error "Unable to calculate the application package SHA-256. Install sha256sum, shasum, or openssl."
+    fi
+  fi
+  package_safety_policy_valid="true"
+  if ! package_safety_load_policy; then
+    add_error "$PACKAGE_SAFETY_ERROR"
+    package_safety_policy_valid="false"
+  fi
+  if [[ "$package_exists" == "true" && -n "$package_kind" && "$package_safety_policy_valid" == "true" ]]; then
+    package_tool_available="true"
+    case "$package_kind" in
+      tar)
+        if ! command -v tar >/dev/null 2>&1; then
+          add_error "tar is required to inspect and import tar packages."
+          package_tool_available="false"
+        fi
+        ;;
+      zip)
+        if ! command -v unzip >/dev/null 2>&1; then
+          add_error "unzip is required to inspect and import zip packages."
+          package_tool_available="false"
+        fi
+        ;;
+    esac
+    if [[ "$package_tool_available" == "true" ]]; then
+      if ! package_safety_inspect_archive "$package_kind" "$package_candidate"; then
+        add_error "$PACKAGE_SAFETY_ERROR"
+      elif ! package_safety_assert_capacity "${TMPDIR:-/tmp}" "${APP_DIR:-/}" "${BACKUP_DIR:-/var/backups/${APP_NAME:-app}}" false; then
+        add_error "$PACKAGE_SAFETY_ERROR"
+      fi
+    fi
+  fi
   case "${PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR:-true}" in
     true|false|TRUE|FALSE|True|False|1|0|yes|no|YES|NO|Yes|No) ;;
     *) add_warning "PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR should be true or false." ;;
@@ -433,13 +512,52 @@ fi
 if ! is_integer "${APP_PORT:-}" || [[ "${APP_PORT:-0}" -lt 1 || "${APP_PORT:-0}" -gt 65535 ]]; then
   add_error "APP_PORT must be an integer between 1 and 65535."
 fi
+if ! is_integer "$DEPLOYMENT_LOCK_TIMEOUT_SECONDS" || [[ "$DEPLOYMENT_LOCK_TIMEOUT_SECONDS" -gt 3600 ]]; then
+  add_error "DEPLOYMENT_LOCK_TIMEOUT_SECONDS must be an integer from 0 through 3600."
+fi
+if [[ "$DEPLOYMENT_LOCK_ROOT" != /* || "$DEPLOYMENT_LOCK_ROOT" == "/" ]]; then
+  add_error "DEPLOYMENT_LOCK_ROOT must be a non-root absolute path."
+fi
 
 if [[ -n "${HEALTH_URL:-}" ]]; then
   case "$HEALTH_URL" in
     http://*|https://*) ;;
     *) add_error "HEALTH_URL must start with http:// or https://" ;;
   esac
+  health_authority="${HEALTH_URL#*://}"
+  health_authority="${health_authority%%/*}"
+  if [[ "$health_authority" == *"@"* || "$HEALTH_URL" == *"?"* || "$HEALTH_URL" == *"#"* ]]; then
+    add_error "HEALTH_URL must not contain credentials, query text, or a fragment."
+  fi
+  if ! is_loopback_host "$(url_host "$HEALTH_URL")"; then
+    add_error "HEALTH_URL must target localhost, 127.0.0.1, or ::1 because deployment and scheduled health checks run with elevated privileges."
+  fi
 fi
+
+require_post_deploy_health_check="${REQUIRE_POST_DEPLOY_HEALTH_CHECK:-true}"
+case "$require_post_deploy_health_check" in
+  true|TRUE|True|1|yes|YES|Yes)
+    command -v curl >/dev/null 2>&1 || add_error "Post-deploy health validation requires curl."
+    post_health_attempts="${POST_DEPLOY_HEALTH_ATTEMPTS:-12}"
+    post_health_delay="${POST_DEPLOY_HEALTH_DELAY_SECONDS:-5}"
+    post_health_timeout="${HEALTHCHECK_TIMEOUT:-10}"
+    if ! is_integer "$post_health_attempts" || [[ "$post_health_attempts" -lt 1 || "$post_health_attempts" -gt 120 ]]; then
+      add_error "POST_DEPLOY_HEALTH_ATTEMPTS must be an integer from 1 through 120."
+    fi
+    if ! is_integer "$post_health_delay" || [[ "$post_health_delay" -gt 300 ]]; then
+      add_error "POST_DEPLOY_HEALTH_DELAY_SECONDS must be an integer from 0 through 300."
+    fi
+    if ! is_integer "$post_health_timeout" || [[ "$post_health_timeout" -lt 1 || "$post_health_timeout" -gt 300 ]]; then
+      add_error "HEALTHCHECK_TIMEOUT must be an integer from 1 through 300."
+    fi
+    ;;
+  false|FALSE|False|0|no|NO|No)
+    add_warning "REQUIRE_POST_DEPLOY_HEALTH_CHECK is false. Deployment can report success without a healthy HTTP endpoint."
+    ;;
+  *)
+    add_error "REQUIRE_POST_DEPLOY_HEALTH_CHECK must be true or false."
+    ;;
+esac
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "${SERVICE_USER:-}" == "root" ]]; then
   add_warning "SERVICE_USER is root. Use a dedicated non-root service user for production."
@@ -515,9 +633,6 @@ if ! is_true "$SKIP_REVERSE_PROXY"; then
   fi
   if [[ "$APP_RUNTIME_NORMALIZED" == "node" && "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" && -n "${BIND_ADDRESS:-}" ]] && ! is_loopback_host "$BIND_ADDRESS"; then
     add_warning "BIND_ADDRESS is '$BIND_ADDRESS' while REVERSE_PROXY is '${REVERSE_PROXY:-}'. Bind the app to 127.0.0.1 unless direct exposure is intentional."
-  fi
-  if [[ "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" && -n "${HEALTH_URL:-}" ]] && ! is_loopback_host "$(url_host "$HEALTH_URL")"; then
-    add_warning "HEALTH_URL host is '$(url_host "$HEALTH_URL")'. For reverse-proxy deployments, health checks should normally target localhost/127.0.0.1."
   fi
   if [[ "$REVERSE_PROXY_NORMALIZED" != "none" && "$REVERSE_PROXY_NORMALIZED" != "" ]] && ! is_true "${TLS_ENABLED:-false}"; then
     add_warning "TLS_ENABLED is false while a reverse proxy is configured. Use TLS at the proxy or a documented upstream load balancer in production."

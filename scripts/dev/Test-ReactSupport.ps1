@@ -142,6 +142,10 @@ function New-WindowsReactConfig {
   if (-not $nodeCommand) { $nodeCommand = Get-Command pwsh -ErrorAction SilentlyContinue }
   if (-not $nodeCommand) { $nodeCommand = Get-Command sh -ErrorAction SilentlyContinue }
   if (-not $nodeCommand) { throw "No verifier-safe NodeExe placeholder command was found." }
+  $packageExpectedSha256 = ""
+  if (-not [string]::IsNullOrWhiteSpace($PackagePath) -and (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
+    $packageExpectedSha256 = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+  }
 
   $config = [ordered]@{
     AppName = "ExampleReactSmoke"
@@ -161,6 +165,8 @@ function New-WindowsReactConfig {
     WinSWDownloadSha256 = ""
     AppDirectory = $AppDirectory
     PackagePath = $PackagePath
+    RequirePackageSha256 = $true
+    PackageExpectedSha256 = $packageExpectedSha256
     PackageExpectedFiles = @("server.js", "build/index.html")
     PackageStripSingleTopLevelDirectory = $true
     StartCommand = "server.js"
@@ -241,6 +247,8 @@ SERVICE_USER="nodeapp"
 SERVICE_GROUP="nodeapp"
 ENV_FILE="$relativeRoot/etc/example-react-smoke.env"
 HEALTHCHECK_STATE_DIR="$relativeRoot/state"
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256=""
 PACKAGE_EXPECTED_FILES="server.js build/index.html"
 "@
 

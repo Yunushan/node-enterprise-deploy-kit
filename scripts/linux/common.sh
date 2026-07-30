@@ -101,8 +101,10 @@ default_service_manager() {
 }
 
 service_exists_systemd() {
-  local service_name="$1"
-  command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "${service_name}.service" >/dev/null 2>&1
+  local service_name="$1" load_state
+  command -v systemctl >/dev/null 2>&1 || return 1
+  load_state="$(systemctl show "${service_name}.service" --property=LoadState --value 2>/dev/null)" || return 1
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
 }
 
 reload_or_restart_service() {
@@ -131,6 +133,19 @@ is_true() {
     true|TRUE|True|1|yes|YES|Yes) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{ print tolower($1) }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{ print tolower($1) }'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r "$path" | awk '{ print tolower($1) }'
+  else
+    return 127
+  fi
 }
 
 semver_components() {
@@ -224,6 +239,15 @@ timestamp_utc() {
   date -u +%Y%m%d%H%M%S
 }
 
+root_group_name() {
+  local group_name
+  if ! group_name="$(id -gn root 2>/dev/null)" || [[ -z "$group_name" ]]; then
+    echo "Could not resolve the root account's primary group." >&2
+    return 1
+  fi
+  printf '%s\n' "$group_name"
+}
+
 sed_escape_replacement() {
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
@@ -246,7 +270,7 @@ backup_file_if_exists() {
   fi
 
   mkdir -p "$backup_dir"
-  chmod 0750 "$backup_dir" 2>/dev/null || true
+  chmod 0750 "$backup_dir"
   local backup_name backup_timestamp backup_path
   backup_name="$(basename "$file_path")"
   backup_timestamp="$(timestamp_utc)"

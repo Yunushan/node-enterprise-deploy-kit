@@ -574,9 +574,17 @@ function New-ClaimSelfTestEvidence {
     Scheduled = $true
     ScheduleType = "windows-task"
     TaskExists = $true
+    TaskPrincipalChecked = $true
+    TaskRunsAsSystem = $true
+    TaskRunLevelHighest = $true
     TaskActionChecked = $true
+    TaskActionUsesSystemPowerShell = $true
+    TaskActionUsesWorkingDirectory = $true
     TaskActionUsesHealthCheckScript = $true
     TaskActionUsesConfigPath = $true
+    TaskScriptHashMatchesSource = $true
+    TaskConfigMatchesDeployment = $true
+    TaskFilesAclProtected = $true
     TaskLastResult = 0
     TaskMissedRuns = 0
     StateExists = $true

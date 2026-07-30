@@ -15,6 +15,7 @@ Recommended production controls:
 - Enable service restart policies and health checks.
 - Send logs to Wazuh, Graylog, OpenSearch, or another monitored logging platform.
 - Restrict deployment permissions to administrators or CI/CD service accounts.
+- Pin third-party GitHub Actions to reviewed immutable commit SHAs.
 
 ## Reporting Vulnerabilities
 
@@ -41,3 +42,12 @@ Use the provided `.example` files and create local copies during deployment.
 
 The preflight scripts may warn about secret-like environment key names, but
 they do not print the corresponding values.
+
+## CI Supply Chain
+
+External GitHub Actions are pinned to immutable commit SHAs with a readable
+major-version comment. Dependabot proposes grouped weekly SHA updates; review
+the upstream release and commit before merging those pull requests. Run
+`scripts/dev/Test-GitHubActionsSecurity.ps1` to reject mutable action tags,
+unreviewed external actions, broad workflow write permissions, or a missing
+GitHub Actions update policy.

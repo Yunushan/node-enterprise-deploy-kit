@@ -8,6 +8,13 @@
   "SpaShellFile": "_shell.html",
   "AppDirectory": "C:\\apps\\ExampleStaticSpa",
   "PackagePath": "",
+  "RequirePackageSha256": true,
+  "PackageExpectedSha256": "",
+  "PackageMaxArchiveSizeMB": 2048,
+  "PackageMaxExtractedSizeMB": 8192,
+  "PackageMaxEntryCount": 200000,
+  "PackageMaxCompressionRatio": 200,
+  "PackageMinimumFreeSpaceMB": 1024,
   "PackageExpectedFiles": [
     "dist/client/_shell.html",
     "dist/client/assets",
@@ -29,5 +36,6 @@
   "IisRequireUrlRewrite": false,
   "IisRequireArrProxy": false,
   "IisStaticAllowUrlRewrite": false,
+  "DeploymentLockTimeoutSeconds": 0,
   "BackupDirectory": "C:\\inetpub\\ExampleStaticSpaBackups"
 }

@@ -105,7 +105,7 @@ foreach ($expected in @(
     "matrix_path must reference a tracked repository file",
     "Assert-WorkflowBoolean",
     '$DisplayName must be true or false.',
-    "actions/download-artifact@v8",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "run-id: `${{ inputs.source_run_id }}",
     "github-token: `${{ github.token }}",
     "Validate final full-matrix release evidence",
@@ -146,7 +146,7 @@ foreach ($expected in @(
     "Bundle CI run:",
     "Coverage:",
     "Targets:",
-    "actions/upload-artifact@v7",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "Upload release readiness summary",
     "path: release-readiness-summary.json"
   )) {
@@ -184,7 +184,7 @@ foreach ($unexpectedPattern in @(
   Assert-DoesNotMatch -Text $workflow -Pattern $unexpectedPattern -Context ".github/workflows/release-evidence.yml"
 }
 
-$uploadArtifactBlocks = @([regex]::Matches($workflow, '(?ms)uses:\s+actions/upload-artifact@v7.*?(?=\r?\n\s+- name:|\z)'))
+$uploadArtifactBlocks = @([regex]::Matches($workflow, '(?ms)uses:\s+actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a.*?(?=\r?\n\s+- name:|\z)'))
 if ($uploadArtifactBlocks.Count -ne 1) {
   throw ".github/workflows/release-evidence.yml must have exactly one upload-artifact block for the redacted readiness summary."
 }

@@ -138,6 +138,15 @@ validate_tar_has_no_links() {
   done < <(tar -tvf "$archive_path")
 }
 
+validate_zip_has_no_special_entries() {
+  local archive_path="$1" unsafe_line
+  unsafe_line="$(LC_ALL=C unzip -Z -l "$archive_path" 2>/dev/null | awk '$1 ~ /^[bclps]/ { print; exit }')"
+  if [[ -n "$unsafe_line" ]]; then
+    echo "Unsafe zip entry type detected. Symlinks and special files are intentionally unsupported in deployment archives: $unsafe_line" >&2
+    exit 1
+  fi
+}
+
 strip_wrapping_dir() {
   local entry="$1" top="$2"
   entry="${entry#./}"
@@ -173,6 +182,8 @@ esac
 
 if [[ "$(archive_kind)" == "tar" ]]; then
   validate_tar_has_no_links "$PACKAGE_PATH"
+else
+  validate_zip_has_no_special_entries "$PACKAGE_PATH"
 fi
 
 raw_entries=()

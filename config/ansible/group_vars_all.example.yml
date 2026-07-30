@@ -8,6 +8,7 @@ node_deploy_nextjs_deployment_mode: standalone
 node_deploy_react_document_root: build
 node_deploy_nextjs_require_static_assets: true
 node_deploy_nextjs_require_public_directory: false
+node_deploy_nextjs_require_package_provenance: true
 node_deploy_nextjs_require_server_actions_encryption_key: false
 node_deploy_nextjs_require_deployment_id: false
 node_deploy_nextjs_minimum_node_version: 20.9.0
@@ -16,6 +17,13 @@ node_deploy_app_dir_windows: C:\apps\ExampleNodeApp
 node_deploy_app_dir_linux: /opt/example-node-app
 node_deploy_package_path_windows: ""
 node_deploy_package_path_linux: ""
+node_deploy_require_package_sha256: true
+node_deploy_package_expected_sha256: ""
+node_deploy_package_max_archive_size_mb: 2048
+node_deploy_package_max_extracted_size_mb: 8192
+node_deploy_package_max_entry_count: 200000
+node_deploy_package_max_compression_ratio: 200
+node_deploy_package_minimum_free_space_mb: 1024
 # Leave empty to use the mode-aware default:
 # standalone -> server.js, .next/BUILD_ID, .next/static
 # next-start -> package.json, .next/BUILD_ID, .next, node_modules/next/dist/bin/next
@@ -34,6 +42,8 @@ node_deploy_build_command: npm run build
 node_deploy_node_arguments: ""
 node_deploy_skip_preflight: false
 node_deploy_allow_port_in_use: false
+node_deploy_deployment_lock_timeout_seconds: 0
+node_deploy_linux_deployment_lock_root: /var/run/node-enterprise-deploy-kit
 node_deploy_skip_install: false
 node_deploy_skip_build: false
 node_deploy_skip_reverse_proxy: false
@@ -118,6 +128,9 @@ node_deploy_healthcheck_failure_threshold: 2
 node_deploy_healthcheck_restart_cooldown_minutes: 5
 node_deploy_healthcheck_restart_cooldown_seconds: 300
 node_deploy_healthcheck_timeout_seconds: 10
+node_deploy_require_post_deploy_health_check: true
+node_deploy_post_deploy_health_attempts: 12
+node_deploy_post_deploy_health_delay_seconds: 5
 node_deploy_log_retention_days: 30
 node_deploy_backup_retention_days: 90
 node_deploy_diagnostic_retention_days: 14

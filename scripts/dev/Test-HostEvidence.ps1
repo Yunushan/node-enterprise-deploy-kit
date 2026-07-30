@@ -414,9 +414,17 @@ function Get-HealthMonitorEvidence {
     Scheduled = Get-BooleanValue -Object $monitor -Names @("Scheduled", "scheduled") -Default $false
     ScheduleType = Get-StringValue -Object $monitor -Names @("ScheduleType", "scheduleType")
     TaskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists")
+    TaskPrincipalChecked = Get-BooleanValue -Object $monitor -Names @("TaskPrincipalChecked", "taskPrincipalChecked")
+    TaskRunsAsSystem = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsSystem", "taskRunsAsSystem")
+    TaskRunLevelHighest = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelHighest", "taskRunLevelHighest")
     TaskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked")
+    TaskActionUsesSystemPowerShell = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesSystemPowerShell", "taskActionUsesSystemPowerShell")
+    TaskActionUsesWorkingDirectory = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesWorkingDirectory", "taskActionUsesWorkingDirectory")
     TaskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript")
     TaskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath")
+    TaskScriptHashMatchesSource = Get-BooleanValue -Object $monitor -Names @("TaskScriptHashMatchesSource", "taskScriptHashMatchesSource")
+    TaskConfigMatchesDeployment = Get-BooleanValue -Object $monitor -Names @("TaskConfigMatchesDeployment", "taskConfigMatchesDeployment")
+    TaskFilesAclProtected = Get-BooleanValue -Object $monitor -Names @("TaskFilesAclProtected", "taskFilesAclProtected")
     TaskLastResult = Get-IntegerValue -Object $monitor -Names @("TaskLastResult", "taskLastResult")
     TaskMissedRuns = Get-IntegerValue -Object $monitor -Names @("TaskMissedRuns", "taskMissedRuns")
     SchedulerChecked = Get-BooleanValue -Object $monitor -Names @("SchedulerChecked", "schedulerChecked")
@@ -1063,9 +1071,17 @@ function New-SelfTestEvidence {
           Scheduled = $true
           ScheduleType = "windows-task"
           TaskExists = $true
+          TaskPrincipalChecked = $true
+          TaskRunsAsSystem = $true
+          TaskRunLevelHighest = $true
           TaskActionChecked = $true
+          TaskActionUsesSystemPowerShell = $true
+          TaskActionUsesWorkingDirectory = $true
           TaskActionUsesHealthCheckScript = $true
           TaskActionUsesConfigPath = $true
+          TaskScriptHashMatchesSource = $true
+          TaskConfigMatchesDeployment = $true
+          TaskFilesAclProtected = $true
           TaskLastResult = 0
           TaskMissedRuns = 0
           StateExists = $true
@@ -1194,9 +1210,17 @@ function New-SelfTestEvidence {
           Scheduled = $true
           ScheduleType = "windows-task"
           TaskExists = $true
+          TaskPrincipalChecked = $true
+          TaskRunsAsSystem = $true
+          TaskRunLevelHighest = $true
           TaskActionChecked = $true
+          TaskActionUsesSystemPowerShell = $true
+          TaskActionUsesWorkingDirectory = $true
           TaskActionUsesHealthCheckScript = $true
           TaskActionUsesConfigPath = $true
+          TaskScriptHashMatchesSource = $true
+          TaskConfigMatchesDeployment = $true
+          TaskFilesAclProtected = $true
           TaskLastResult = 0
           TaskMissedRuns = 0
           StateExists = $true
@@ -1869,14 +1893,38 @@ function Test-EvidenceFile {
     if ($healthMonitorEvidence.TaskExists -ne $true) {
       $Issues.Add("$displayFile does not prove the Windows health check scheduled task exists.") | Out-Null
     }
+    if ($healthMonitorEvidence.TaskPrincipalChecked -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task principal was checked.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task runs as SYSTEM.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskRunLevelHighest -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses the highest run level.") | Out-Null
+    }
     if ($healthMonitorEvidence.TaskActionChecked -ne $true) {
       $Issues.Add("$displayFile does not prove the Windows health check scheduled task action was checked.") | Out-Null
     }
+    if ($healthMonitorEvidence.TaskActionUsesSystemPowerShell -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses System32 Windows PowerShell.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskActionUsesWorkingDirectory -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses its protected working directory.") | Out-Null
+    }
     if ($healthMonitorEvidence.TaskActionUsesHealthCheckScript -ne $true) {
-      $Issues.Add("$displayFile does not prove the Windows health check scheduled task runs this kit's health-check script.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task runs the protected managed health-check script.") | Out-Null
     }
     if ($healthMonitorEvidence.TaskActionUsesConfigPath -ne $true) {
-      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses the current config path.") | Out-Null
+      $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses the protected minimal monitor config.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskScriptHashMatchesSource -ne $true) {
+      $Issues.Add("$displayFile does not prove the protected Windows health-check script matches the kit source.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskConfigMatchesDeployment -ne $true) {
+      $Issues.Add("$displayFile does not prove the protected Windows health monitor config matches the deployment.") | Out-Null
+    }
+    if ($healthMonitorEvidence.TaskFilesAclProtected -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows health task files are protected from untrusted writes.") | Out-Null
     }
     if ($null -eq $healthMonitorEvidence.TaskMissedRuns -or $healthMonitorEvidence.TaskMissedRuns -ne 0) {
       $Issues.Add("$displayFile does not prove zero missed Windows health check task runs.") | Out-Null
@@ -2125,7 +2173,7 @@ if ($SelfTest) {
   $wrongHealthConfigEvidence = Get-Content -LiteralPath $wrongHealthConfigFile -Raw | ConvertFrom-Json
   $wrongHealthConfigEvidence.healthMonitor.taskActionUsesConfigPath = $false
   $wrongHealthConfigEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $wrongHealthConfigFile -Encoding UTF8
-  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Windows health check scheduled task uses the current config path" -Parameters @{
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Windows health check scheduled task uses the protected minimal monitor config" -Parameters @{
     EvidencePath = $wrongHealthConfigEvidencePath
     RequireNextJs = $true
     RequireReverseProxy = $true
@@ -2274,6 +2322,23 @@ if ($SelfTest) {
     RequireNextJs = $true
     RequireReverseProxy = $true
     RequireDeploymentIdentity = $true
+  }
+
+  $writableHealthTaskEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-health-task-acl-$([Guid]::NewGuid().ToString('N'))"
+  New-SelfTestEvidence -Path $writableHealthTaskEvidencePath
+  $writableHealthTaskFile = Join-Path $writableHealthTaskEvidencePath "windows-server-2022.json"
+  $writableHealthTaskEvidence = Get-Content -LiteralPath $writableHealthTaskFile -Raw | ConvertFrom-Json
+  $writableHealthTaskEvidence.healthMonitor.taskFilesAclProtected = $false
+  $writableHealthTaskEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $writableHealthTaskFile -Encoding UTF8
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Windows health task files are protected from untrusted writes" -Parameters @{
+    EvidencePath = $writableHealthTaskEvidencePath
+    RequireNextJs = $true
+    RequireReverseProxy = $true
+    RequireDeploymentIdentity = $true
+    ExpectedTargetId = "windows-server-2022"
+    ExpectedNextJsMode = "standalone"
+    ExpectedServiceManager = "winsw"
+    ExpectedReverseProxy = "iis"
   }
 
   $futureGeneratedAtEvidencePath = Join-Path $RepoRoot ".tmp\host-evidence-negative-future-generated-at-$([Guid]::NewGuid().ToString('N'))"

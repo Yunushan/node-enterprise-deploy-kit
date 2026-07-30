@@ -669,6 +669,34 @@ that must exist after extraction:
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 ```
 
+Record the exact artifact digest at build/release time and supply that same
+value to deployment. Windows uses `PackageExpectedSha256` or
+`-PackageExpectedSha256`; Unix-like deployments use
+`PACKAGE_EXPECTED_SHA256` or the third `deploy.sh` argument. Package digest
+verification defaults to required and occurs against a staged copy before any
+service interruption.
+
+Keep the package resource policy enabled for every release. Confirm the
+artifact is below the configured archive-size, extracted-size, entry-count,
+and compression-ratio limits, and that the target has enough free space for
+staging, extraction, installation, backup, and the post-deploy reserve. The
+deployment preflight and importer enforce these checks before stopping the
+active service.
+
+Treat any automatic package rollback or service-recovery message as a failed
+release, even when the previous version was restored successfully. Confirm the
+old deployment identity and health before closing the incident. If the importer
+reports that application-directory recovery failed, leave the service stopped,
+restore the timestamped application backup manually, and rerun status and
+health checks before starting traffic.
+
+The top-level wrappers retain package rollback state until service, proxy, and
+health-scheduler stages finish. A rollback failure preserves the protected
+transaction record and prints its path. Attach that path and the relevant
+managed-backup names to the incident record, but do not publish their contents
+as release evidence. Restore any service/proxy configuration changed after the
+package swap from its timestamped managed backup before reopening traffic.
+
 See [Next.js Deployment](NEXTJS_DEPLOYMENT.md) for the full standalone build
 and packaging flow.
 
@@ -730,6 +758,11 @@ artifact is running.
 
 For updates, confirm the backup directory contains any changed managed files
 before deleting old release artifacts.
+
+GitHub Actions dependencies are pinned to immutable commit SHAs. Before a
+release, review and merge appropriate Dependabot updates, then run
+`scripts/dev/Test-GitHubActionsSecurity.ps1`; do not replace SHA pins with
+mutable branch or version tags.
 
 ## Real Host Evidence
 

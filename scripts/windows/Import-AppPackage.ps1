@@ -10,12 +10,16 @@
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
-    [string] $PackagePath = ""
+    [string] $PackagePath = "",
+    [string] $PackageExpectedSha256 = "",
+    [string] $TransactionStatePath = ""
 )
 
 $ErrorActionPreference = "Stop"
 $PackageProvenanceFileName = ".node-enterprise-package.json"
 $PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v2"
+. (Join-Path $PSScriptRoot "AppPackageSafety.ps1")
+. (Join-Path $PSScriptRoot "AppPackageLifecycle.ps1")
 
 function Resolve-ConfigRelativePath {
     param(
@@ -110,66 +114,6 @@ function Get-BackupDirectory($Config) {
     return (Join-Path (Split-Path -Parent $Config.AppDirectory) "backups")
 }
 
-function Test-SafeArchiveEntryName {
-    param([string]$Name)
-
-    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
-    $normalized = $Name -replace "\\", "/"
-    if ($normalized.StartsWith("/") -or $normalized -match '^[A-Za-z]:') { return $false }
-    $parts = @($normalized.Split("/") | Where-Object { $_ -ne "" })
-    if ($parts.Count -eq 0) { return $false }
-    foreach ($part in $parts) {
-        if ($part -eq "." -or $part -eq "..") { return $false }
-        if ($part.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
-    }
-    return $true
-}
-
-function Get-UnsafeZipEntryType {
-    param($Entry)
-
-    $rawAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$Entry.ExternalAttributes), 0)
-    $unixFileType = (($rawAttributes -shr 16) -band 0xF000)
-    if ($unixFileType -eq 0 -or $unixFileType -eq 0x4000 -or $unixFileType -eq 0x8000) {
-        return ""
-    }
-    if ($unixFileType -eq 0xA000) {
-        return "symlink"
-    }
-    return ("special Unix file type 0x{0:X4}" -f $unixFileType)
-}
-
-function Assert-ZipPackageSafe {
-    param([string]$Path)
-
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
-    try {
-        foreach ($entry in $zip.Entries) {
-            if (-not (Test-SafeArchiveEntryName $entry.FullName)) {
-                throw "Unsafe archive entry path detected: $($entry.FullName)"
-            }
-            $unsafeType = Get-UnsafeZipEntryType $entry
-            if (-not [string]::IsNullOrWhiteSpace($unsafeType)) {
-                throw "Unsafe archive entry type detected: $($entry.FullName) is $unsafeType. Symlinks and special files are intentionally unsupported in deployment archives."
-            }
-        }
-    }
-    finally {
-        $zip.Dispose()
-    }
-}
-
-function Assert-ExtractedTreeSafe {
-    param([string]$RootPath)
-
-    foreach ($item in Get-ChildItem -LiteralPath $RootPath -Force -Recurse) {
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Unsafe extracted reparse point detected: $($item.FullName). Symlinks and junctions are intentionally unsupported in deployment archives."
-        }
-    }
-}
-
 function Get-ExpectedPackageFiles {
     param($Config)
 
@@ -207,7 +151,7 @@ function Assert-ExpectedFiles {
     )
 
     foreach ($relative in $ExpectedFiles) {
-        if (-not (Test-SafeArchiveEntryName $relative)) {
+        if (-not (Test-AppPackageSafeArchiveEntryName $relative)) {
             throw "PackageExpectedFiles contains an unsafe relative path: $relative"
         }
         $candidate = Join-Path $SourceRoot ($relative -replace '/', '\')
@@ -427,25 +371,6 @@ function Test-StaticIisPackageIfNeeded {
     & $validator @arguments
 }
 
-function Stop-AppServiceIfPresent {
-    param([string]$Name)
-
-    if (-not (Get-Command Get-Service -ErrorAction SilentlyContinue)) {
-        Write-Host "Windows service cmdlets are unavailable; skipping service stop before package import."
-        return
-    }
-
-    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
-    if ($service -and $service.Status -ne "Stopped") {
-        if (-not (Get-Command Stop-Service -ErrorAction SilentlyContinue)) {
-            throw "Stop-Service cmdlet is required to stop running service before package import."
-        }
-        Write-Host "Stopping service before package import: $Name"
-        Stop-Service -Name $Name -Force -ErrorAction Stop
-        $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(60))
-    }
-}
-
 function Get-FirstLineFromFile {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
@@ -480,12 +405,12 @@ function Write-DeploymentManifest {
     param(
         $Config,
         [string]$AppDirectory,
-        [string]$PackagePath,
+        [string]$PackageName,
+        [string]$PackageSha256,
         $PackageProvenance
     )
 
     $manifestPath = Join-Path $AppDirectory ".node-enterprise-deploy.json"
-    $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest = [ordered]@{
         schema = "node-enterprise-deploy-kit/import-manifest/v1"
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -496,8 +421,8 @@ function Write-DeploymentManifest {
         reactDocumentRoot = Get-ReactDocumentRoot $Config
         staticOutputDirectory = Get-StaticOutputDirectory $Config
         spaShellFile = Get-SpaShellFile $Config
-        packageName = [System.IO.Path]::GetFileName($PackagePath)
-        packageSha256 = $packageHash
+        packageName = $PackageName
+        packageSha256 = $PackageSha256
         deploymentId = Get-DeploymentIdFromConfig $Config
         nextBuildId = Get-NextBuildIdFromDirectory $AppDirectory
         packageProvenance = $PackageProvenance
@@ -530,72 +455,178 @@ $PackagePath = Resolve-ConfigRelativePath -BasePath $ConfigPath -Path $PackagePa
 if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
     throw "PackagePath not found: $PackagePath"
 }
+
+function Write-PackageTransactionState {
+    param(
+        [string]$Path,
+        $Config,
+        [string]$AppDirectory,
+        [string]$BackupPath,
+        $ServiceState,
+        [bool]$IsStaticIis
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if (-not [System.IO.Path]::IsPathRooted($Path)) {
+        throw "TransactionStatePath must be an absolute path."
+    }
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    $state = [ordered]@{
+        schema = "node-enterprise-deploy-kit/package-transaction/v1"
+        appName = [string]$Config.AppName
+        appDirectory = $AppDirectory
+        backupPath = $BackupPath
+        previousAppExisted = -not [string]::IsNullOrWhiteSpace($BackupPath)
+        serviceKind = if ($IsStaticIis) { "none" } elseif ($ServiceState) { [string]$ServiceState.Kind } else { "windows-service" }
+        serviceName = [string]$Config.AppName
+        serviceCommandName = if ($ServiceState) { [string]$ServiceState.CommandName } else { "" }
+        serviceExisted = if ($ServiceState) { [bool]$ServiceState.Exists } else { $false }
+        serviceWasRunning = if ($ServiceState) { [bool]$ServiceState.WasRunning } else { $false }
+    }
+    $temporaryPath = "$Path.$PID.tmp"
+    try {
+        [System.IO.File]::WriteAllText(
+            $temporaryPath,
+            (($state | ConvertTo-Json -Depth 5) + "`r`n"),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    finally {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+    }
+}
 if ([System.IO.Path]::GetExtension($PackagePath).ToLowerInvariant() -ne ".zip") {
     throw "Windows package import supports .zip only. Use .zip for Windows deployments; .rar and .7z require external tooling and are intentionally unsupported."
+}
+
+$requirePackageSha256 = Get-ConfigBool $config "RequirePackageSha256" $true
+if ([string]::IsNullOrWhiteSpace($PackageExpectedSha256)) {
+    $PackageExpectedSha256 = Get-ConfigString $config "PackageExpectedSha256" ""
+}
+$PackageExpectedSha256 = $PackageExpectedSha256.Trim().ToLowerInvariant()
+if ($requirePackageSha256 -and [string]::IsNullOrWhiteSpace($PackageExpectedSha256)) {
+    throw "PackageExpectedSha256 is required when RequirePackageSha256 is true."
+}
+if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256) -and $PackageExpectedSha256 -notmatch '^[a-f0-9]{64}$') {
+    throw "PackageExpectedSha256 must contain exactly 64 hexadecimal characters."
 }
 
 $appDirectory = [System.IO.Path]::GetFullPath([string]$config.AppDirectory)
 $backupDirectory = [System.IO.Path]::GetFullPath((Get-BackupDirectory $config))
 $stripSingleTopLevelDirectory = Get-ConfigBool $config "PackageStripSingleTopLevelDirectory" $true
 $expectedFiles = @(Get-ExpectedPackageFiles $config)
+$packageSafetyPolicy = Get-AppPackageSafetyPolicy $config
 
 if ($backupDirectory.StartsWith($appDirectory.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "BackupDirectory must not be inside AppDirectory when importing packages."
 }
 
-Assert-ZipPackageSafe -Path $PackagePath
-Test-NextJsPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
-Test-ReactPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
-Test-StaticIisPackageIfNeeded -Config $config -Path $PackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
-
-$extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-package-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+$sourcePackagePath = $PackagePath
+$packageName = [System.IO.Path]::GetFileName($sourcePackagePath)
+$workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("node-enterprise-package-" + [guid]::NewGuid().ToString("N"))
+$stagedPackagePath = Join-Path $workRoot $packageName
+$extractRoot = Join-Path $workRoot "extract"
 $backupPath = ""
+$sourceArchiveInfo = Get-AppPackageZipSafetyInfo -Path $sourcePackagePath -Policy $packageSafetyPolicy
+Assert-AppPackageDeploymentCapacity `
+    -ArchiveInfo $sourceArchiveInfo `
+    -Policy $packageSafetyPolicy `
+    -WorkPath $workRoot `
+    -AppDirectory $appDirectory `
+    -BackupDirectory $backupDirectory
 
 try {
-    [System.IO.Compression.ZipFile]::ExtractToDirectory($PackagePath, $extractRoot)
-    Assert-ExtractedTreeSafe -RootPath $extractRoot
+    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+    Copy-Item -LiteralPath $sourcePackagePath -Destination $stagedPackagePath -Force
+    $verifiedPackageSha256 = (Get-FileHash -LiteralPath $stagedPackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256) -and $verifiedPackageSha256 -ne $PackageExpectedSha256) {
+        throw "Application package SHA-256 does not match PackageExpectedSha256."
+    }
+
+    $archiveInfo = Get-AppPackageZipSafetyInfo -Path $stagedPackagePath -Policy $packageSafetyPolicy
+    Assert-AppPackageDeploymentCapacity `
+        -ArchiveInfo $archiveInfo `
+        -Policy $packageSafetyPolicy `
+        -WorkPath $workRoot `
+        -AppDirectory $appDirectory `
+        -BackupDirectory $backupDirectory `
+        -PackageAlreadyStaged
+    Test-NextJsPackageIfNeeded -Config $config -Path $stagedPackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
+    Test-ReactPackageIfNeeded -Config $config -Path $stagedPackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
+    Test-StaticIisPackageIfNeeded -Config $config -Path $stagedPackagePath -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
+
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($stagedPackagePath, $extractRoot)
+    $extractedInfo = Assert-AppPackageExtractedTreeSafe -RootPath $extractRoot -Policy $packageSafetyPolicy
+    if ([long]$extractedInfo.ExtractedSizeBytes -ne [long]$archiveInfo.ExtractedSizeBytes) {
+        throw "Extracted package size does not match trusted archive metadata."
+    }
     $sourceRoot = Get-PackageSourceRoot -ExtractRoot $extractRoot -StripSingleTopLevelDirectory $stripSingleTopLevelDirectory
     Assert-ExpectedFiles -SourceRoot $sourceRoot -ExpectedFiles $expectedFiles
     $packageProvenance = Test-NextJsPackageProvenanceIfNeeded -Config $config -SourceRoot $sourceRoot
 
-    if ($PSCmdlet.ShouldProcess($appDirectory, "Import application package $PackagePath")) {
-        if (-not (Test-StaticIisDeploymentMode $config)) {
-            Stop-AppServiceIfPresent -Name ([string]$config.AppName)
-        }
-        New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appDirectory) | Out-Null
-
-        if (Test-Path -LiteralPath $appDirectory) {
-            $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss")
-            $backupPath = Join-Path $backupDirectory ("app.{0}.{1}.bak" -f $timestamp, $PID)
-            Move-Item -LiteralPath $appDirectory -Destination $backupPath -Force
-            if (Test-StaticIisDeploymentMode $config) {
-                Write-Host "Backed up existing AppDirectory."
-            } else {
-                Write-Host "Backed up existing AppDirectory to: $backupPath"
-            }
-        }
-
-        New-Item -ItemType Directory -Force -Path $appDirectory | Out-Null
+    if ($PSCmdlet.ShouldProcess($appDirectory, "Import application package $sourcePackagePath")) {
+        $isStaticIis = Test-StaticIisDeploymentMode $config
+        $serviceState = $null
+        $script:AppPackageDirectoryRecoverySucceeded = $true
         try {
-            foreach ($item in Get-ChildItem -LiteralPath $sourceRoot -Force) {
-                Copy-Item -LiteralPath $item.FullName -Destination $appDirectory -Recurse -Force
+            if (-not $isStaticIis) {
+                $serviceState = Get-AppPackageServiceState -Config $config
+                Stop-AppPackageService -State $serviceState
             }
-            Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackagePath $PackagePath -PackageProvenance $packageProvenance
+
+            $replacementArgs = @{
+                SourceRoot = $sourceRoot
+                AppDirectory = $appDirectory
+                BackupDirectory = $backupDirectory
+                WriteManifest = {
+                    Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackageName $packageName -PackageSha256 $verifiedPackageSha256 -PackageProvenance $packageProvenance
+                }
+            }
+            if ($isStaticIis) { $replacementArgs.RedactBackupPath = $true }
+            $backupPath = Invoke-AppPackageDirectoryReplacement @replacementArgs
+            try {
+                Write-PackageTransactionState `
+                    -Path $TransactionStatePath `
+                    -Config $config `
+                    -AppDirectory $appDirectory `
+                    -BackupPath $backupPath `
+                    -ServiceState $serviceState `
+                    -IsStaticIis $isStaticIis
+            }
+            catch {
+                $stateFailure = $_
+                $script:AppPackageDirectoryRecoverySucceeded = $false
+                try {
+                    Restore-AppPackageDirectoryFromBackup `
+                        -AppDirectory $appDirectory `
+                        -BackupPath $backupPath `
+                        -PreviousAppExisted (-not [string]::IsNullOrWhiteSpace($backupPath))
+                    $script:AppPackageDirectoryRecoverySucceeded = $true
+                }
+                catch {
+                    throw "$($stateFailure.Exception.Message) Transaction-state recovery also failed: $($_.Exception.Message)"
+                }
+                throw $stateFailure
+            }
         }
         catch {
-            if (Test-Path -LiteralPath $appDirectory) {
-                Remove-Item -LiteralPath $appDirectory -Recurse -Force
+            $originalError = $_
+            if ($serviceState -and $serviceState.WasRunning) {
+                if ($script:AppPackageDirectoryRecoverySucceeded) {
+                    try { Start-AppPackageServiceAfterFailure -State $serviceState }
+                    catch {
+                        throw "$($originalError.Exception.Message) The previous application directory was restored, but service recovery failed: $($_.Exception.Message)"
+                    }
+                } else {
+                    Write-Error "CRITICAL: The previous application directory could not be restored, so the service was intentionally left stopped." -ErrorAction Continue
+                }
             }
-            if ($backupPath -and (Test-Path -LiteralPath $backupPath)) {
-                Move-Item -LiteralPath $backupPath -Destination $appDirectory -Force
-                Write-Warning "Restored previous AppDirectory after package import failure."
-            }
-            throw
+            throw $originalError
         }
 
-        if (Test-StaticIisDeploymentMode $config) {
+        if ($isStaticIis) {
             Write-Host "Imported package into AppDirectory." -ForegroundColor Green
         } else {
             Write-Host "Imported package into AppDirectory: $appDirectory" -ForegroundColor Green
@@ -603,7 +634,7 @@ try {
     }
 }
 finally {
-    if (Test-Path -LiteralPath $extractRoot) {
-        Remove-Item -LiteralPath $extractRoot -Recurse -Force
+    if (Test-Path -LiteralPath $workRoot) {
+        Remove-Item -LiteralPath $workRoot -Recurse -Force
     }
 }

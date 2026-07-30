@@ -120,8 +120,8 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
       '$map["APP_PORT"] = [string]$Config.Port',
       '$map["BIND_ADDRESS"] = $bindAddress',
       '$map["HOSTNAME"] = $bindAddress',
-      'AppEnvironmentExtra @environmentEntries',
-      'sc.exe config $config.AppName start= auto'
+      'Invoke-CheckedNativeCommand $nssm (@("set", $config.AppName, "AppEnvironmentExtra") + $environmentEntries) "NSSM environment"',
+      'Invoke-CheckedNativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set NSSM startup mode"'
     )) {
     Assert-FileContainsText -Path $nssmInstallerPath -ExpectedText $expected
   }
@@ -134,7 +134,7 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
       '$map["BIND_ADDRESS"] = $bindAddress',
       '$map["HOSTNAME"] = $bindAddress',
       'interpreter = [string]$Config.NodeExe',
-      'pm2 start $ecosystemPath --only $config.AppName --update-env'
+      'Invoke-CheckedPm2Command $pm2CommandName @("start", $ecosystemPath, "--only", $config.AppName, "--update-env") "PM2 start"'
     )) {
     Assert-FileContainsText -Path $pm2InstallerPath -ExpectedText $expected
   }
@@ -312,6 +312,8 @@ function New-WindowsConfig {
     RequireWinSWDownloadSha256 = $false
     WinSWDownloadSha256 = ""
     AppDirectory = $AppDirectory
+    RequirePackageSha256 = $true
+    PackageExpectedSha256 = ""
     StartCommand = $StartCommand
     NodeExe = $nodeExe
     NodeArguments = $NodeArguments
@@ -416,7 +418,7 @@ NEXTJS_REQUIRE_PUBLIC_DIR="false"
 NEXTJS_REQUIRE_SERVER_ACTIONS_ENCRYPTION_KEY="$([bool]$RequireServerActionsEncryptionKey)"
 NEXTJS_REQUIRE_DEPLOYMENT_ID="$([bool]$RequireDeploymentId)"
 NEXTJS_MINIMUM_NODE_VERSION="20.9.0"
-APP_DIR="$relativeRoot/app"
+APP_DIR="`${PWD}/$relativeRoot/app"
 NODE_BIN="$nodeBinRelative"
 START_SCRIPT="$StartScript"
 NODE_ARGUMENTS="$NodeArguments"
@@ -601,6 +603,37 @@ function New-ZipWithUnsafeUnixSymlinkEntry {
   }
 }
 
+function New-ZipWithCaseCollisionEntries {
+  param([string]$OutputPath)
+
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $outputDirectory = Split-Path -Parent $OutputPath
+  New-Directory $outputDirectory
+  if (Test-Path -LiteralPath $OutputPath) {
+    Remove-Item -LiteralPath $OutputPath -Force
+  }
+
+  $zip = [System.IO.Compression.ZipFile]::Open(
+    $OutputPath,
+    [System.IO.Compression.ZipArchiveMode]::Create
+  )
+  try {
+    foreach ($name in @("server.js", "SERVER.JS")) {
+      $entry = $zip.CreateEntry($name)
+      $writer = New-Object System.IO.StreamWriter($entry.Open(), [System.Text.UTF8Encoding]::new($false))
+      try {
+        $writer.Write("console.log('case collision');`n")
+      }
+      finally {
+        $writer.Dispose()
+      }
+    }
+  }
+  finally {
+    $zip.Dispose()
+  }
+}
+
 function Assert-TarContains {
   param(
     [string]$BashPath,
@@ -694,23 +727,31 @@ function Invoke-ExpectPackageValidatorBashFailure {
 function Invoke-ExpectImportPowerShellSuccess {
   param(
     [string]$ConfigPath,
-    [string]$PackagePath
+    [string]$PackagePath,
+    [string]$PackageExpectedSha256 = ""
   )
 
-  & (Join-Path $RepoRoot "scripts\windows\Import-AppPackage.ps1") -ConfigPath $ConfigPath -PackagePath $PackagePath *>&1 | Out-Null
+  if ([string]::IsNullOrWhiteSpace($PackageExpectedSha256)) {
+    $PackageExpectedSha256 = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+  }
+  & (Join-Path $RepoRoot "scripts\windows\Import-AppPackage.ps1") -ConfigPath $ConfigPath -PackagePath $PackagePath -PackageExpectedSha256 $PackageExpectedSha256 *>&1 | Out-Null
 }
 
 function Invoke-ExpectImportPowerShellFailure {
   param(
     [string]$ConfigPath,
     [string]$PackagePath,
-    [string]$ExpectedText
+    [string]$ExpectedText,
+    [string]$PackageExpectedSha256 = ""
   )
 
+  if ([string]::IsNullOrWhiteSpace($PackageExpectedSha256)) {
+    $PackageExpectedSha256 = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+  }
   $failed = $false
   $captured = New-Object System.Collections.Generic.List[string]
   try {
-    & (Join-Path $RepoRoot "scripts\windows\Import-AppPackage.ps1") -ConfigPath $ConfigPath -PackagePath $PackagePath *>&1 |
+    & (Join-Path $RepoRoot "scripts\windows\Import-AppPackage.ps1") -ConfigPath $ConfigPath -PackagePath $PackagePath -PackageExpectedSha256 $PackageExpectedSha256 *>&1 |
       ForEach-Object { $captured.Add([string]$_) | Out-Null }
   } catch {
     $failed = $true
@@ -734,7 +775,13 @@ function Invoke-ExpectImportBashFailure {
     [string]$ExpectedText
   )
 
-  $output = & $BashPath "scripts/linux/import-app-package.sh" $EnvPath $PackagePath 2>&1
+  $nativeEnvPath = $EnvPath -replace '/', [System.IO.Path]::DirectorySeparatorChar
+  $nativePackagePath = $PackagePath -replace '/', [System.IO.Path]::DirectorySeparatorChar
+  if (-not [System.IO.Path]::IsPathRooted($nativePackagePath)) {
+    $nativePackagePath = Join-Path (Split-Path -Parent $nativeEnvPath) $nativePackagePath
+  }
+  $packageExpectedSha256 = (Get-FileHash -LiteralPath $nativePackagePath -Algorithm SHA256).Hash
+  $output = & $BashPath "scripts/linux/import-app-package.sh" $EnvPath $PackagePath $packageExpectedSha256 2>&1
   $outputText = ($output | Out-String)
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package import failure, but command succeeded."
@@ -810,14 +857,20 @@ function Invoke-ExpectPowerShellFailure {
     [string]$ScriptPath,
     [string]$ConfigPath,
     [string]$ExpectedText,
-    [string[]]$ExtraArgs = @("-SkipReverseProxy", "-SkipHealthCheck")
+    [string[]]$ExtraArgs = @("-SkipReverseProxy", "-SkipHealthCheck"),
+    [hashtable]$NamedArgs = @{}
   )
 
   $failed = $false
   $captured = New-Object System.Collections.Generic.List[string]
   try {
-    & $ScriptPath -ConfigPath $ConfigPath @ExtraArgs *>&1 |
-      ForEach-Object { $captured.Add([string]$_) | Out-Null }
+    if ($NamedArgs.Count -gt 0) {
+      & $ScriptPath -ConfigPath $ConfigPath @NamedArgs *>&1 |
+        ForEach-Object { $captured.Add([string]$_) | Out-Null }
+    } else {
+      & $ScriptPath -ConfigPath $ConfigPath @ExtraArgs *>&1 |
+        ForEach-Object { $captured.Add([string]$_) | Out-Null }
+    }
   } catch {
     $failed = $true
     $captured.Add($_.Exception.Message) | Out-Null
@@ -1128,12 +1181,15 @@ try {
     "public/robots.txt"
   )
   Invoke-ExpectPackageValidatorPowerShellSuccess -PackagePath $windowsPackagePath
+  $windowsPackageExpectedSha256 = (Get-FileHash -LiteralPath $windowsPackagePath -Algorithm SHA256).Hash
 
   $windowsCliPackagePreflightRoot = Join-Path $testRoot "windows-cli-package-preflight"
   $windowsCliPackagePreflightConfig = Join-Path $windowsCliPackagePreflightRoot "app.config.json"
   $windowsCliPackagePreflightApp = Join-Path $windowsCliPackagePreflightRoot "missing-app"
   New-WindowsConfig -Path $windowsCliPackagePreflightConfig -AppDirectory $windowsCliPackagePreflightApp -ServiceDirectory (Join-Path $windowsCliPackagePreflightRoot "svc") -LogDirectory (Join-Path $windowsCliPackagePreflightRoot "logs") -Port 39118
-  & $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -SkipReverseProxy -SkipHealthCheck -PackagePath $windowsPackagePath *>&1 | Out-Null
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -ExpectedText "PackageExpectedSha256 is required" -NamedArgs @{ SkipReverseProxy = $true; SkipHealthCheck = $true; PackagePath = $windowsPackagePath }
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -ExpectedText "does not match PackageExpectedSha256" -NamedArgs @{ SkipReverseProxy = $true; SkipHealthCheck = $true; PackagePath = $windowsPackagePath; PackageExpectedSha256 = ("0" * 64) }
+  & $windowsPreflight -ConfigPath $windowsCliPackagePreflightConfig -SkipReverseProxy -SkipHealthCheck -PackagePath $windowsPackagePath -PackageExpectedSha256 $windowsPackageExpectedSha256 *>&1 | Out-Null
   $skipPackageImportFailed = $false
   $skipPackageImportOutput = New-Object System.Collections.Generic.List[string]
   try {
@@ -1197,6 +1253,9 @@ try {
   New-ZipWithUnsafeUnixSymlinkEntry -OutputPath $windowsUnsafeTypePackage
   Invoke-ExpectPackageValidatorPowerShellFailure -PackagePath $windowsUnsafeTypePackage -ExpectedText "Unsafe archive entry type"
 
+  $windowsCaseCollisionPackage = Join-Path $testRoot "packages\case-collision.zip"
+  New-ZipWithCaseCollisionEntries -OutputPath $windowsCaseCollisionPackage
+
   $windowsImportRoot = Join-Path $testRoot "windows-import"
   $windowsImportConfig = Join-Path $windowsImportRoot "app.config.json"
   $windowsImportApp = Join-Path $windowsImportRoot "app"
@@ -1222,6 +1281,36 @@ try {
   }
   if ($windowsImportManifestEvidence.packageSha256 -ne $windowsPackageSha256) {
     throw "Windows deployment manifest package SHA256 does not match imported package."
+  }
+  $integritySentinel = Join-Path $windowsImportApp "integrity-sentinel.txt"
+  Write-Utf8NoBom -Path $integritySentinel -Text "active release remains untouched`n"
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsPackagePath -ExpectedText "does not match PackageExpectedSha256" -PackageExpectedSha256 ("0" * 64)
+  if (-not (Test-Path -LiteralPath $integritySentinel -PathType Leaf)) {
+    throw "A package digest mismatch must fail before the active AppDirectory is changed."
+  }
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsCaseCollisionPackage -ExpectedText "Duplicate or case-colliding archive entry"
+  if (-not (Test-Path -LiteralPath $integritySentinel -PathType Leaf)) {
+    throw "A case-colliding package must fail before the active AppDirectory is changed."
+  }
+
+  $windowsEntryLimitConfig = Join-Path $windowsImportRoot "app.entry-limit.config.json"
+  $windowsEntryLimitConfigData = Get-Content -LiteralPath $windowsImportConfig -Raw | ConvertFrom-Json
+  $windowsEntryLimitConfigData | Add-Member -NotePropertyName PackageMaxEntryCount -NotePropertyValue 1 -Force
+  Write-Utf8NoBom -Path $windowsEntryLimitConfig -Text (($windowsEntryLimitConfigData | ConvertTo-Json -Depth 20) + "`n")
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsEntryLimitConfig -ExpectedText "PackageMaxEntryCount" -NamedArgs @{ SkipReverseProxy = $true; SkipHealthCheck = $true; PackagePath = $windowsPackagePath; PackageExpectedSha256 = $windowsPackageExpectedSha256 }
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsEntryLimitConfig -PackagePath $windowsPackagePath -ExpectedText "PackageMaxEntryCount"
+  if (-not (Test-Path -LiteralPath $integritySentinel -PathType Leaf)) {
+    throw "A package entry-limit failure must leave the active AppDirectory unchanged."
+  }
+
+  $windowsDiskLimitConfig = Join-Path $windowsImportRoot "app.disk-limit.config.json"
+  $windowsDiskLimitConfigData = Get-Content -LiteralPath $windowsImportConfig -Raw | ConvertFrom-Json
+  $windowsDiskLimitConfigData | Add-Member -NotePropertyName PackageMinimumFreeSpaceMB -NotePropertyValue 8388608 -Force
+  Write-Utf8NoBom -Path $windowsDiskLimitConfig -Text (($windowsDiskLimitConfigData | ConvertTo-Json -Depth 20) + "`n")
+  Invoke-ExpectPowerShellFailure -ScriptPath $windowsPreflight -ConfigPath $windowsDiskLimitConfig -ExpectedText "Insufficient free disk space" -NamedArgs @{ SkipReverseProxy = $true; SkipHealthCheck = $true; PackagePath = $windowsPackagePath; PackageExpectedSha256 = $windowsPackageExpectedSha256 }
+  Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsDiskLimitConfig -PackagePath $windowsPackagePath -ExpectedText "Insufficient free disk space"
+  if (-not (Test-Path -LiteralPath $integritySentinel -PathType Leaf)) {
+    throw "A package disk-capacity failure must leave the active AppDirectory unchanged."
   }
   if ($windowsImportManifestEvidence.nextBuildId -ne "example-build") {
     throw "Windows deployment manifest should include the imported Next.js build ID."

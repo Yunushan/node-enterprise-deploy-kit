@@ -115,16 +115,57 @@ To deploy a built `.zip` artifact, set `PackagePath` in config or pass
 `-PackagePath` to the wrapper:
 
 ```powershell
+$package = "C:\deploy\example-node-app.zip"
+$packageSha256 = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
 .\install.ps1 -ConfigPath .\config\windows\app.config.json `
-  -PackagePath C:\deploy\example-node-app.zip `
+  -PackagePath $package `
+  -PackageExpectedSha256 $packageSha256 `
   -SkipInstall -SkipBuild
 ```
 
 Windows package import supports `.zip` with built-in .NET extraction. It
-validates archive paths before extraction, extracts to a temporary directory,
-rejects symlink, reparse-point, and special-file entries, checks
+copies the artifact into a unique temporary work directory, verifies its
+SHA-256 digest, validates archive paths before extraction, rejects duplicate or
+case-colliding entries, extracts it there, rejects symlink, reparse-point, and
+special-file entries, checks
 `PackageExpectedFiles`, stops the service if it exists, backs up the current
 `AppDirectory`, then imports the new package contents.
+`RequirePackageSha256` defaults to `true`; a missing, malformed, or mismatched
+`PackageExpectedSha256` fails before the service is stopped or the active app
+directory is changed. Keep the digest blank in committed examples and calculate
+it from each release artifact on the trusted build/deployment workstation.
+The importer and preflight also enforce `PackageMaxArchiveSizeMB` (default
+`2048`), `PackageMaxExtractedSizeMB` (`8192`), `PackageMaxEntryCount`
+(`200000`), `PackageMaxCompressionRatio` (`200`), and
+`PackageMinimumFreeSpaceMB` (`1024`). Source and staged archives are inspected,
+the extracted tree is remeasured, and projected temporary, application, and
+backup work must leave the configured reserve. All failures occur before the
+service is stopped or the active application directory is replaced.
+
+After those checks pass, the importer records whether the WinSW service or PM2
+process is running and verifies that it stops before replacing files. The
+existing `AppDirectory` is moved to a timestamped backup. If replacement or
+deployment-manifest creation fails, the importer removes the partial release,
+restores the previous directory, and restarts the process only when it was
+running before import. If directory restoration fails, the process is
+intentionally left stopped and the command reports a critical recovery error;
+do not start it until the application directory has been repaired. Static IIS
+imports use the same directory rollback but have no Node service to stop or
+restart.
+
+When package import is invoked through `install.ps1` or `deploy.ps1`, the
+transaction remains active through app preparation, service installation, IIS
+configuration, and health-task registration. Any downstream failure restores
+the previous `AppDirectory` and its prior running/stopped state. If this was the
+first deployment, rollback removes a newly registered Windows service or PM2
+entry. The transaction JSON is written beside the protected deployment lock,
+contains no environment values, and is removed after success or successful
+rollback. If automatic rollback fails, the command reports and preserves that
+file; keep the service stopped, inspect the referenced backup, and complete
+recovery manually. Static IIS installation also restores its prior content,
+site, app-pool, binding, and TLS state. WinSW/NSSM/PM2 and reverse-proxy config
+files retain timestamped backups for any additional managed-config restoration.
+
 `PackageExpectedFiles` may name files or directories, so Next.js standalone
 packages can require `server.js`, `.next/BUILD_ID`, and `.next/static`. `.rar` and `.7z` are
 intentionally unsupported because they require external tooling and a larger
@@ -328,9 +369,10 @@ The status JSON also includes `HealthMonitor` evidence from the scheduled
 health-check task, state file, and recent health-check log summary. It also
 includes `ServiceDefinition` evidence proving that WinSW, NSSM, or the PM2
 ecosystem file still matches the current `NodeExe`, `AppDirectory`,
-`StartCommand`, and `NodeArguments`. The task action must run this kit's
-health-check script with the current deployment config path, so stale services
-or health-check tasks from older releases are not accepted as production proof.
+`StartCommand`, and `NodeArguments`. The task action must use the protected
+managed script and minimal config, and their source hash/config/ACL checks must
+pass, so stale or writable health-check tasks are not accepted as production
+proof.
 For a fully proven production host, collect evidence after the monitor has
 completed successfully and after the requested uptime window, not immediately
 after the first service start.
@@ -359,9 +401,13 @@ you intentionally want the configured site to take over that port. The helper
 uses `TlsEnabled` to inspect `http` or `https`, defaults the public port to `80`
 or `443` when `PublicPort` is unset, and rollback restores the previous IIS
 physical path, app pool, and started/stopped site state. The generated runtime
-config is retained under `<ServiceDirectory>\config` by default because the
-Windows scheduled health-check task reads that exact config path after
-deployment.
+config is removed after the deployment/status transaction by default. Pass
+`-KeepGeneratedConfig` only when an operator needs that file for an audited
+follow-up; protect a retained file as private deployment configuration. The
+scheduled health task uses its own allowlisted config under `%ProgramData%`, so
+it never needs the full generated runtime config. Default temporary names are
+unique per invocation, and an explicit `-GeneratedConfigPath` is rejected when
+it already exists or aliases the source deployment config.
 
 The Windows service installers write safe runtime environment defaults when
 they are not already set in `Environment`: `NODE_ENV`, `PORT`, `APP_PORT`,
@@ -389,12 +435,21 @@ local/domain account, or a group managed service account such as
 for production. Ordinary domain/local users require `ServiceAccountPassword`,
 but a gMSA is preferred so no password has to be stored in deployment config.
 
+Static IIS deployment backs up the existing live folder, stops an existing site
+before replacing its files, configures the app pool/site/binding, and verifies
+the final IIS state. A failure at any point restores both the prior content and
+the prior IIS physical path, app-pool association, binding, and started/stopped
+state. `StaticOutputDirectory`, `IisSitePath`, and `BackupDirectory` are checked
+for destructive overlap before deployment.
+
 When `ReverseProxy` is `iis`, `scripts\windows\Install-ReverseProxy.ps1`
 dispatches to the IIS installer, which writes `web.config`, configures an
 always-running app pool, creates or updates the IIS site, adds the configured
-HTTP/HTTPS binding, and starts the site when it is stopped. If `TlsEnabled` is true and
-`IisCertificateThumbprint` is empty or unavailable, certificate binding remains
-an explicit manual step and the script prints a warning.
+HTTP/HTTPS binding, and starts the site when it is stopped. If `TlsEnabled` is
+true, `IisCertificateThumbprint` must identify an available certificate in
+`Cert:\LocalMachine\My`; preflight and installation fail closed when it is
+missing or conflicts with an existing SSL binding. Use `TlsEnabled=false` when
+TLS terminates at a documented upstream load balancer.
 
 Windows automation in this kit supports `ReverseProxy` values `iis` and `none`.
 Apache, HAProxy, and Traefik helper installers are Linux/Unix scripts here. If
@@ -425,7 +480,7 @@ Use these switches when needed:
 
 ```powershell
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipInstall -SkipBuild
-.\install.ps1 -ConfigPath .\config\windows\app.config.json -PackagePath C:\deploy\app.zip -SkipInstall -SkipBuild
+.\install.ps1 -ConfigPath .\config\windows\app.config.json -PackagePath C:\deploy\app.zip -PackageExpectedSha256 $packageSha256 -SkipInstall -SkipBuild
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -AllowPortInUse
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipReverseProxy -SkipHealthCheck
 .\install.ps1 -ConfigPath .\config\windows\app.config.json -SkipWinSWDownload
@@ -458,9 +513,11 @@ so normal service updates should not need `-AllowPortInUse`.
 The status command reports host uptime, service state, service wrapper uptime,
 node processes, configured port listeners, whether the configured service owns
 the listener, HTTP health latency, scheduled health-check freshness, health
-history, service-definition alignment, scheduled-task action/config alignment,
-and recent log file metadata without printing environment variables or log
-contents. `-MinimumUptimeHours` is useful after a reboot or several days of
+history, service-definition alignment, and recent log file metadata without
+printing environment variables or log contents. Scheduled-task evidence also
+proves the `SYSTEM`/highest principal, explicit System32 PowerShell action,
+protected working directory, script hash, minimal config alignment, and ACL
+trust boundary. `-MinimumUptimeHours` is useful after a reboot or several days of
 runtime because it warns when the service has restarted more recently than the
 period you expected. `-JsonPath` writes the same safe verdict and findings to a
 machine-readable evidence file for release reviews. Add `-FailOnWarnings` when
@@ -483,14 +540,17 @@ Uptime evidence records host uptime when available, service process uptime, and
 whether the requested `-MinimumUptimeHours` window was satisfied.
 
 Managed file updates create timestamped backups in `BackupDirectory` before
-replacing existing WinSW XML/exe files, IIS `web.config`, or the scheduled
-health-check task definition. If `BackupDirectory` is not set, the scripts use
-`<ServiceDirectory>\backups`.
+replacing existing WinSW XML/exe files, IIS `web.config`, the scheduled
+health-check task definition, or its managed script/config files. If
+`BackupDirectory` is not set, the scripts use `<ServiceDirectory>\backups`.
 
-When `scripts\windows\Register-HealthCheckTask.ps1` is run directly, it
-resolves `-ConfigPath` to an absolute path before saving the task action. This
-prevents a relative config path from breaking later when Task Scheduler runs the
-health check as `SYSTEM`.
+`scripts\windows\Register-HealthCheckTask.ps1` resolves the operator config,
+copies only an allowlisted operational subset into
+`%ProgramData%\node-enterprise-deploy-kit\healthchecks\<AppName>`, protects the
+directory and files against untrusted writes, and points Task Scheduler at that
+managed copy. The full deployment config is never placed in a `SYSTEM` task
+action. Registration restores the previous files and task definition when an
+update fails.
 
 8. Restart or uninstall:
 
@@ -503,8 +563,9 @@ health check as `SYSTEM`.
 The Windows uninstaller routes by `ServiceManager`: WinSW uses the service
 wrapper executable, NSSM uses `nssm remove` when available and falls back to
 `sc.exe stop/delete`, and PM2 removes the named process plus the generated PM2
-ecosystem file. It does not delete app files, logs, backups, or private config
-files.
+ecosystem file. `-RemoveHealthCheckTask` also removes that app's protected
+managed task directory. It does not delete app files, application logs,
+backups, or private deployment config files.
 
 For managed config rollback, list available backups first, then restore a
 specific target:
@@ -526,9 +587,12 @@ service installation succeeds and the configured app path is still valid.
 
 The scheduled health check uses `HealthCheckFailureThreshold` and
 `HealthCheckRestartCooldownMinutes` to avoid restart loops during short outages.
-It also records state under `LogDirectory` and prunes old managed logs,
-diagnostics, and backups using `LogRetentionDays`, `DiagnosticRetentionDays`,
-and `BackupRetentionDays`.
+It records health state and its capped monitor log in the protected task
+directory under `%ProgramData%`. It prunes old application logs, diagnostics,
+and backups using `LogRetentionDays`, `DiagnosticRetentionDays`, and
+`BackupRetentionDays`. Cleanup examines direct files only and refuses a cleanup
+directory that is a reparse point; the `SYSTEM` monitor never recursively walks
+an application-controlled directory tree.
 
 ## Service Recovery
 

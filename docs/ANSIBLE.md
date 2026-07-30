@@ -23,14 +23,26 @@ Important controls:
 | `node_deploy_skip_preflight` | Skip target preflight checks |
 | `node_deploy_package_path_windows` | Optional remote Windows `.zip` package to import before service setup |
 | `node_deploy_package_path_linux` | Optional remote Linux `.zip`, `.tar.gz`, `.tgz`, or `.tar` package to import before service setup |
+| `node_deploy_require_package_sha256` | Require package digest verification before extraction; defaults to `true` |
+| `node_deploy_package_expected_sha256` | Exact SHA-256 digest for the selected remote package; set this whenever either package path is used |
+| `node_deploy_package_max_archive_size_mb` | Maximum source archive size in MiB; defaults to `2048` |
+| `node_deploy_package_max_extracted_size_mb` | Maximum extracted logical size in MiB; defaults to `8192` |
+| `node_deploy_package_max_entry_count` | Maximum archive/extracted entry count; defaults to `200000` |
+| `node_deploy_package_max_compression_ratio` | Maximum extracted-to-archive ratio; defaults to `200` |
+| `node_deploy_package_minimum_free_space_mb` | Free-space reserve after projected deployment work; defaults to `1024` MiB |
 | `node_deploy_package_expected_files` | Relative files or directories required after package extraction; leave as `[]` to use framework-aware defaults |
 | `node_deploy_package_strip_single_top_level_directory` | Strip a single wrapping archive directory |
 | `node_deploy_skip_package_import` | Skip package import even when a package path is configured |
 | `node_deploy_allow_port_in_use` | Allow intentional updates while the app port is already listening |
+| `node_deploy_deployment_lock_timeout_seconds` | Seconds to wait for another deployment of the same app; defaults to immediate failure |
+| `node_deploy_linux_deployment_lock_root` | Root-owned Unix deployment lock directory |
 | `node_deploy_skip_install` | Skip dependency install command |
 | `node_deploy_skip_build` | Skip build command |
 | `node_deploy_skip_reverse_proxy` | Leave IIS/Nginx/Apache config unchanged |
 | `node_deploy_skip_health_check` | Leave scheduled health checks unchanged |
+| `node_deploy_require_post_deploy_health_check` | Require a loopback HTTP 2xx response before deployment succeeds; defaults to true |
+| `node_deploy_post_deploy_health_attempts` | Maximum post-start health attempts; defaults to 12 |
+| `node_deploy_post_deploy_health_delay_seconds` | Delay between post-start health attempts; defaults to 5 seconds |
 | `node_deploy_app_runtime` | `node` service deployment or `tomcat` WAR deployment |
 | `node_deploy_app_framework` | `node` for generic Node.js, `nextjs` for Next.js layout validation, `reactjs` for React static build validation |
 | `node_deploy_nextjs_deployment_mode` | `standalone` or `next-start` |

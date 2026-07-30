@@ -747,9 +747,17 @@ function Get-HealthMonitorEvidence {
     scheduled = Get-BooleanValue -Object $monitor -Names @("Scheduled", "scheduled") -Default $false
     scheduleType = Normalize-Token (Get-StringValue -Object $monitor -Names @("ScheduleType", "scheduleType"))
     taskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists") -Default $false
+    taskPrincipalChecked = Get-BooleanValue -Object $monitor -Names @("TaskPrincipalChecked", "taskPrincipalChecked") -Default $false
+    taskRunsAsSystem = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsSystem", "taskRunsAsSystem") -Default $false
+    taskRunLevelHighest = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelHighest", "taskRunLevelHighest") -Default $false
     taskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked") -Default $false
+    taskActionUsesSystemPowerShell = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesSystemPowerShell", "taskActionUsesSystemPowerShell") -Default $false
+    taskActionUsesWorkingDirectory = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesWorkingDirectory", "taskActionUsesWorkingDirectory") -Default $false
     taskActionUsesHealthCheckScript = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesHealthCheckScript", "taskActionUsesHealthCheckScript") -Default $false
     taskActionUsesConfigPath = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesConfigPath", "taskActionUsesConfigPath") -Default $false
+    taskScriptHashMatchesSource = Get-BooleanValue -Object $monitor -Names @("TaskScriptHashMatchesSource", "taskScriptHashMatchesSource") -Default $false
+    taskConfigMatchesDeployment = Get-BooleanValue -Object $monitor -Names @("TaskConfigMatchesDeployment", "taskConfigMatchesDeployment") -Default $false
+    taskFilesAclProtected = Get-BooleanValue -Object $monitor -Names @("TaskFilesAclProtected", "taskFilesAclProtected") -Default $false
     taskLastResult = Get-IntegerValue -Object $monitor -Names @("TaskLastResult", "taskLastResult")
     taskMissedRuns = Get-IntegerValue -Object $monitor -Names @("TaskMissedRuns", "taskMissedRuns")
     schedulerChecked = Get-BooleanValue -Object $monitor -Names @("SchedulerChecked", "schedulerChecked") -Default $false
@@ -780,9 +788,17 @@ function Test-HealthMonitorEvidence {
 
   if ($Evidence.scheduleType -eq "windows-task") {
     if ($Evidence.taskExists -ne $true) { return $false }
+    if ($Evidence.taskPrincipalChecked -ne $true) { return $false }
+    if ($Evidence.taskRunsAsSystem -ne $true) { return $false }
+    if ($Evidence.taskRunLevelHighest -ne $true) { return $false }
     if ($Evidence.taskActionChecked -ne $true) { return $false }
+    if ($Evidence.taskActionUsesSystemPowerShell -ne $true) { return $false }
+    if ($Evidence.taskActionUsesWorkingDirectory -ne $true) { return $false }
     if ($Evidence.taskActionUsesHealthCheckScript -ne $true) { return $false }
     if ($Evidence.taskActionUsesConfigPath -ne $true) { return $false }
+    if ($Evidence.taskScriptHashMatchesSource -ne $true) { return $false }
+    if ($Evidence.taskConfigMatchesDeployment -ne $true) { return $false }
+    if ($Evidence.taskFilesAclProtected -ne $true) { return $false }
     if ($null -eq $Evidence.taskMissedRuns -or [int]$Evidence.taskMissedRuns -ne 0) { return $false }
     if ($null -eq $Evidence.taskLastResult -or [int]$Evidence.taskLastResult -ne 0) { return $false }
   }
@@ -1649,9 +1665,17 @@ function New-SelfTestEvidence {
     }
     if ($scheduleType -eq "windows-task") {
       $monitor["taskExists"] = $true
+      $monitor["taskPrincipalChecked"] = $true
+      $monitor["taskRunsAsSystem"] = $true
+      $monitor["taskRunLevelHighest"] = $true
       $monitor["taskActionChecked"] = $true
+      $monitor["taskActionUsesSystemPowerShell"] = $true
+      $monitor["taskActionUsesWorkingDirectory"] = $true
       $monitor["taskActionUsesHealthCheckScript"] = $true
       $monitor["taskActionUsesConfigPath"] = $true
+      $monitor["taskScriptHashMatchesSource"] = $true
+      $monitor["taskConfigMatchesDeployment"] = $true
+      $monitor["taskFilesAclProtected"] = $true
       $monitor["taskLastResult"] = 0
       $monitor["taskMissedRuns"] = 0
     } else {

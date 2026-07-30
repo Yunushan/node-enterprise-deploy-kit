@@ -9,6 +9,7 @@ source "$REPO_ROOT/scripts/linux/common.sh"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME}}"
+ROOT_GROUP="$(root_group_name)"
 LOG_DIR_NORMALIZED="${LOG_DIR%/}"
 HEALTHCHECK_STATE_DIR_NORMALIZED="${HEALTHCHECK_STATE_DIR%/}"
 if [[ "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED" || "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED"/* ]]; then
@@ -18,11 +19,11 @@ fi
 HC_SCRIPT="/usr/local/sbin/${APP_NAME}-healthcheck.sh"
 HC_CONFIG="/etc/node-enterprise-deploy-kit/${APP_NAME}.env"
 mkdir -p /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$LOG_DIR" "$BACKUP_DIR"
-chown root:root /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR" 2>/dev/null || true
+chown root:"$ROOT_GROUP" /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
 chmod 0750 /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
 copy_file_with_backup "$CONFIG_FILE" "$HC_CONFIG" "$BACKUP_DIR"
 copy_file_with_backup "$REPO_ROOT/scripts/linux/node-healthcheck.sh" "$HC_SCRIPT" "$BACKUP_DIR"
-chown root:root "$HC_CONFIG" "$HC_SCRIPT" 2>/dev/null || true
+chown root:"$ROOT_GROUP" "$HC_CONFIG" "$HC_SCRIPT"
 chmod 0640 "$HC_CONFIG"
 chmod 0755 "$HC_SCRIPT"
 render_template_file "$REPO_ROOT/templates/linux/healthcheck.service.tpl" "/etc/systemd/system/${APP_NAME}-healthcheck.service" \
@@ -38,5 +39,6 @@ render_template_file "$REPO_ROOT/templates/linux/healthcheck.timer.tpl" "/etc/sy
   HEALTHCHECK_INTERVAL "$HEALTHCHECK_INTERVAL"
 systemctl daemon-reload
 systemctl enable --now "${APP_NAME}-healthcheck.timer"
-systemctl list-timers --all | grep "$APP_NAME" || true
+systemctl is-enabled --quiet "${APP_NAME}-healthcheck.timer"
+systemctl is-active --quiet "${APP_NAME}-healthcheck.timer"
 echo "Installed healthcheck timer: ${APP_NAME}-healthcheck.timer"

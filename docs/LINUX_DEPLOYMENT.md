@@ -51,6 +51,12 @@ Supported app runtimes:
 - `node` for Node.js/Next.js services
 - `tomcat` for deploying a WAR into an existing Apache Tomcat installation
 
+Node and Tomcat installers do not report success until `HEALTH_URL` returns an
+HTTP `2xx` response. The default gate uses 12 attempts, a five-second delay, and
+the configured `HEALTHCHECK_TIMEOUT`. Keep
+`REQUIRE_POST_DEPLOY_HEALTH_CHECK=true`; an explicit false value is reserved for
+deployments with another audited health gate.
+
 ## Steps
 
 1. Verify the repository before deploying:
@@ -171,15 +177,70 @@ To deploy a built archive before service setup, set `PACKAGE_PATH` in
 
 ```bash
 PACKAGE_PATH="/opt/releases/example-node-app.tar.gz"
+REQUIRE_PACKAGE_SHA256="true"
+PACKAGE_EXPECTED_SHA256="<64-character SHA-256 digest>"
+PACKAGE_MAX_ARCHIVE_SIZE_MB="2048"
+PACKAGE_MAX_EXTRACTED_SIZE_MB="8192"
+PACKAGE_MAX_ENTRY_COUNT="200000"
+PACKAGE_MAX_COMPRESSION_RATIO="200"
+PACKAGE_MINIMUM_FREE_SPACE_MB="1024"
 PACKAGE_EXPECTED_FILES="server.js .next/BUILD_ID .next/static"
 PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"
 bash deploy.sh config/linux/app.env
 ```
 
+For an artifact selected at deployment time, pass the path and digest as the
+second and third wrapper arguments instead of editing the config:
+
+```bash
+package="/opt/releases/example-node-app.tar.gz"
+package_sha256="$(sha256sum "$package" | awk '{print $1}')"
+bash deploy.sh config/linux/app.env "$package" "$package_sha256"
+```
+
 Linux package import supports `.tar.gz`, `.tgz`, `.tar`, and `.zip`. It
-validates archive member paths before extraction, extracts to a temporary
-directory, checks `PACKAGE_EXPECTED_FILES`, stops the existing service when
+copies the selected artifact to a unique temporary work directory, verifies the
+caller-supplied SHA-256, validates archive member paths, rejects duplicate or
+case-colliding paths and link/special-file entries before extraction, and
+extracts to a temporary directory, checks `PACKAGE_EXPECTED_FILES`, stops the existing service when
 present, backs up `APP_DIR`, then imports the new contents.
+`REQUIRE_PACKAGE_SHA256` defaults to `true`; a missing, malformed, or mismatched
+digest fails before the service is stopped or `APP_DIR` is replaced.
+Preflight and import also cap archive bytes, extracted logical bytes, entry
+count, and compression ratio. They calculate projected free-space needs for
+the temporary work area, `APP_DIR`, and `BACKUP_DIR`, combining workloads that
+share a filesystem and preserving `PACKAGE_MINIMUM_FREE_SPACE_MB` afterward.
+The staged archive and extracted tree are rechecked before service interruption
+or live-directory replacement. See [Variables](VARIABLES.md) for defaults.
+
+After validation, import records whether the configured systemd, SysV,
+OpenRC, launchd, or BSD rc service is running and verifies that it stops before
+replacing files. The existing `APP_DIR` is moved to a timestamped backup. If
+copying the release or writing its deployment manifest fails, import removes
+the partial directory, restores the previous one, and restarts the service only
+when it was running before import. If directory restoration fails, the service
+is intentionally left stopped and import emits a critical recovery message;
+repair `APP_DIR` before starting it manually.
+
+When import runs through `deploy.sh`, its transaction remains active through
+service installation, reverse-proxy configuration, and health-scheduler setup.
+A downstream failure restores the previous `APP_DIR` and running/stopped state;
+on a failed first deployment it also removes the newly created native service.
+The root-owned transaction record contains operational paths and booleans only,
+not environment values. It is removed after success or successful rollback. If
+rollback fails, the record is preserved beside the per-app lock under
+`DEPLOYMENT_LOCK_ROOT` and its path is printed; the lock itself is still
+released. Leave the service stopped, inspect the referenced application backup,
+and use timestamped managed-config backups if service or proxy configuration
+also needs restoration.
+
+Service installation is fail closed. Required ownership changes must succeed,
+the native service must be registered for boot, and the manager must report it
+running before installation returns success. Health-check setup also verifies
+its systemd timer, launchd job, or managed root crontab entry. An ownership,
+enablement, or active-state error is a failed deployment, not an informational
+warning.
+
 `PACKAGE_EXPECTED_FILES` may name files or directories, so Next.js standalone
 packages can require `server.js`, `.next/BUILD_ID`, and `.next/static`. `.rar` and `.7z` are
 intentionally unsupported in this first implementation because they require

@@ -12,6 +12,25 @@ function Resolve-RepoPath([string]$Path, [string]$BasePath) {
     if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
     return (Join-Path $BasePath $Path)
 }
+function Get-HealthTaskDirectory($Config) {
+    if ([string]$Config.AppName -notmatch '^[A-Za-z0-9_.-]+$') {
+        throw "AppName contains characters that are unsafe for the managed health-task directory."
+    }
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if ([string]::IsNullOrWhiteSpace($programData)) { throw "Windows ProgramData directory could not be resolved." }
+    return (Join-Path (Join-Path $programData "node-enterprise-deploy-kit\healthchecks") ([string]$Config.AppName))
+}
+function Remove-ManagedHealthTaskDirectory($Config) {
+    $taskDirectory = Get-HealthTaskDirectory $Config
+    if (-not (Test-Path -LiteralPath $taskDirectory)) { return }
+    $item = Get-Item -LiteralPath $taskDirectory -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to remove a managed health-task directory that is a reparse point: $taskDirectory"
+    }
+    if ($PSCmdlet.ShouldProcess($taskDirectory, "Remove protected managed health-task files")) {
+        Remove-Item -LiteralPath $taskDirectory -Recurse -Force
+    }
+}
 function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$Label, [switch]$IgnoreExitCode) {
     & $FilePath @Arguments
     if (-not $IgnoreExitCode -and $LASTEXITCODE -ne 0) {
@@ -57,7 +76,7 @@ function Uninstall-Pm2Process($Config) {
 }
 Assert-Admin
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 $serviceManager = "winsw"
 if ($config.PSObject.Properties["ServiceManager"] -and -not [string]::IsNullOrWhiteSpace([string]$config.ServiceManager)) {
     $serviceManager = [string]$config.ServiceManager
@@ -72,5 +91,8 @@ switch ($serviceManager) {
 }
 if ($RemoveHealthCheckTask) {
     $taskName = "$($config.AppName)-HealthCheck"
-    if ($PSCmdlet.ShouldProcess($taskName, "Remove scheduled task")) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
+    if ($PSCmdlet.ShouldProcess($taskName, "Remove scheduled task")) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-ManagedHealthTaskDirectory $config
+    }
 }

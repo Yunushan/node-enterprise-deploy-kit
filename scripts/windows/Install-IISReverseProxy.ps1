@@ -7,6 +7,9 @@
 [CmdletBinding(SupportsShouldProcess=$true)]
 param([Parameter(Mandatory=$true)] [string] $ConfigPath)
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run this script as Administrator." }
@@ -187,13 +190,12 @@ function Ensure-WebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [st
 }
 function Ensure-SslBinding([int]$Port, [string]$HostHeader, [string]$Thumbprint) {
     if ([string]::IsNullOrWhiteSpace($Thumbprint)) {
-        Write-Warning "TlsEnabled is true, but IisCertificateThumbprint is not configured. Create/verify the HTTPS certificate binding manually."
-        return
+        throw "TlsEnabled is true, but IisCertificateThumbprint is not configured. Configure a LocalMachine certificate before deployment."
     }
-    $certPath = "Cert:\LocalMachine\My\$Thumbprint"
+    $normalizedThumbprint = $Thumbprint.Replace(" ", "").ToUpperInvariant()
+    $certPath = "Cert:\LocalMachine\My\$normalizedThumbprint"
     if (-not (Test-Path $certPath)) {
-        Write-Warning "TLS certificate not found in LocalMachine\My: $Thumbprint. Create/verify the HTTPS certificate binding manually."
-        return
+        throw "TLS certificate not found in LocalMachine\My: $Thumbprint"
     }
 
     $sslPath = if ([string]::IsNullOrWhiteSpace($HostHeader)) {
@@ -201,9 +203,18 @@ function Ensure-SslBinding([int]$Port, [string]$HostHeader, [string]$Thumbprint)
     } else {
         "IIS:\SslBindings\0.0.0.0!$Port!$HostHeader"
     }
-    if (-not (Test-Path $sslPath)) {
+    if (Test-Path $sslPath) {
+        $existingSslBinding = Get-Item $sslPath -ErrorAction Stop
+        $existingThumbprint = ([string]$existingSslBinding.Thumbprint).Replace(" ", "").ToUpperInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($existingThumbprint) -and $existingThumbprint -ne $normalizedThumbprint) {
+            throw "Existing IIS SSL binding uses a different certificate than IisCertificateThumbprint."
+        }
+    } else {
         $sslFlags = if ([string]::IsNullOrWhiteSpace($HostHeader)) { 0 } else { 1 }
         Get-Item $certPath | New-Item $sslPath -SSLFlags $sslFlags | Out-Null
+    }
+    if (-not (Test-Path $sslPath)) {
+        throw "IIS SSL binding was not created: $sslPath"
     }
 }
 function Ensure-WebsiteStarted([string]$SiteName) {

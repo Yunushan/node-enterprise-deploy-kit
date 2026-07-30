@@ -12,6 +12,7 @@ param(
     [string] $WinSWDownloadUrl = "",
     [string] $WinSWDownloadSha256 = "",
     [string] $PackagePath = "",
+    [string] $PackageExpectedSha256 = "",
     [switch] $SkipWinSWDownload,
     [switch] $SkipPackageImport,
     [switch] $SkipReverseProxy,
@@ -23,6 +24,7 @@ $ErrorActionPreference = "Stop"
 $DefaultWinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
 $DefaultNextJsMinimumNodeVersion = "20.9.0"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+. (Join-Path $PSScriptRoot "AppPackageSafety.ps1")
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot $ConfigPath
@@ -35,6 +37,10 @@ $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $effectivePackagePath = $PackagePath
 if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
     $effectivePackagePath = [string]$config.PackagePath
+}
+$effectivePackageExpectedSha256 = $PackageExpectedSha256
+if ([string]::IsNullOrWhiteSpace($effectivePackageExpectedSha256) -and $config.PSObject.Properties["PackageExpectedSha256"]) {
+    $effectivePackageExpectedSha256 = [string]$config.PackageExpectedSha256
 }
 if ($SkipPackageImport) {
     $effectivePackagePath = ""
@@ -52,6 +58,10 @@ function Test-RequiredString($Object, [string]$Name) {
 function Resolve-ToolPath([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
     return (Join-Path $repoRoot $Path)
+}
+function Resolve-ConfigRelativePath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) { return [System.IO.Path]::GetFullPath($Path) }
+    return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ConfigPath) $Path))
 }
 function Get-ConfigString($Object, [string]$Name, [string]$Default = "") {
     if ($Object.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace([string]$Object.$Name)) {
@@ -489,14 +499,22 @@ function Test-ReactDeploymentLayout($Config) {
 
 function Test-WindowsFeatureInstalled([string]$ServerFeatureName, [string]$OptionalFeatureName) {
     if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
-        $feature = Get-WindowsFeature -Name $ServerFeatureName -ErrorAction SilentlyContinue
-        if ($null -eq $feature) { return $false }
-        return [bool]$feature.Installed
+        try {
+            $feature = Get-WindowsFeature -Name $ServerFeatureName -ErrorAction Stop
+            if ($null -eq $feature) { return $false }
+            return [bool]$feature.Installed
+        } catch {
+            return $null
+        }
     }
     if (Get-Command Get-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
-        $feature = Get-WindowsOptionalFeature -Online -FeatureName $OptionalFeatureName -ErrorAction SilentlyContinue
-        if ($null -eq $feature) { return $false }
-        return ([string]$feature.State -eq "Enabled")
+        try {
+            $feature = Get-WindowsOptionalFeature -Online -FeatureName $OptionalFeatureName -ErrorAction Stop
+            if ($null -eq $feature) { return $false }
+            return ([string]$feature.State -eq "Enabled")
+        } catch {
+            return $null
+        }
     }
     return $null
 }
@@ -513,6 +531,34 @@ function Test-DirectoryWriteAccess([string]$Path) {
     }
     finally {
         Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-PathAtOrBelow {
+    param(
+        [string]$Path,
+        [string]$ParentPath
+    )
+
+    $candidate = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd('\', '/')
+    if ($candidate.Equals($parent, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $candidate.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-IisTlsCertificateConfiguration($Config) {
+    $thumbprint = Get-ConfigString $Config "IisCertificateThumbprint" ""
+    if ([string]::IsNullOrWhiteSpace($thumbprint)) {
+        Add-Error "TlsEnabled is true but IisCertificateThumbprint is empty. Configure a LocalMachine certificate before deployment."
+        return
+    }
+    $normalizedThumbprint = $thumbprint.Replace(" ", "").ToUpperInvariant()
+    if ($normalizedThumbprint -notmatch '^[A-F0-9]{40}$') {
+        Add-Error "IisCertificateThumbprint must contain exactly 40 hexadecimal characters."
+        return
+    }
+    if (-not (Test-Path "Cert:\LocalMachine\My\$normalizedThumbprint")) {
+        Add-Error "IisCertificateThumbprint was not found in Cert:\LocalMachine\My."
     }
 }
 
@@ -610,8 +656,38 @@ function Test-StaticIisPreflight($Config) {
     Test-RequiredString $Config "IisAppPoolName"
 
     $spaShellFile = Get-SpaShellFile $Config
+    $staticOutputDirectory = Get-StaticOutputDirectory $Config
     $allowRewrite = $false
     try { $allowRewrite = Get-ConfigBool $Config "IisStaticAllowUrlRewrite" $false } catch { Add-Error $_.Exception.Message }
+
+    if ($Config.PSObject.Properties["AppDirectory"] -and
+        $Config.PSObject.Properties["IisSitePath"] -and
+        -not [string]::IsNullOrWhiteSpace([string]$Config.AppDirectory) -and
+        -not [string]::IsNullOrWhiteSpace([string]$Config.IisSitePath)) {
+        $sourcePath = Join-AppRelativePath -Root ([System.IO.Path]::GetFullPath([string]$Config.AppDirectory)) -RelativePath $staticOutputDirectory
+        $sitePathForOverlap = [System.IO.Path]::GetFullPath([string]$Config.IisSitePath)
+        if ((Test-PathAtOrBelow -Path $sourcePath -ParentPath $sitePathForOverlap) -or
+            (Test-PathAtOrBelow -Path $sitePathForOverlap -ParentPath $sourcePath)) {
+            Add-Error "StaticOutputDirectory and IisSitePath must not overlap. Use separate build and live-site directories."
+        }
+
+        $backupPathForOverlap = if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
+            [System.IO.Path]::GetFullPath([string]$Config.BackupDirectory)
+        } else {
+            $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+            if ([string]::IsNullOrWhiteSpace($programData)) { "" } else { Join-Path $programData ("node-enterprise-deploy-kit\backups\{0}" -f $Config.AppName) }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($backupPathForOverlap) -and
+            (Test-PathAtOrBelow -Path $backupPathForOverlap -ParentPath $sitePathForOverlap)) {
+            Add-Error "BackupDirectory must not be inside IisSitePath because deployment clears the live-site directory."
+        }
+    }
+
+    $staticTlsEnabled = $false
+    try { $staticTlsEnabled = Get-ConfigBool $Config "TlsEnabled" $false } catch { Add-Error $_.Exception.Message }
+    if ($staticTlsEnabled) {
+        Test-IisTlsCertificateConfiguration $Config
+    }
 
     $iisInstalled = Test-WindowsFeatureInstalled -ServerFeatureName "Web-Server" -OptionalFeatureName "IIS-WebServerRole"
     if ($iisInstalled -ne $true) {
@@ -706,6 +782,17 @@ foreach ($pathCheck in @("AppDirectory", "ServiceDirectory", "LogDirectory", "Ba
         Add-Warning "$pathCheck is under a user profile desktop/downloads/documents path. Use a service-owned production directory."
     }
 }
+if ($config.PSObject.Properties["DeploymentLockDirectory"] -and
+    -not [string]::IsNullOrWhiteSpace([string]$config.DeploymentLockDirectory) -and
+    -not [System.IO.Path]::IsPathRooted([string]$config.DeploymentLockDirectory)) {
+    Add-Error "DeploymentLockDirectory must be an absolute path."
+}
+$deploymentLockTimeoutSeconds = 0
+$deploymentLockTimeoutRaw = Get-ConfigString $config "DeploymentLockTimeoutSeconds" "0"
+if (-not [int]::TryParse($deploymentLockTimeoutRaw, [ref]$deploymentLockTimeoutSeconds) -or
+    $deploymentLockTimeoutSeconds -lt 0 -or $deploymentLockTimeoutSeconds -gt 3600) {
+    Add-Error "DeploymentLockTimeoutSeconds must be an integer from 0 through 3600."
+}
 
 if (-not $isStaticIis -and $config.AppDirectory -and $config.StartCommand -and (Test-Path $config.AppDirectory)) {
     $startCommand = [string]$config.StartCommand
@@ -742,18 +829,104 @@ if (-not $isStaticIis) {
         if ($healthUri.Scheme -notin @("http", "https")) {
             Add-Error "HealthUrl must use http or https."
         }
+        if (-not $healthUri.IsLoopback) {
+            Add-Error "HealthUrl must target localhost, 127.0.0.1, or ::1 so the privileged health task cannot probe remote hosts."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($healthUri.UserInfo) -or -not [string]::IsNullOrWhiteSpace($healthUri.Query) -or -not [string]::IsNullOrWhiteSpace($healthUri.Fragment)) {
+            Add-Error "HealthUrl must not contain credentials, query text, or a fragment."
+        }
         if ($healthUri.Port -gt 0 -and $port -gt 0 -and $healthUri.Port -ne $port) {
             Add-Warning "HealthUrl port ($($healthUri.Port)) does not match Port ($port)."
         }
     } catch {
         Add-Error "HealthUrl is not a valid URI: $($config.HealthUrl)"
     }
+
+    $requirePostDeployHealthCheck = $true
+    try {
+        $requirePostDeployHealthCheck = Get-ConfigBool $config "RequirePostDeployHealthCheck" $true
+    } catch {
+        Add-Error $_.Exception.Message
+    }
+    if (-not $requirePostDeployHealthCheck) {
+        Add-Warning "RequirePostDeployHealthCheck is false. Deployment can report success without a healthy HTTP endpoint."
+    } else {
+        foreach ($check in @(
+            @{ Name = "PostDeployHealthAttempts"; Default = 12; Minimum = 1; Maximum = 120 },
+            @{ Name = "PostDeployHealthDelaySeconds"; Default = 5; Minimum = 0; Maximum = 300 },
+            @{ Name = "HealthCheckTimeoutSeconds"; Default = 10; Minimum = 1; Maximum = 300 }
+        )) {
+            $property = $config.PSObject.Properties[$check.Name]
+            $rawValue = if ($property) { [string]$property.Value } else { [string]$check.Default }
+            $value = 0
+            if (-not [int]::TryParse($rawValue, [ref]$value) -or $value -lt $check.Minimum -or $value -gt $check.Maximum) {
+                Add-Error "$($check.Name) must be an integer from $($check.Minimum) through $($check.Maximum)."
+            }
+        }
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {
-    $packagePath = [string]$effectivePackagePath
-    if ([System.IO.Path]::GetExtension($packagePath).ToLowerInvariant() -ne ".zip") {
+    $packagePath = Resolve-ConfigRelativePath ([string]$effectivePackagePath)
+    $packageFormatSupported = ([System.IO.Path]::GetExtension($packagePath).ToLowerInvariant() -eq ".zip")
+    if (-not $packageFormatSupported) {
         Add-Error "PackagePath supports .zip only on Windows. Use .zip; .rar and .7z are intentionally unsupported."
+    }
+    $requirePackageSha256 = $true
+    try {
+        $requirePackageSha256 = Get-ConfigBool $config "RequirePackageSha256" $true
+    } catch {
+        Add-Error $_.Exception.Message
+    }
+    $normalizedPackageExpectedSha256 = ([string]$effectivePackageExpectedSha256).Trim().ToLowerInvariant()
+    $packageExpectedSha256Valid = $true
+    if ($requirePackageSha256 -and [string]::IsNullOrWhiteSpace($normalizedPackageExpectedSha256)) {
+        Add-Error "PackageExpectedSha256 is required when RequirePackageSha256 is true."
+        $packageExpectedSha256Valid = $false
+    } elseif (-not [string]::IsNullOrWhiteSpace($normalizedPackageExpectedSha256) -and $normalizedPackageExpectedSha256 -notmatch '^[a-f0-9]{64}$') {
+        Add-Error "PackageExpectedSha256 must contain exactly 64 hexadecimal characters."
+        $packageExpectedSha256Valid = $false
+    }
+    $packageExists = Test-Path -LiteralPath $packagePath -PathType Leaf
+    if (-not $packageExists) {
+        Add-Error "PackagePath was not found."
+    } elseif ($packageExpectedSha256Valid -and -not [string]::IsNullOrWhiteSpace($normalizedPackageExpectedSha256)) {
+        try {
+            $actualPackageSha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualPackageSha256 -ne $normalizedPackageExpectedSha256) {
+                Add-Error "Application package SHA-256 does not match PackageExpectedSha256."
+            }
+        } catch {
+            Add-Error "Application package SHA-256 could not be calculated."
+        }
+    }
+    if ($packageExists -and $packageFormatSupported) {
+        try {
+            $packageSafetyPolicy = Get-AppPackageSafetyPolicy $config
+            $archiveInfo = Get-AppPackageZipSafetyInfo -Path $packagePath -Policy $packageSafetyPolicy
+            $appDirectoryForCapacity = [System.IO.Path]::GetFullPath([string]$config.AppDirectory)
+            if ($config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$config.BackupDirectory)) {
+                $backupDirectoryForCapacity = [System.IO.Path]::GetFullPath([string]$config.BackupDirectory)
+            } elseif ($config.PSObject.Properties["ServiceDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$config.ServiceDirectory)) {
+                $backupDirectoryForCapacity = [System.IO.Path]::GetFullPath((Join-Path ([string]$config.ServiceDirectory) "backups"))
+            } else {
+                $backupDirectoryForCapacity = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $appDirectoryForCapacity) "backups"))
+            }
+            Assert-AppPackageDeploymentCapacity `
+                -ArchiveInfo $archiveInfo `
+                -Policy $packageSafetyPolicy `
+                -WorkPath ([System.IO.Path]::GetTempPath()) `
+                -AppDirectory $appDirectoryForCapacity `
+                -BackupDirectory $backupDirectoryForCapacity
+        } catch {
+            Add-Error $_.Exception.Message
+        }
+    } else {
+        try {
+            $null = Get-AppPackageSafetyPolicy $config
+        } catch {
+            Add-Error $_.Exception.Message
+        }
     }
     if ($config.PSObject.Properties["PackageExpectedFiles"]) {
         $expectedValues = @()
@@ -984,9 +1157,7 @@ if (-not $SkipReverseProxy) {
                 }
             }
             if ($tlsEnabledForIis) {
-                if (-not $config.PSObject.Properties["IisCertificateThumbprint"] -or [string]::IsNullOrWhiteSpace([string]$config.IisCertificateThumbprint)) {
-                    Add-Warning "TlsEnabled is true but IisCertificateThumbprint is empty. The IIS script will warn and leave certificate binding for manual setup."
-                }
+                Test-IisTlsCertificateConfiguration $config
                 if (-not $config.PSObject.Properties["PublicHostName"] -or [string]::IsNullOrWhiteSpace([string]$config.PublicHostName)) {
                     Add-Warning "TlsEnabled is true but PublicHostName is empty. Host-scoped HTTPS/SNI bindings may need manual review."
                 }

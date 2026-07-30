@@ -161,11 +161,11 @@ prepare_runtime() {
   ensure_user
   mkdir -p "$APP_DIR" "$LOG_DIR" "$(dirname "$ENV_FILE")"
   touch "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log"
-  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR" "$LOG_DIR" || true
+  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR" "$LOG_DIR"
   chmod 0750 "$LOG_DIR"
   write_runtime_env_file
   chmod 0640 "$ENV_FILE"
-  chown root:"$SERVICE_GROUP" "$ENV_FILE" || true
+  chown root:"$SERVICE_GROUP" "$ENV_FILE"
 }
 prepare_app() {
   load_preparation_environment
@@ -185,7 +185,8 @@ install_systemd_service() {
   systemctl daemon-reload
   systemctl enable "$APP_NAME"
   systemctl restart "$APP_NAME"
-  systemctl --no-pager status "$APP_NAME" || true
+  systemctl is-enabled --quiet "$APP_NAME"
+  systemctl is-active --quiet "$APP_NAME"
   echo "Installed systemd service: $APP_NAME"
 }
 
@@ -200,13 +201,14 @@ install_systemv_service() {
     chkconfig "$APP_NAME" on
   else
     echo "No System V service registration tool found; start $init_file manually or register it with your distro." >&2
+    return 1
   fi
   if command -v service >/dev/null 2>&1; then
     service "$APP_NAME" restart
-    service "$APP_NAME" status || true
+    service "$APP_NAME" status
   else
     "$init_file" restart
-    "$init_file" status || true
+    "$init_file" status
   fi
   echo "Installed System V service: $APP_NAME"
 }
@@ -219,27 +221,29 @@ install_openrc_service() {
   chmod 0755 "$init_file"
   rc-update add "$APP_NAME" default
   rc-service "$APP_NAME" restart
-  rc-service "$APP_NAME" status || true
+  rc-service "$APP_NAME" status
   echo "Installed OpenRC service: $APP_NAME"
 }
 
 install_launchd_service() {
   require_command launchctl "launchd is required on macOS."
+  local root_group
+  root_group="$(root_group_name)"
   mkdir -p "$(dirname "$RUNNER_SCRIPT")" "$LOG_DIR"
   render_template "$REPO_ROOT/templates/linux/launchd-runner.sh.tpl" "$RUNNER_SCRIPT"
   chmod 0755 "$RUNNER_SCRIPT"
-  chown root:wheel "$RUNNER_SCRIPT" 2>/dev/null || true
+  chown root:"$root_group" "$RUNNER_SCRIPT"
 
   local plist_file="/Library/LaunchDaemons/${APP_NAME}.plist"
   render_template "$REPO_ROOT/templates/linux/launchd-node-app.plist.tpl" "$plist_file"
   chmod 0644 "$plist_file"
-  chown root:wheel "$plist_file" 2>/dev/null || true
+  chown root:"$root_group" "$plist_file"
 
   launchctl bootout system "$plist_file" >/dev/null 2>&1 || true
   launchctl bootstrap system "$plist_file"
-  launchctl enable "system/${APP_NAME}" 2>/dev/null || true
-  launchctl kickstart -k "system/${APP_NAME}" 2>/dev/null || true
-  launchctl print "system/${APP_NAME}" >/dev/null 2>&1 || true
+  launchctl enable "system/${APP_NAME}"
+  launchctl kickstart -k "system/${APP_NAME}"
+  launchctl print "system/${APP_NAME}" >/dev/null
   echo "Installed launchd service: $APP_NAME"
 }
 
@@ -262,9 +266,8 @@ install_bsdrc_service() {
       fi
       ;;
     openbsd)
-      if command -v rcctl >/dev/null 2>&1; then
-        rcctl enable "$APP_NAME" 2>/dev/null || true
-      fi
+      require_command rcctl "OpenBSD rc service registration requires rcctl."
+      rcctl enable "$APP_NAME"
       ;;
     netbsd)
       if ! grep -q "^${APP_NAME}=YES" /etc/rc.conf 2>/dev/null; then
@@ -275,13 +278,13 @@ install_bsdrc_service() {
 
   if command -v service >/dev/null 2>&1; then
     service "$APP_NAME" restart || "$init_file" restart
-    service "$APP_NAME" status || "$init_file" status || true
+    service "$APP_NAME" status || "$init_file" status
   elif command -v rcctl >/dev/null 2>&1; then
-    rcctl restart "$APP_NAME" 2>/dev/null || "$init_file" restart
-    rcctl check "$APP_NAME" 2>/dev/null || "$init_file" status || true
+    rcctl restart "$APP_NAME" || "$init_file" restart
+    rcctl check "$APP_NAME" || "$init_file" status
   else
     "$init_file" restart
-    "$init_file" status || true
+    "$init_file" status
   fi
   echo "Installed BSD rc service: $APP_NAME"
 }
@@ -312,5 +315,7 @@ case "$SERVICE_MANAGER_NORMALIZED" in
     exit 1
     ;;
 esac
+
+bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$CONFIG_FILE"
 
 echo "Logs: $LOG_DIR"

@@ -9,8 +9,9 @@
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-    [Parameter(Mandatory=$true)] [string] $ConfigPath,
-    [switch] $RenderWebConfigOnly
+    [string] $ConfigPath,
+    [switch] $RenderWebConfigOnly,
+    [switch] $LoadFunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +116,39 @@ function Get-BackupDirectory($Config) {
     if ($Config.PSObject.Properties["BackupDirectory"] -and -not [string]::IsNullOrWhiteSpace([string]$Config.BackupDirectory)) {
         return [string]$Config.BackupDirectory
     }
-    return (Join-Path $Config.IisSitePath "backups")
+    $commonApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if ([string]::IsNullOrWhiteSpace($commonApplicationData)) {
+        throw "BackupDirectory is required because the system ProgramData path could not be resolved."
+    }
+    return (Join-Path $commonApplicationData ("node-enterprise-deploy-kit\backups\{0}" -f $Config.AppName))
+}
+
+function Test-PathAtOrBelow {
+    param(
+        [string]$Path,
+        [string]$ParentPath
+    )
+
+    $candidate = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd('\', '/')
+    if ($candidate.Equals($parent, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $candidate.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-StaticDeploymentPathsDoNotOverlap {
+    param(
+        [string]$SourcePath,
+        [string]$SitePath,
+        [string]$BackupDirectory
+    )
+
+    if ((Test-PathAtOrBelow -Path $SourcePath -ParentPath $SitePath) -or
+        (Test-PathAtOrBelow -Path $SitePath -ParentPath $SourcePath)) {
+        throw "StaticOutputDirectory and IisSitePath must not overlap. Use separate build and live-site directories."
+    }
+    if (Test-PathAtOrBelow -Path $BackupDirectory -ParentPath $SitePath) {
+        throw "BackupDirectory must not be inside IisSitePath because deployment clears the live-site directory."
+    }
 }
 
 function New-StaticIisWebConfig {
@@ -313,6 +346,142 @@ function Copy-StaticOutputContents {
     }
 }
 
+function Get-SslBindingPath([int]$Port, [string]$HostHeader) {
+    if ([string]::IsNullOrWhiteSpace($HostHeader)) {
+        return "IIS:\SslBindings\0.0.0.0!$Port"
+    }
+    return "IIS:\SslBindings\0.0.0.0!$Port!$HostHeader"
+}
+
+function Test-ConfiguredWebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [string]$HostHeader) {
+    return $null -ne (Get-WebBinding -Name $SiteName -Protocol $Protocol -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.bindingInformation -eq "*:${Port}:$HostHeader" -or
+            ($HostHeader -eq "" -and $_.bindingInformation -eq "*:${Port}:")
+        } |
+        Select-Object -First 1)
+}
+
+function Get-StaticIisDeploymentSnapshot {
+    param(
+        [string]$SiteName,
+        [string]$AppPoolName,
+        [string]$Protocol,
+        [int]$Port,
+        [string]$HostHeader,
+        [bool]$TlsEnabled
+    )
+
+    $site = Get-Website -Name $SiteName -ErrorAction SilentlyContinue
+    $appPoolExists = Test-Path "IIS:\AppPools\$AppPoolName"
+    $appPoolState = ""
+    if ($appPoolExists) {
+        $state = Get-WebAppPoolState -Name $AppPoolName -ErrorAction Stop
+        $appPoolState = [string]$state.Value
+    }
+    $sslPath = if ($TlsEnabled) { Get-SslBindingPath -Port $Port -HostHeader $HostHeader } else { "" }
+
+    return [pscustomobject]@{
+        SiteExisted = $null -ne $site
+        SiteState = if ($site) { [string]$site.State } else { "" }
+        SitePhysicalPath = if ($site) { [string]$site.PhysicalPath } else { "" }
+        SiteApplicationPool = if ($site) { [string]$site.ApplicationPool } else { "" }
+        AppPoolExisted = $appPoolExists
+        AppPoolState = $appPoolState
+        DesiredBindingExisted = if ($site) { Test-ConfiguredWebBinding -SiteName $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader } else { $false }
+        SslBindingPath = $sslPath
+        SslBindingExisted = if ($TlsEnabled) { Test-Path $sslPath } else { $false }
+    }
+}
+
+function Stop-StaticIisSiteForDeployment {
+    param(
+        [string]$SiteName,
+        $Snapshot
+    )
+
+    if ($Snapshot.SiteExisted -and $Snapshot.SiteState -eq "Started") {
+        Stop-Website -Name $SiteName -ErrorAction Stop | Out-Null
+        $site = Get-Website -Name $SiteName -ErrorAction Stop
+        if ([string]$site.State -ne "Stopped") {
+            throw "IIS site did not stop before static content replacement: $SiteName"
+        }
+        Write-Host "Stopped IIS site before replacing static content: $SiteName"
+    }
+}
+
+function Restore-StaticSiteContent {
+    param(
+        [string]$SitePath,
+        [string]$BackupPath,
+        [bool]$SitePathExisted
+    )
+
+    if (Test-Path -LiteralPath $SitePath -PathType Container) {
+        Clear-DirectoryContents -Path $SitePath
+    } else {
+        New-Item -ItemType Directory -Force -Path $SitePath | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($BackupPath) -and (Test-Path -LiteralPath $BackupPath -PathType Container)) {
+        Copy-StaticOutputContents -SourcePath $BackupPath -DestinationPath $SitePath
+    } elseif (-not $SitePathExisted) {
+        Remove-Item -LiteralPath $SitePath -Recurse -Force
+    }
+}
+
+function Restore-StaticIisDeploymentSnapshot {
+    param(
+        [string]$SiteName,
+        [string]$AppPoolName,
+        [string]$Protocol,
+        [int]$Port,
+        [string]$HostHeader,
+        $Snapshot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Snapshot.SslBindingPath) -and
+        -not $Snapshot.SslBindingExisted -and
+        (Test-Path $Snapshot.SslBindingPath)) {
+        Remove-Item $Snapshot.SslBindingPath -Force -ErrorAction Stop
+    }
+
+    $currentSite = Get-Website -Name $SiteName -ErrorAction SilentlyContinue
+    if ($currentSite -and [string]$currentSite.State -eq "Started") {
+        Stop-Website -Name $SiteName -ErrorAction Stop | Out-Null
+    }
+
+    if ($Snapshot.SiteExisted) {
+        if (-not $currentSite) {
+            throw "Cannot restore IIS site because it no longer exists: $SiteName"
+        }
+        if (-not $Snapshot.DesiredBindingExisted -and
+            (Test-ConfiguredWebBinding -SiteName $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader)) {
+            Remove-WebBinding -Name $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader -ErrorAction Stop
+        }
+        Set-ItemProperty "IIS:\Sites\$SiteName" -Name physicalPath -Value $Snapshot.SitePhysicalPath
+        Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationPool -Value $Snapshot.SiteApplicationPool
+        if ($Snapshot.SiteState -eq "Started") {
+            Start-Website -Name $SiteName -ErrorAction Stop | Out-Null
+        }
+    } elseif ($currentSite) {
+        Remove-Website -Name $SiteName -ErrorAction Stop
+    }
+
+    if (-not $Snapshot.AppPoolExisted -and (Test-Path "IIS:\AppPools\$AppPoolName")) {
+        $currentPoolState = Get-WebAppPoolState -Name $AppPoolName -ErrorAction Stop
+        if ([string]$currentPoolState.Value -eq "Started") {
+            Stop-WebAppPool -Name $AppPoolName -ErrorAction Stop
+        }
+        Remove-WebAppPool -Name $AppPoolName -ErrorAction Stop
+    } elseif ($Snapshot.AppPoolExisted -and $Snapshot.AppPoolState -eq "Stopped") {
+        $currentPoolState = Get-WebAppPoolState -Name $AppPoolName -ErrorAction Stop
+        if ([string]$currentPoolState.Value -eq "Started") {
+            Stop-WebAppPool -Name $AppPoolName -ErrorAction Stop
+        }
+    }
+}
+
 function Ensure-WebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [string]$HostHeader) {
     $binding = Get-WebBinding -Name $SiteName -Protocol $Protocol -ErrorAction SilentlyContinue |
         Where-Object {
@@ -326,23 +495,27 @@ function Ensure-WebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [st
 
 function Ensure-SslBinding([int]$Port, [string]$HostHeader, [string]$Thumbprint) {
     if ([string]::IsNullOrWhiteSpace($Thumbprint)) {
-        Write-Warning "TlsEnabled is true, but IisCertificateThumbprint is not configured. Create/verify the HTTPS certificate binding manually."
-        return
+        throw "TlsEnabled is true, but IisCertificateThumbprint is not configured. Configure a LocalMachine certificate before deployment."
     }
-    $certPath = "Cert:\LocalMachine\My\$Thumbprint"
+    $normalizedThumbprint = $Thumbprint.Replace(" ", "").ToUpperInvariant()
+    $certPath = "Cert:\LocalMachine\My\$normalizedThumbprint"
     if (-not (Test-Path $certPath)) {
-        Write-Warning "TLS certificate not found in LocalMachine\My: $Thumbprint. Create/verify the HTTPS certificate binding manually."
-        return
+        throw "TLS certificate not found in LocalMachine\My: $Thumbprint"
     }
 
-    $sslPath = if ([string]::IsNullOrWhiteSpace($HostHeader)) {
-        "IIS:\SslBindings\0.0.0.0!$Port"
+    $sslPath = Get-SslBindingPath -Port $Port -HostHeader $HostHeader
+    if (Test-Path $sslPath) {
+        $existingSslBinding = Get-Item $sslPath -ErrorAction Stop
+        $existingThumbprint = ([string]$existingSslBinding.Thumbprint).Replace(" ", "").ToUpperInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($existingThumbprint) -and $existingThumbprint -ne $normalizedThumbprint) {
+            throw "Existing IIS SSL binding uses a different certificate than IisCertificateThumbprint."
+        }
     } else {
-        "IIS:\SslBindings\0.0.0.0!$Port!$HostHeader"
-    }
-    if (-not (Test-Path $sslPath)) {
         $sslFlags = if ([string]::IsNullOrWhiteSpace($HostHeader)) { 0 } else { 1 }
         Get-Item $certPath | New-Item $sslPath -SSLFlags $sslFlags | Out-Null
+    }
+    if (-not (Test-Path $sslPath)) {
+        throw "IIS SSL binding was not created: $sslPath"
     }
 }
 
@@ -376,6 +549,44 @@ function Restart-StaticIisTarget([string]$SiteName, [string]$AppPoolName) {
     }
     Start-Website -Name $SiteName | Out-Null
     Write-Host "Restarted IIS site: $SiteName"
+}
+
+function Assert-StaticIisTargetReady {
+    param(
+        [string]$SiteName,
+        [string]$AppPoolName,
+        [string]$SitePath,
+        [string]$Protocol,
+        [int]$Port,
+        [string]$HostHeader
+    )
+
+    $site = Get-Website -Name $SiteName -ErrorAction Stop
+    if ([string]$site.State -ne "Started") {
+        throw "IIS site is not started after static deployment: $SiteName"
+    }
+    if (-not ([System.IO.Path]::GetFullPath([string]$site.PhysicalPath)).Equals(
+        [System.IO.Path]::GetFullPath($SitePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "IIS site physical path does not match IisSitePath after deployment."
+    }
+    if ([string]$site.ApplicationPool -ne $AppPoolName) {
+        throw "IIS site application pool does not match IisAppPoolName after deployment."
+    }
+    $appPoolState = Get-WebAppPoolState -Name $AppPoolName -ErrorAction Stop
+    if ([string]$appPoolState.Value -ne "Started") {
+        throw "IIS application pool is not started after static deployment: $AppPoolName"
+    }
+    if (-not (Test-ConfiguredWebBinding -SiteName $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader)) {
+        throw "Configured IIS binding was not found after static deployment."
+    }
+}
+
+if ($LoadFunctionsOnly) {
+    return
+}
+
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    throw "ConfigPath is required."
 }
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -424,12 +635,23 @@ $backupDirectory = [System.IO.Path]::GetFullPath((Get-BackupDirectory $config))
 $allowRewrite = Get-ConfigBool $config "IisStaticAllowUrlRewrite" $false
 
 Assert-StaticSource -SourcePath $sourcePath -ShellFile $spaShellFile -AllowRewrite $allowRewrite
+Assert-StaticDeploymentPathsDoNotOverlap -SourcePath $sourcePath -SitePath $sitePath -BackupDirectory $backupDirectory
 
-if ($PSCmdlet.ShouldProcess("IIS static site folder", "Deploy static_iis output")) {
-    New-Item -ItemType Directory -Force -Path $sitePath | Out-Null
-    Test-DirectoryWriteAccess -Path $sitePath
-    $backupPath = Backup-StaticSiteIfPresent -SitePath $sitePath -BackupDirectory $backupDirectory
+if ($PSCmdlet.ShouldProcess($siteName, "Transactionally deploy static_iis output and configure IIS")) {
+    $sitePathExisted = Test-Path -LiteralPath $sitePath -PathType Container
+    $snapshot = Get-StaticIisDeploymentSnapshot `
+        -SiteName $siteName `
+        -AppPoolName $appPoolName `
+        -Protocol $protocol `
+        -Port $publicPort `
+        -HostHeader $publicHostName `
+        -TlsEnabled $tlsEnabled
+    $backupPath = ""
     try {
+        New-Item -ItemType Directory -Force -Path $sitePath | Out-Null
+        Test-DirectoryWriteAccess -Path $sitePath
+        $backupPath = Backup-StaticSiteIfPresent -SitePath $sitePath -BackupDirectory $backupDirectory
+        Stop-StaticIisSiteForDeployment -SiteName $siteName -Snapshot $snapshot
         Clear-DirectoryContents -Path $sitePath
         Copy-StaticOutputContents -SourcePath $sourcePath -DestinationPath $sitePath
 
@@ -446,37 +668,56 @@ if ($PSCmdlet.ShouldProcess("IIS static site folder", "Deploy static_iis output"
         if (-not (Test-Path -LiteralPath $deployedShell -PathType Leaf)) {
             throw "Deployed folder is missing SPA shell file after copy."
         }
-    }
-    catch {
-        if ($backupPath -and (Test-Path -LiteralPath $backupPath -PathType Container)) {
-            Clear-DirectoryContents -Path $sitePath
-            Copy-StaticOutputContents -SourcePath $backupPath -DestinationPath $sitePath
-            Write-Warning "Restored previous IIS static folder after deployment failure."
+
+        Ensure-StaticAppPool $appPoolName
+        if (-not (Test-Path "IIS:\Sites\$siteName")) {
+            $initialPort = if ($tlsEnabled) { 80 } else { $publicPort }
+            New-Website -Name $siteName -PhysicalPath $sitePath -ApplicationPool $appPoolName -Port $initialPort -HostHeader $publicHostName | Out-Null
+            if ($tlsEnabled) {
+                Remove-WebBinding -Name $siteName -Protocol "http" -Port $initialPort -HostHeader $publicHostName -ErrorAction Stop
+            }
+        } else {
+            Set-ItemProperty "IIS:\Sites\$siteName" -Name physicalPath -Value $sitePath
+            Set-ItemProperty "IIS:\Sites\$siteName" -Name applicationPool -Value $appPoolName
         }
-        throw
-    }
-}
-
-if ($PSCmdlet.ShouldProcess($appPoolName, "Configure IIS No Managed Code app pool")) {
-    Ensure-StaticAppPool $appPoolName
-}
-
-if ($PSCmdlet.ShouldProcess($siteName, "Configure IIS static site")) {
-    if (-not (Test-Path "IIS:\Sites\$siteName")) {
-        $initialPort = if ($tlsEnabled) { 80 } else { $publicPort }
-        New-Website -Name $siteName -PhysicalPath $sitePath -ApplicationPool $appPoolName -Port $initialPort -HostHeader $publicHostName | Out-Null
+        Ensure-WebBinding -SiteName $siteName -Protocol $protocol -Port $publicPort -HostHeader $publicHostName
         if ($tlsEnabled) {
-            Remove-WebBinding -Name $siteName -Protocol "http" -Port $initialPort -HostHeader $publicHostName -ErrorAction SilentlyContinue
+            Ensure-SslBinding -Port $publicPort -HostHeader $publicHostName -Thumbprint $thumbprint
         }
-    } else {
-        Set-ItemProperty "IIS:\Sites\$siteName" -Name physicalPath -Value $sitePath
-        Set-ItemProperty "IIS:\Sites\$siteName" -Name applicationPool -Value $appPoolName
+        Restart-StaticIisTarget -SiteName $siteName -AppPoolName $appPoolName
+        Assert-StaticIisTargetReady `
+            -SiteName $siteName `
+            -AppPoolName $appPoolName `
+            -SitePath $sitePath `
+            -Protocol $protocol `
+            -Port $publicPort `
+            -HostHeader $publicHostName
+    } catch {
+        $deploymentFailure = $_
+        $rollbackFailures = New-Object System.Collections.Generic.List[string]
+        try {
+            Restore-StaticSiteContent -SitePath $sitePath -BackupPath $backupPath -SitePathExisted $sitePathExisted
+            Write-Warning "Restored previous IIS static folder after deployment failure."
+        } catch {
+            $rollbackFailures.Add("content: $($_.Exception.Message)") | Out-Null
+        }
+        try {
+            Restore-StaticIisDeploymentSnapshot `
+                -SiteName $siteName `
+                -AppPoolName $appPoolName `
+                -Protocol $protocol `
+                -Port $publicPort `
+                -HostHeader $publicHostName `
+                -Snapshot $snapshot
+            Write-Warning "Restored previous IIS site state after deployment failure."
+        } catch {
+            $rollbackFailures.Add("IIS: $($_.Exception.Message)") | Out-Null
+        }
+        if ($rollbackFailures.Count -gt 0) {
+            throw "Static IIS deployment failed: $($deploymentFailure.Exception.Message) Rollback also failed: $($rollbackFailures -join '; ')"
+        }
+        throw $deploymentFailure
     }
-    Ensure-WebBinding -SiteName $siteName -Protocol $protocol -Port $publicPort -HostHeader $publicHostName
-    if ($tlsEnabled) {
-        Ensure-SslBinding -Port $publicPort -HostHeader $publicHostName -Thumbprint $thumbprint
-    }
-    Restart-StaticIisTarget -SiteName $siteName -AppPoolName $appPoolName
 }
 
 Write-Host "Static IIS deployment finished: $siteName"

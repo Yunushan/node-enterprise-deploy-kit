@@ -93,7 +93,7 @@ foreach ($expected in @(
     "release-readiness-summary.json",
     "Upload private support evidence bundle",
     "if: `${{ inputs.upload_private_bundle }}",
-    "actions/upload-artifact@v7",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     'path: ${{ inputs.output_directory }}/${{ inputs.bundle_name }}.zip',
     'path: ${{ inputs.output_directory }}/release-readiness-summary.json',
     "retention-days: `${{ inputs.upload_retention_days }}",

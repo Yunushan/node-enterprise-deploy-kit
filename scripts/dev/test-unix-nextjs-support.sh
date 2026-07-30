@@ -16,6 +16,10 @@ mkdir -p "$TEST_ROOT"
 
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
+# shellcheck source=scripts/linux/app-package-lifecycle.sh
+source "$REPO_ROOT/scripts/linux/app-package-lifecycle.sh"
+# shellcheck source=scripts/linux/deployment-lock.sh
+source "$REPO_ROOT/scripts/linux/deployment-lock.sh"
 
 write_file() {
   local path="$1"
@@ -146,6 +150,174 @@ expect_failure() {
     printf '%s\n' "$output" >&2
     exit 1
   fi
+}
+
+test_package_lifecycle_recovery() {
+  local root="$TEST_ROOT/package-lifecycle" fake_bin="$TEST_ROOT/package-lifecycle-bin"
+  local state_file="$root/service-state" log_file="$root/service.log" exists_file="$root/service-exists"
+  local old_path="$PATH" real_rm
+  mkdir -p "$root/source" "$root/app" "$fake_bin"
+  write_file "$root/source/new-release.txt" "new release"
+  write_file "$root/app/active-release.txt" "active release"
+  printf 'running\n' > "$state_file"
+  : > "$exists_file"
+  : > "$log_file"
+  real_rm="$(command -v rm)"
+  cat > "$fake_bin/systemctl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_SERVICE_LOG_FILE"
+case "$1" in
+  show) if test -f "$FAKE_SERVICE_EXISTS_FILE"; then printf 'loaded\n'; else printf 'not-found\n'; fi ;;
+  is-active) test "$(cat "$FAKE_SERVICE_STATE_FILE")" = "running" ;;
+  stop) printf 'stopped\n' > "$FAKE_SERVICE_STATE_FILE" ;;
+  start) printf 'running\n' > "$FAKE_SERVICE_STATE_FILE" ;;
+  disable) printf 'stopped\n' > "$FAKE_SERVICE_STATE_FILE" ;;
+  daemon-reload) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+  cat > "$fake_bin/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " == *" /etc/systemd/system/example-new-service.service "* ]]; then
+  "$REAL_RM" -f -- "$FAKE_SERVICE_EXISTS_FILE"
+  exit 0
+fi
+exec "$REAL_RM" "$@"
+EOF
+  chmod 0755 "$fake_bin/systemctl" "$fake_bin/rm"
+  export FAKE_SERVICE_STATE_FILE="$state_file"
+  export FAKE_SERVICE_LOG_FILE="$log_file"
+  export FAKE_SERVICE_EXISTS_FILE="$exists_file"
+  export REAL_RM="$real_rm"
+  PATH="$fake_bin:$PATH"
+
+  package_test_manifest_failure() { return 1; }
+  package_stop_app_service systemd example-next-smoke
+  if package_replace_app_directory "$root/source" "$root/app" "$root/backups" package_test_manifest_failure; then
+    echo "Package lifecycle replacement should fail when manifest generation fails." >&2
+    exit 1
+  fi
+  if [[ "$PACKAGE_APP_DIRECTORY_RECOVERY_SUCCEEDED" != "true" ]]; then
+    echo "Package lifecycle should report successful APP_DIR recovery." >&2
+    exit 1
+  fi
+  package_restart_app_service_after_failure systemd example-next-smoke
+
+  assert_contains "$root/app/active-release.txt" "active release"
+  if [[ -e "$root/app/new-release.txt" ]]; then
+    echo "Package lifecycle left partial replacement files after rollback." >&2
+    exit 1
+  fi
+  assert_contains "$state_file" "running"
+  assert_contains "$log_file" "stop example-next-smoke"
+  assert_contains "$log_file" "start example-next-smoke"
+
+  package_test_manifest_success() { return 0; }
+  package_stop_app_service systemd example-next-smoke
+  previous_service_existed="$PACKAGE_APP_SERVICE_EXISTED"
+  previous_service_was_running="$PACKAGE_APP_SERVICE_WAS_RUNNING"
+  package_replace_app_directory "$root/source" "$root/app" "$root/backups" package_test_manifest_success
+  successful_backup_path="$PACKAGE_APP_BACKUP_PATH"
+  printf 'running\n' > "$state_file"
+  package_rollback_deployment_transaction \
+    "$root/app" \
+    "$successful_backup_path" \
+    true \
+    systemd \
+    example-next-smoke \
+    "$previous_service_existed" \
+    "$previous_service_was_running"
+  assert_contains "$root/app/active-release.txt" "active release"
+  if [[ -e "$root/app/new-release.txt" ]]; then
+    echo "Unix downstream-failure rollback left the new release active." >&2
+    exit 1
+  fi
+  assert_contains "$state_file" "running"
+
+  mkdir -p "$root/new-app"
+  write_file "$root/new-app/failed-release.txt" "failed release"
+  printf 'running\n' > "$state_file"
+  : > "$exists_file"
+  package_rollback_deployment_transaction \
+    "$root/new-app" \
+    "" \
+    false \
+    systemd \
+    example-new-service \
+    false \
+    false
+  if [[ -e "$root/new-app" ]]; then
+    echo "Unix first-deployment rollback left the failed APP_DIR in place." >&2
+    exit 1
+  fi
+  if [[ -e "$exists_file" ]]; then
+    echo "Unix first-deployment rollback left the new service registered." >&2
+    exit 1
+  fi
+  assert_contains "$state_file" "stopped"
+  assert_contains "$log_file" "disable --now example-new-service"
+  PATH="$old_path"
+  unset FAKE_SERVICE_STATE_FILE FAKE_SERVICE_LOG_FILE FAKE_SERVICE_EXISTS_FILE REAL_RM
+}
+
+test_post_deploy_health_gate() {
+  local root="$TEST_ROOT/post-deploy-health"
+  local fake_bin="$root/fake-bin"
+  local state_file="$root/probe-count"
+  local config_file="$root/app.env"
+  mkdir -p "$fake_bin"
+  write_minimal_env_without_service_manager "$config_file" "$root" 39230
+  cat >> "$config_file" <<EOF
+REQUIRE_POST_DEPLOY_HEALTH_CHECK="true"
+POST_DEPLOY_HEALTH_ATTEMPTS="3"
+POST_DEPLOY_HEALTH_DELAY_SECONDS="0"
+HEALTHCHECK_TIMEOUT="1"
+EOF
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+count=0
+if [[ -f "$NODE_EDK_HEALTH_PROBE_STATE" ]]; then count="$(cat "$NODE_EDK_HEALTH_PROBE_STATE")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$NODE_EDK_HEALTH_PROBE_STATE"
+case "$NODE_EDK_HEALTH_PROBE_MODE" in
+  retry) if [[ "$count" -eq 1 ]]; then printf '503'; else printf '204'; fi ;;
+  fail) printf '302' ;;
+  *) exit 99 ;;
+esac
+EOF
+  chmod 0755 "$fake_bin/curl"
+
+  expect_success "post-deploy health retry" env NODE_EDK_HEALTH_PROBE_STATE="$state_file" NODE_EDK_HEALTH_PROBE_MODE=retry PATH="$fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$config_file"
+  assert_contains "$state_file" "2"
+
+  rm -f "$state_file"
+  sed 's/POST_DEPLOY_HEALTH_ATTEMPTS="3"/POST_DEPLOY_HEALTH_ATTEMPTS="2"/' "$config_file" > "$root/failure.env"
+  expect_failure "post-deploy health rejects redirect" "failed after 2 attempt" env NODE_EDK_HEALTH_PROBE_STATE="$state_file" NODE_EDK_HEALTH_PROBE_MODE=fail PATH="$fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$root/failure.env"
+
+  sed 's/REQUIRE_POST_DEPLOY_HEALTH_CHECK="true"/REQUIRE_POST_DEPLOY_HEALTH_CHECK="false"/' "$config_file" > "$root/disabled.env"
+  expect_success "disabled post-deploy health gate" env NODE_EDK_HEALTH_PROBE_STATE="$state_file" NODE_EDK_HEALTH_PROBE_MODE=disabled PATH="$fake_bin:$PATH" bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$root/disabled.env"
+}
+
+test_deployment_lock() {
+  local lock_root="$TEST_ROOT/deployment-locks"
+
+  deployment_lock_run_privileged() { "$@"; }
+  DEPLOYMENT_LOCK_ROOT="$lock_root"
+  DEPLOYMENT_LOCK_TIMEOUT_SECONDS=0
+  deployment_lock_acquire "example-next-smoke"
+  if mkdir "$DEPLOYMENT_LOCK_PATH" 2>/dev/null; then
+    echo "A second Unix deployment could acquire an already-held lock directory." >&2
+    exit 1
+  fi
+  assert_contains "$DEPLOYMENT_LOCK_PATH/owner" "AppName=example-next-smoke"
+  deployment_lock_release
+  deployment_lock_acquire "example-next-smoke"
+  deployment_lock_release
+
+  assert_contains "$REPO_ROOT/deploy.sh" 'PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_LOCK_PATH}.package-transaction.$$.state"'
+  assert_contains "$REPO_ROOT/deploy.sh" 'Recovery state preserved at: $PACKAGE_TRANSACTION_STATE_PATH'
+  assert_contains "$REPO_ROOT/scripts/linux/import-app-package.sh" 'node-enterprise-deploy-kit/package-transaction/v2'
+  assert_contains "$REPO_ROOT/scripts/linux/rollback-app-package-transaction.sh" 'Package transaction state contains an unsafe APP_DIR.'
 }
 
 copy_command_to_fake_path() {
@@ -370,6 +542,23 @@ test_host_aware_service_manager_defaults() {
   assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" '${APP_NAME}-healthcheck.plist'
   assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" 'node-enterprise-deploy-kit:${APP_NAME}:healthcheck:start'
   assert_contains "$REPO_ROOT/scripts/linux/uninstall-node-service.sh" 'rm -f "$HC_CONFIG" "$HC_SCRIPT"'
+}
+
+test_fail_closed_install_contract() {
+  local service_installer="$REPO_ROOT/scripts/linux/install-node-service.sh"
+  local scheduler_installer="$REPO_ROOT/scripts/linux/install-healthcheck-scheduler.sh"
+  local timer_installer="$REPO_ROOT/scripts/linux/install-healthcheck-timer.sh"
+
+  assert_contains "$REPO_ROOT/scripts/linux/common.sh" 'root_group_name()'
+  assert_not_contains "$service_installer" 'chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR" "$LOG_DIR" || true'
+  assert_contains "$service_installer" 'systemctl is-enabled --quiet "$APP_NAME"'
+  assert_contains "$service_installer" 'systemctl is-active --quiet "$APP_NAME"'
+  assert_contains "$service_installer" 'launchctl print "system/${APP_NAME}" >/dev/null'
+  assert_contains "$service_installer" 'rc-service "$APP_NAME" status'
+  assert_contains "$scheduler_installer" 'launchctl print "system/${APP_NAME}-healthcheck" >/dev/null'
+  assert_contains "$scheduler_installer" 'crontab -l | grep -Fq -- "$marker_start"'
+  assert_contains "$timer_installer" 'systemctl is-enabled --quiet "${APP_NAME}-healthcheck.timer"'
+  assert_contains "$timer_installer" 'systemctl is-active --quiet "${APP_NAME}-healthcheck.timer"'
 }
 
 assert_contains() {
@@ -760,10 +949,13 @@ test_service_template_rendering
 test_reverse_proxy_template_rendering
 test_node_runtime_smoke
 test_health_scheduler_preflight_requirements
+test_package_lifecycle_recovery
+test_post_deploy_health_gate
 test_reverse_proxy_preflight_requires_binary
 test_preparation_environment_preflight
 test_dependency_bootstrap_requires_package_manager
 test_host_aware_service_manager_defaults
+test_fail_closed_install_contract
 
 OK_ROOT="$TEST_ROOT/standalone-ok"
 mkdir -p "$OK_ROOT"
@@ -922,7 +1114,7 @@ test_static_service_manager_status() {
   mkdir -p "$manager_root"
   new_standalone_layout "$manager_root/app"
   write_env "$manager_root/app.env" "$manager_root" "$port" "standalone" "server.js" "$manager"
-  expect_success "$manager static preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$manager_root/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+  expect_success "$manager static preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$manager_root/app.env" --allow-port-in-use --skip-reverse-proxy --skip-health-check --skip-service-manager-check
   expect_success "$manager runtime layout" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$manager_root/app.env"
   expect_success "$manager safe status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$manager_root/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$status_json" --fail-on-critical
   assert_contains "$status_json" "\"serviceManager\": \"$manager\""
@@ -1049,7 +1241,9 @@ mkdir -p "$MISSING_PROVENANCE_ROOT"
 tar -xzf "$PACKAGE_PATH" -C "$MISSING_PROVENANCE_ROOT"
 rm -f "$MISSING_PROVENANCE_ROOT/.node-enterprise-package.json"
 tar -C "$MISSING_PROVENANCE_ROOT" -czf "$MISSING_PROVENANCE_PACKAGE" .
-expect_failure "strict package provenance missing" "package provenance is required" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$MISSING_PROVENANCE_PACKAGE"
+expect_failure "required package digest missing" "PACKAGE_EXPECTED_SHA256 is required" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$MISSING_PROVENANCE_PACKAGE"
+expect_failure "package digest mismatch" "does not match PACKAGE_EXPECTED_SHA256" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$MISSING_PROVENANCE_PACKAGE" "0000000000000000000000000000000000000000000000000000000000000000"
+expect_failure "strict package provenance missing" "package provenance is required" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$MISSING_PROVENANCE_PACKAGE" "$(sha256_file "$MISSING_PROVENANCE_PACKAGE")"
 
 WRONG_PLATFORM_ROOT="$TEST_ROOT/package/wrong-platform"
 WRONG_PLATFORM_PACKAGE="$TEST_ROOT/package/wrong-platform.tar.gz"
@@ -1063,7 +1257,7 @@ fi
 sed "s/\"buildPlatform\": \"$PACKAGE_BUILD_PLATFORM\"/\"buildPlatform\": \"$WRONG_PLATFORM\"/" "$WRONG_PLATFORM_MARKER" > "$WRONG_PLATFORM_MARKER.tmp"
 mv "$WRONG_PLATFORM_MARKER.tmp" "$WRONG_PLATFORM_MARKER"
 tar -C "$WRONG_PLATFORM_ROOT" -czf "$WRONG_PLATFORM_PACKAGE" .
-expect_failure "strict package provenance mismatch" "built for '$WRONG_PLATFORM'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE"
+expect_failure "strict package provenance mismatch" "built for '$WRONG_PLATFORM'" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_PLATFORM_PACKAGE" "$(sha256_file "$WRONG_PLATFORM_PACKAGE")"
 
 WRONG_NODE_ABI_ROOT="$TEST_ROOT/package/wrong-node-abi"
 WRONG_NODE_ABI_PACKAGE="$TEST_ROOT/package/wrong-node-abi.tar.gz"
@@ -1073,14 +1267,75 @@ WRONG_NODE_ABI_MARKER="$WRONG_NODE_ABI_ROOT/.node-enterprise-package.json"
 sed 's/"nodeModuleAbi": "[0-9][0-9]*"/"nodeModuleAbi": "0"/' "$WRONG_NODE_ABI_MARKER" > "$WRONG_NODE_ABI_MARKER.tmp"
 mv "$WRONG_NODE_ABI_MARKER.tmp" "$WRONG_NODE_ABI_MARKER"
 tar -C "$WRONG_NODE_ABI_ROOT" -czf "$WRONG_NODE_ABI_PACKAGE" .
-expect_failure "strict package provenance Node ABI mismatch" "native module ABI '0' does not match target Node ABI" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_NODE_ABI_PACKAGE"
+expect_failure "strict package provenance Node ABI mismatch" "native module ABI '0' does not match target Node ABI" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$STRICT_PROVENANCE_ROOT/app.env" "$WRONG_NODE_ABI_PACKAGE" "$(sha256_file "$WRONG_NODE_ABI_PACKAGE")"
+
+RESOURCE_LIMIT_ROOT="$TEST_ROOT/package-resource-limit"
+mkdir -p "$RESOURCE_LIMIT_ROOT/app"
+write_env "$RESOURCE_LIMIT_ROOT/app.env" "$RESOURCE_LIMIT_ROOT" 39224 "standalone" "server.js" "launchd"
+printf 'active release remains untouched\n' > "$RESOURCE_LIMIT_ROOT/app/resource-sentinel.txt"
+cat >> "$RESOURCE_LIMIT_ROOT/app.env" <<EOF
+PACKAGE_PATH="$PACKAGE_PATH"
+PACKAGE_EXPECTED_SHA256="$(sha256_file "$PACKAGE_PATH")"
+PACKAGE_MAX_ENTRY_COUNT="1"
+BACKUP_DIR="$RESOURCE_LIMIT_ROOT/backups"
+EOF
+expect_failure "package entry limit preflight" "PACKAGE_MAX_ENTRY_COUNT" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$RESOURCE_LIMIT_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+expect_failure "package entry limit import" "PACKAGE_MAX_ENTRY_COUNT" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$RESOURCE_LIMIT_ROOT/app.env" "$PACKAGE_PATH" "$(sha256_file "$PACKAGE_PATH")"
+assert_contains "$RESOURCE_LIMIT_ROOT/app/resource-sentinel.txt" "active release remains untouched"
+
+DISK_LIMIT_ROOT="$TEST_ROOT/package-disk-limit"
+mkdir -p "$DISK_LIMIT_ROOT/app"
+write_env "$DISK_LIMIT_ROOT/app.env" "$DISK_LIMIT_ROOT" 39225 "standalone" "server.js" "launchd"
+printf 'active release remains untouched\n' > "$DISK_LIMIT_ROOT/app/resource-sentinel.txt"
+cat >> "$DISK_LIMIT_ROOT/app.env" <<EOF
+PACKAGE_PATH="$PACKAGE_PATH"
+PACKAGE_EXPECTED_SHA256="$(sha256_file "$PACKAGE_PATH")"
+PACKAGE_MINIMUM_FREE_SPACE_MB="8388608"
+BACKUP_DIR="$DISK_LIMIT_ROOT/backups"
+EOF
+expect_failure "package disk reserve preflight" "Insufficient free disk space" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$DISK_LIMIT_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+expect_failure "package disk reserve import" "Insufficient free disk space" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$DISK_LIMIT_ROOT/app.env" "$PACKAGE_PATH" "$(sha256_file "$PACKAGE_PATH")"
+assert_contains "$DISK_LIMIT_ROOT/app/resource-sentinel.txt" "active release remains untouched"
+
+DUPLICATE_PACKAGE_ROOT_A="$TEST_ROOT/package/duplicate-entries-a"
+DUPLICATE_PACKAGE_ROOT_B="$TEST_ROOT/package/duplicate-entries-b"
+DUPLICATE_PACKAGE="$TEST_ROOT/package/duplicate-entries.tar"
+DUPLICATE_IMPORT_ROOT="$TEST_ROOT/package-duplicate-import"
+mkdir -p "$DUPLICATE_PACKAGE_ROOT_A" "$DUPLICATE_PACKAGE_ROOT_B" "$DUPLICATE_IMPORT_ROOT/app"
+tar -xzf "$PACKAGE_PATH" -C "$DUPLICATE_PACKAGE_ROOT_A"
+tar -xzf "$PACKAGE_PATH" -C "$DUPLICATE_PACKAGE_ROOT_B"
+tar -C "$DUPLICATE_PACKAGE_ROOT_A" -cf "$DUPLICATE_PACKAGE" .
+tar -C "$DUPLICATE_PACKAGE_ROOT_B" -rf "$DUPLICATE_PACKAGE" .
+write_env "$DUPLICATE_IMPORT_ROOT/app.env" "$DUPLICATE_IMPORT_ROOT" 39226 "standalone" "server.js" "launchd"
+printf 'active release remains untouched\n' > "$DUPLICATE_IMPORT_ROOT/app/resource-sentinel.txt"
+printf 'BACKUP_DIR="%s"\n' "$DUPLICATE_IMPORT_ROOT/backups" >> "$DUPLICATE_IMPORT_ROOT/app.env"
+expect_failure "duplicate package entry import" "Duplicate or case-colliding archive entry" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$DUPLICATE_IMPORT_ROOT/app.env" "$DUPLICATE_PACKAGE" "$(sha256_file "$DUPLICATE_PACKAGE")"
+assert_contains "$DUPLICATE_IMPORT_ROOT/app/resource-sentinel.txt" "active release remains untouched"
+
+if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+  UNSAFE_ZIP_ROOT="$TEST_ROOT/package/unsafe-zip-link"
+  UNSAFE_ZIP_PACKAGE="$TEST_ROOT/package/unsafe-zip-link.zip"
+  UNSAFE_ZIP_IMPORT_ROOT="$TEST_ROOT/package-unsafe-zip-import"
+  mkdir -p "$UNSAFE_ZIP_ROOT" "$UNSAFE_ZIP_IMPORT_ROOT/app"
+  new_standalone_layout "$UNSAFE_ZIP_ROOT"
+  ln -s /etc/passwd "$UNSAFE_ZIP_ROOT/unsafe-link"
+  (cd "$UNSAFE_ZIP_ROOT" && zip -qry "$UNSAFE_ZIP_PACKAGE" .)
+  expect_failure "unsafe zip link package validator" "Unsafe zip entry type" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$UNSAFE_ZIP_PACKAGE"
+  write_env "$UNSAFE_ZIP_IMPORT_ROOT/app.env" "$UNSAFE_ZIP_IMPORT_ROOT" 39227 "standalone" "server.js" "launchd"
+  printf 'active release remains untouched\n' > "$UNSAFE_ZIP_IMPORT_ROOT/app/resource-sentinel.txt"
+  printf 'BACKUP_DIR="%s"\n' "$UNSAFE_ZIP_IMPORT_ROOT/backups" >> "$UNSAFE_ZIP_IMPORT_ROOT/app.env"
+  expect_failure "unsafe zip link package import" "Unsafe zip entry type" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$UNSAFE_ZIP_IMPORT_ROOT/app.env" "$UNSAFE_ZIP_PACKAGE" "$(sha256_file "$UNSAFE_ZIP_PACKAGE")"
+  assert_contains "$UNSAFE_ZIP_IMPORT_ROOT/app/resource-sentinel.txt" "active release remains untouched"
+else
+  echo "Skipping unsafe zip symlink checks; zip/unzip are unavailable."
+fi
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   IMPORT_ROOT="$TEST_ROOT/import-ok"
   mkdir -p "$IMPORT_ROOT"
   write_env "$IMPORT_ROOT/app.env" "$IMPORT_ROOT" 39205 "standalone" "server.js" "launchd"
   printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$IMPORT_ROOT/app.env"
-  expect_success "root package import manifest" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$IMPORT_ROOT/app.env" "$PACKAGE_PATH"
+  expect_success "root package import manifest" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$IMPORT_ROOT/app.env" "$PACKAGE_PATH" "$(sha256_file "$PACKAGE_PATH")"
   IMPORT_MANIFEST="$IMPORT_ROOT/app/.node-enterprise-deploy.json"
   STATUS_IMPORT_JSON="$IMPORT_ROOT/status-import.json"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -1115,7 +1370,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     mkdir -p "$MUSL_IMPORT_ROOT"
     write_env "$MUSL_IMPORT_ROOT/app.env" "$MUSL_IMPORT_ROOT" 39223 "standalone" "server.js" "launchd"
     printf 'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"\n' >> "$MUSL_IMPORT_ROOT/app.env"
-    expect_success "strict musl package import" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$MUSL_IMPORT_ROOT/app.env" "$MUSL_PACKAGE_PATH"
+    expect_success "strict musl package import" env PATH="$MUSL_PROVENANCE_BIN:$PATH" bash "$REPO_ROOT/scripts/linux/import-app-package.sh" "$MUSL_IMPORT_ROOT/app.env" "$MUSL_PACKAGE_PATH" "$(sha256_file "$MUSL_PACKAGE_PATH")"
     assert_contains "$MUSL_IMPORT_ROOT/app/.node-enterprise-deploy.json" '"buildLibc": "musl"'
   fi
 
@@ -1177,6 +1432,7 @@ new_next_project_layout "$BLOCKED_PROJECT"
 write_file "$BLOCKED_PROJECT/.next/standalone/.env.production" "SECRET_VALUE=placeholder"
 expect_failure "blocked package helper" "blocked private file" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$BLOCKED_PROJECT" --output-path "$TEST_ROOT/package/blocked.tar.gz" --node-bin "$PACKAGE_NODE_BIN"
 
+test_deployment_lock
 test_static_service_manager_status "bsdrc" 39203 "cron"
 
 echo "Unix Next.js support checks OK"

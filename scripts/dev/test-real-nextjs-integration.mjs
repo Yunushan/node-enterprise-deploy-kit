@@ -1,12 +1,24 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, promises as fs } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+async function sha256File(filePath) {
+  const hash = createHash('sha256');
+  await new Promise((resolve, reject) => {
+    const input = createReadStream(filePath);
+    input.on('error', reject);
+    input.on('data', (chunk) => hash.update(chunk));
+    input.on('end', resolve);
+  });
+  return hash.digest('hex');
+}
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const nextVersion = process.env.NEXTJS_INTEGRATION_NEXT_VERSION || 'latest';
@@ -591,6 +603,7 @@ async function restoreTestDirectoryOwnership(directoryPath) {
 async function importPackage(packagePath, mode) {
   const importedPath = path.join(testRoot, `imported-${mode}`);
   const backupPath = path.join(testRoot, `imported-${mode}-backups`);
+  const packageExpectedSha256 = await sha256File(packagePath);
   await fs.rm(importedPath, { recursive: true, force: true });
 
   if (process.platform === 'win32') {
@@ -605,6 +618,8 @@ async function importPackage(packagePath, mode) {
       NextjsRequirePackageProvenance: true,
       AppDirectory: importedPath,
       BackupDirectory: backupPath,
+      RequirePackageSha256: true,
+      PackageExpectedSha256: packageExpectedSha256,
       PackageExpectedFiles: expectedFiles,
       PackageStripSingleTopLevelDirectory: true,
       StartCommand: mode === 'standalone' ? 'server.js' : path.join('node_modules', 'next', 'dist', 'bin', 'next')
@@ -613,7 +628,8 @@ async function importPackage(packagePath, mode) {
       '-NoProfile',
       '-File', path.join(repoRoot, 'scripts', 'windows', 'Import-AppPackage.ps1'),
       '-ConfigPath', configPath,
-      '-PackagePath', packagePath
+      '-PackagePath', packagePath,
+      '-PackageExpectedSha256', packageExpectedSha256
     ]);
   } else {
     const configPath = path.join(testRoot, `import-${mode}.env`);
@@ -629,11 +645,13 @@ async function importPackage(packagePath, mode) {
       `APP_DIR=${shellQuote(importedPath)}`,
       `BACKUP_DIR=${shellQuote(backupPath)}`,
       `PACKAGE_PATH=${shellQuote(packagePath)}`,
+      'REQUIRE_PACKAGE_SHA256="true"',
+      `PACKAGE_EXPECTED_SHA256=${shellQuote(packageExpectedSha256)}`,
       `PACKAGE_EXPECTED_FILES=${shellQuote(expectedFiles)}`,
       'PACKAGE_STRIP_SINGLE_TOP_LEVEL_DIR="true"',
       'SERVICE_MANAGER="none"'
     ].join('\n') + '\n');
-    await runAsRoot('bash', [path.join(repoRoot, 'scripts', 'linux', 'import-app-package.sh'), configPath, packagePath]);
+    await runAsRoot('bash', [path.join(repoRoot, 'scripts', 'linux', 'import-app-package.sh'), configPath, packagePath, packageExpectedSha256]);
     await restoreTestDirectoryOwnership(importedPath);
   }
 

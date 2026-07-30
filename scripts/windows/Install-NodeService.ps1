@@ -202,20 +202,11 @@ function Set-ServiceAccount($Config) {
         Grant-ServiceAccountAccess -Path $Config.LogDirectory -Account $settings.Account -Rights "M"
     }
 }
-function Test-PostStartHealth($Config) {
-    Start-Sleep -Seconds 3
+function Test-PostStartListener($Config) {
     if ($Config.Port -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
         $listener = Get-NetTCPConnection -LocalPort ([int]$Config.Port) -State Listen -ErrorAction SilentlyContinue
         if (-not $listener) {
             Write-Warning "Service is running, but no listener was found on configured port $($Config.Port). Check app logs and StartCommand."
-        }
-    }
-    if ($Config.HealthUrl) {
-        try {
-            $response = Invoke-WebRequest -Uri $Config.HealthUrl -UseBasicParsing -TimeoutSec 10
-            Write-Host "Health check returned HTTP $($response.StatusCode)." -ForegroundColor Green
-        } catch {
-            Write-Warning "Service started, but HTTP health check failed. $($_.Exception.Message)"
         }
     }
 }
@@ -227,6 +218,7 @@ if ($config.ServiceManager -ne "winsw") {
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+. (Join-Path $repoRoot "scripts\windows\PostDeployHealth.ps1")
 $ensureWinswArgs = @{
     ConfigPath = $ConfigPath
     WinSWPath = $WinSWPath
@@ -308,7 +300,8 @@ if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
 
     $service = Get-Service -Name $config.AppName -ErrorAction Stop
     $service.WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
-    Test-PostStartHealth $config
+    Test-PostStartListener $config
+    Test-PostDeployHealth -Config $config
 }
 
 Write-Host "Installed service: $($config.AppName)" -ForegroundColor Green

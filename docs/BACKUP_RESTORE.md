@@ -17,6 +17,30 @@ when the target file exists and the new content differs.
 Health checks prune old managed backup files after `BackupRetentionDays` /
 `BACKUP_RETENTION_DAYS`.
 
+Package imports also move the current application directory to a timestamped
+backup immediately before replacement. A replacement or manifest failure
+automatically removes the partial release, restores that application backup,
+and returns a previously running service to its prior state. If the directory
+cannot be restored, the importer deliberately leaves the service stopped and
+reports a critical recovery error. Restore the application backup and validate
+the runtime layout before manually restarting the service.
+
+Top-level package deployments keep a small protected transaction record until
+all deployment stages finish. If app preparation, service installation, proxy
+configuration, or health-scheduler setup fails, the wrapper restores the
+previous application directory and running/stopped service state. A failed
+first deployment removes its newly created service or PM2 entry. Static IIS
+deployment also restores its prior content and IIS site state. Transaction
+records contain paths and state flags only; they do not copy application
+environment values. They are deleted after success or successful rollback.
+
+If automatic rollback fails, its transaction record is preserved and the path
+is printed. Do not delete it or start the service blindly. Confirm that the
+timestamped application backup exists, repair or restore `AppDirectory` /
+`APP_DIR`, restore any changed managed service/proxy config from its timestamped
+backup, and then run the platform status command. Unix records are placed beside
+the lock directory so preserving one does not leave a stale deployment lock.
+
 Default backup locations:
 
 ```text

@@ -61,11 +61,11 @@ foreach ($expected in @(
     "windows-2025",
     "macos-15",
     "Set up Node.js 22",
-    "actions/setup-node@v6",
+    "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
     "node-version: '22'",
     "node scripts/dev/test-real-nextjs-integration.mjs",
     "RUN_LAUNCHD_SERVICE_INTEGRATION:",
-    "actions/checkout@v7",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "real-windows-service-nextjs:",
     "real-windows-service-nextjs (`${{ matrix.os }})",
     "RUN_WINSW_SERVICE_INTEGRATION: `"true`"",
@@ -130,7 +130,7 @@ foreach ($expected in @(
     "if: always()",
     "nextjs-integration-summary:",
     "Next.js integration result summary",
-    "actions/download-artifact@v8",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "NEXTJS_INTEGRATION_NEEDS_JSON: `${{ toJSON(needs) }}",
     "New-NextJsIntegrationSummary.mjs",
     "Enforce hosted Next.js integration result coverage",
@@ -307,7 +307,7 @@ foreach ($expected in @(
 foreach ($expected in @(
     "Validate integration result when present",
     "Test-NextJsIntegrationResult.mjs",
-    "actions/upload-artifact@v7",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "if-no-files-found",
     "retention-days"
   )) {

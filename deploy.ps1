@@ -12,6 +12,7 @@ param(
     [switch] $SkipPreflight,
     [switch] $AllowPortInUse,
     [string] $PackagePath = "",
+    [string] $PackageExpectedSha256 = "",
     [switch] $SkipPackageImport,
     [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
     [string] $WinSWDownloadUrl = "",
@@ -38,6 +39,16 @@ function Normalize-Name([string]$Value) {
 }
 $deploymentMode = Normalize-Name ([string]$config.DeploymentMode)
 $isStaticIis = ($deploymentMode -eq "static-iis")
+. (Join-Path $repoRoot "scripts\windows\DeploymentLock.ps1")
+. (Join-Path $repoRoot "scripts\windows\AppPackageLifecycle.ps1")
+$deploymentLock = $null
+$packageTransactionStatePath = ""
+$preservePackageTransactionState = $false
+if (-not $WhatIfPreference) {
+    $deploymentLock = Enter-DeploymentLock -Config $config
+}
+
+try {
 
 $effectivePackagePath = $PackagePath
 if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
@@ -55,6 +66,7 @@ if (-not $SkipPreflight) {
     if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $preflightArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
     if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $preflightArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
     if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) { $preflightArgs.PackagePath = $effectivePackagePath }
+    if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256)) { $preflightArgs.PackageExpectedSha256 = $PackageExpectedSha256 }
     if ($SkipPackageImport) { $preflightArgs.SkipPackageImport = $true }
     if ($SkipWinSWDownload) { $preflightArgs.SkipWinSWDownload = $true }
     & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
@@ -81,6 +93,11 @@ if (-not $SkipPackageImport -and -not [string]::IsNullOrWhiteSpace($effectivePac
         ConfigPath = $ConfigPath
         PackagePath = $effectivePackagePath
     }
+    $transactionRoot = if ($deploymentLock) { Split-Path -Parent $deploymentLock.Path } else { [System.IO.Path]::GetTempPath() }
+    $safeAppName = ([string]$config.AppName) -replace '[^A-Za-z0-9_.-]', '_'
+    $packageTransactionStatePath = Join-Path $transactionRoot "$safeAppName.$PID.package-transaction.json"
+    $packageArgs.TransactionStatePath = $packageTransactionStatePath
+    if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256)) { $packageArgs.PackageExpectedSha256 = $PackageExpectedSha256 }
     if ($WhatIfPreference) {
         & (Join-Path $repoRoot "scripts\windows\Import-AppPackage.ps1") @packageArgs -WhatIf
     } else {
@@ -146,3 +163,28 @@ if (-not $SkipHealthCheck -and -not $isStaticIis) {
 }
 
 Write-Host "Deployment finished for $($config.AppName)." -ForegroundColor Green
+}
+catch {
+    $deploymentFailure = $_
+    if (-not [string]::IsNullOrWhiteSpace($packageTransactionStatePath) -and
+        (Test-Path -LiteralPath $packageTransactionStatePath -PathType Leaf)) {
+        try {
+            $transactionState = Get-Content -LiteralPath $packageTransactionStatePath -Raw | ConvertFrom-Json
+            Invoke-AppPackageDeploymentRollback -Config $config -TransactionState $transactionState
+        }
+        catch {
+            $preservePackageTransactionState = $true
+            throw "Deployment failed: $($deploymentFailure.Exception.Message) Package rollback also failed: $($_.Exception.Message) Recovery state preserved at: $packageTransactionStatePath"
+        }
+    }
+    throw $deploymentFailure
+}
+finally {
+    if (-not $preservePackageTransactionState -and
+        -not [string]::IsNullOrWhiteSpace($packageTransactionStatePath) -and
+        (Test-Path -LiteralPath $packageTransactionStatePath -PathType Leaf)) {
+        try { Remove-Item -LiteralPath $packageTransactionStatePath -Force -ErrorAction Stop }
+        catch { Write-Warning "Could not remove package transaction state: $packageTransactionStatePath" }
+    }
+    Exit-DeploymentLock -Lock $deploymentLock
+}
