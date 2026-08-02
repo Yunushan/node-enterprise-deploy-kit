@@ -71,7 +71,7 @@ case "$PLATFORM_CASE" in
   ubuntu|debian|linux-mint)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils
+    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils libatomic1
     if [ "${RUN_APACHE_PROXY_INTEGRATION:-false}" = "true" ]; then
       apt-get install -y --no-install-recommends apache2
     fi

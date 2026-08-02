@@ -474,7 +474,8 @@ async function packageProject(projectPath, mode, outputPath) {
     path.join(repoRoot, 'scripts', 'linux', 'package-nextjs-standalone.sh'),
     '--project-path', projectPath,
     '--mode', mode,
-    '--output-path', outputPath
+    '--output-path', outputPath,
+    '--node-bin', process.execPath
   ]);
 }
 
@@ -904,7 +905,7 @@ async function verifyMacosLaunchdService(runtimePath, mode, port, afterServiceRe
     'SKIP_BUILD="true"',
     'NODE_ENV="production"',
     `APP_PORT=${shellQuote(String(port))}`,
-    `HEALTH_URL=${shellQuote(`http://127.0.0.1:${port}/health`)}`,
+    `HEALTH_URL=${shellQuote(`http://127.0.0.1:${port}/`)}`,
     'BIND_ADDRESS="127.0.0.1"',
     'HOST="127.0.0.1"',
     'HOSTNAME="127.0.0.1"'
