@@ -274,7 +274,7 @@ function selfTestResult(target, manager, proxy, platform) {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: platform, arch: 'x64', release: 'test', identity },
-    node: { version: 'v24.17.0' },
+    node: { version: 'v26.5.1' },
     nextJs: { requestedVersion: 'latest', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
     verification: { serviceManager: manager, reverseProxy: proxy, packageImport: true, loopbackHttp: true, forwardedHeaders: true },
     execution: { kind: 'native', target, runnerEnvironment: 'self-hosted' },

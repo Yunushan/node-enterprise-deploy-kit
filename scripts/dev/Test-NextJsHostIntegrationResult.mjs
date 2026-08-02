@@ -86,7 +86,7 @@ function selfTestResult() {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: 'linux', arch: 'x64', release: '6.8.0', identity: { family: 'linux', id: 'ubuntu', version: '24.04', variant: null } },
-    node: { version: 'v24.17.0' },
+    node: { version: 'v26.5.1' },
     nextJs: { requestedVersion: 'latest', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
     verification: { serviceManager: 'systemd', reverseProxy: 'nginx', packageImport: true, loopbackHttp: true, forwardedHeaders: true },
     execution: { kind: 'native', target: 'ubuntu', runnerEnvironment: 'self-hosted' },

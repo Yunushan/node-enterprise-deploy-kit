@@ -13,10 +13,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Install CI tooling
         shell: bash
         run: |
@@ -71,10 +71,10 @@ jobs:
           - windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Windows repository verification
         shell: pwsh
         run: ./scripts/dev/Test-Repository.ps1 -SkipShellSyntax -SkipReleaseEvidenceSelfTests
@@ -364,10 +364,10 @@ jobs:
       NEXTJS_INTEGRATION_TARGET: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Install Nginx
         shell: bash
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends nginx
@@ -388,10 +388,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: macOS Unix/Next.js verification
         shell: bash
         run: |
@@ -417,10 +417,10 @@ jobs:
           - macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Build, package, and run a real Next.js application
         shell: bash
         run: node scripts/dev/test-real-nextjs-integration.mjs
@@ -445,10 +445,10 @@ jobs:
           - windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Build, package, and run real Next.js through WinSW
         shell: pwsh
         env:
@@ -480,10 +480,10 @@ jobs:
           - nssm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Install IIS and reverse-proxy dependencies
         shell: pwsh
         run: |
@@ -550,10 +550,10 @@ jobs:
       NEXTJS_INTEGRATION_TARGET: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Install Nginx
         shell: bash
         run: brew install nginx
@@ -588,10 +588,10 @@ jobs:
             package: traefik
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Install reverse proxy
         shell: bash
         run: brew install ${{ matrix.package }}
@@ -638,10 +638,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Node.js 22
+      - name: Set up Node.js 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Download hosted Next.js integration results
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

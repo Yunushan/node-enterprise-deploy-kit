@@ -142,7 +142,7 @@ bash scripts/dev/test-unix-nextjs-support.sh
 
 install_real_nextjs_node() {
   local node_version node_platform node_archive node_root checksum_line
-  node_version="${REAL_NEXTJS_NODE_VERSION:-24.17.0}"
+  node_version="${REAL_NEXTJS_NODE_VERSION:-26.5.1}"
   case "$node_version" in
     v*) ;;
     *) node_version="v$node_version" ;;
