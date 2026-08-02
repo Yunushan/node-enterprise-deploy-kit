@@ -85,26 +85,13 @@ package_safety_tar_metrics() {
 
 package_safety_zip_metrics() {
   LC_ALL=C unzip -l "$1" 2>/dev/null | awk '
-    BEGIN { inside = 0; separators = 0; failed = 0; count = 0; total = 0 }
-    /^[[:space:]]*-+[[:space:]]+-+[[:space:]]+-+[[:space:]]+-+[[:space:]]*$/ {
-      separators++
-      if (separators == 1) {
-        inside = 1
-      } else if (separators == 2) {
-        inside = 0
-      }
-      next
-    }
-    inside {
-      if ($1 !~ /^[0-9]+$/) {
-        failed = 1
-        exit 2
-      }
+    BEGIN { count = 0; total = 0 }
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ {
       count++
       total += $1
     }
     END {
-      if (failed || separators < 2) exit 2
+      if (count == 0) exit 2
       printf "%.0f %.0f\n", count, total
     }
   '

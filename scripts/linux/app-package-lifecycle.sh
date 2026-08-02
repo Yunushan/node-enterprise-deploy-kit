@@ -10,6 +10,7 @@ PACKAGE_APP_DIRECTORY_RECOVERY_SUCCEEDED=true
 package_app_service_exists() {
   local manager="$1" name="$2"
   case "$manager" in
+    none|"") return 1 ;;
     systemd) service_exists_systemd "$name" ;;
     systemv|sysv|sysvinit|initd|init-d) [[ -x "/etc/init.d/$name" ]] ;;
     openrc) [[ -x "/etc/init.d/$name" ]] ;;
@@ -22,6 +23,7 @@ package_app_service_exists() {
 package_app_service_is_running() {
   local manager="$1" name="$2"
   case "$manager" in
+    none|"") return 1 ;;
     systemd)
       service_exists_systemd "$name" && systemctl is-active --quiet "$name"
       ;;
@@ -102,6 +104,7 @@ package_stop_app_service() {
 package_remove_new_service_after_failure() {
   local manager="$1" name="$2" state_result
   case "$manager" in
+    none|"") return 0 ;;
     systemd)
       systemctl disable --now "$name" >/dev/null 2>&1 || true
       rm -f -- "/etc/systemd/system/${name}.service"
@@ -187,6 +190,7 @@ package_restart_app_service_after_failure() {
 
   echo "Restarting previous service after package import failure: $name" >&2
   case "$manager" in
+    none|"") return 0 ;;
     systemd) systemctl start "$name" ;;
     systemv|sysv|sysvinit|initd|init-d)
       if command -v service >/dev/null 2>&1; then service "$name" start; else "/etc/init.d/$name" start; fi
