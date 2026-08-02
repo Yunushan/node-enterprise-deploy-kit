@@ -91,13 +91,13 @@ case "$PLATFORM_CASE" in
       rhel|oracle-linux|centos|centos-stream|rocky|almalinux) curl_package="curl-minimal" ;;
     esac
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
+      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz libatomic
       package_manager="dnf"
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
+      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz libatomic
       package_manager="yum"
     elif command -v microdnf >/dev/null 2>&1; then
-      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
+      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz libatomic
       package_manager="microdnf"
     else
       echo "No dnf, yum, or microdnf package manager found for $PLATFORM_CASE." >&2
