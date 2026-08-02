@@ -86,7 +86,7 @@ package_safety_tar_metrics() {
 package_safety_zip_metrics() {
   LC_ALL=C unzip -l "$1" 2>/dev/null | awk '
     BEGIN { count = 0; total = 0 }
-    $1 ~ /^[0-9]+$/ && $2 ~ /^([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9]-[0-9][0-9]-[0-9][0-9])$/ {
+    $1 ~ /^[0-9]+$/ {
       count++
       total += $1
     }
