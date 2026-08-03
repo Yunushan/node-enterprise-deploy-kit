@@ -473,8 +473,10 @@ For representative Linux userland coverage on a Docker-capable CI host:
 bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu
 ```
 
-Use `--real-nextjs` to download a checksum-verified Node.js runtime in glibc
-containers (or use Alpine's signed `apk` Node.js package), build `next@latest`,
+Use `--real-nextjs` to exercise Node.js 26 in every Linux container. glibc
+containers download a checksum-verified Node.js runtime; Alpine uses the
+official `node:26-alpine` image with its bundled `npm`. The test builds the pinned
+Next.js/React versions from `config/nextjs-integration-versions.json`,
 package both `standalone` and `next-start`, extract the artifacts, and verify
 each one serves HTTP:
 
@@ -760,7 +762,8 @@ service definition still matches `NODE_BIN`, `APP_DIR`, `START_SCRIPT`, and
 System V script, or BSD rc script cannot silently count as current deployment
 proof.
 
-The CI workflow also creates a temporary real `next@latest` application on
+The CI workflow also creates a temporary real Next.js application using the
+pinned versions from `config/nextjs-integration-versions.json` on
 Ubuntu, Windows Server 2022, Windows Server 2025, and macOS 15. It builds the application, packages
 both deployment modes with the platform helper, extracts the package, and
 checks that the resulting runtime serves HTTP. Unix runs use the rendered

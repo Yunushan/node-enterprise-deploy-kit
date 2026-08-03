@@ -15,6 +15,7 @@ package_app_service_exists() {
     openrc) [[ -x "/etc/init.d/$name" ]] ;;
     launchd) [[ -f "/Library/LaunchDaemons/${name}.plist" ]] ;;
     bsdrc|bsd-rc|rcd|rc.d) [[ -x "/usr/local/etc/rc.d/$name" || -x "/etc/rc.d/$name" ]] ;;
+    none) return 1 ;;
     *) echo "Unsupported SERVICE_MANAGER for package lifecycle: $manager" >&2; return 2 ;;
   esac
 }
@@ -45,10 +46,11 @@ package_app_service_is_running() {
         rcctl check "$name" >/dev/null 2>&1
       elif command -v service >/dev/null 2>&1; then
         service "$name" onestatus >/dev/null 2>&1 || service "$name" status >/dev/null 2>&1
-      else
-        return 1
-      fi
-      ;;
+    else
+      return 1
+    fi
+    ;;
+    none) return 1 ;;
     *)
       echo "Unsupported SERVICE_MANAGER for package lifecycle: $manager" >&2
       return 2
@@ -124,6 +126,7 @@ package_remove_new_service_after_failure() {
       if command -v rcctl >/dev/null 2>&1; then rcctl disable "$name"; fi
       rm -f -- "/usr/local/etc/rc.d/$name" "/etc/rc.d/$name"
       ;;
+    none) ;;
     *)
       echo "Unsupported SERVICE_MANAGER for rollback: $manager" >&2
       return 1
@@ -184,6 +187,7 @@ package_rollback_deployment_transaction() {
 package_restart_app_service_after_failure() {
   local manager="$1" name="$2"
   [[ "$PACKAGE_APP_SERVICE_WAS_RUNNING" == "true" ]] || return 0
+  [[ "$manager" == "none" ]] && return 0
 
   echo "Restarting previous service after package import failure: $name" >&2
   case "$manager" in

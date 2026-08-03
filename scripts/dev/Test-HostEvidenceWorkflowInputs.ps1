@@ -245,7 +245,11 @@ function Invoke-HostEvidenceWorkflowInputValidation {
     throw "runner_labels must be a JSON array containing self-hosted and the expected target label."
   }
   try {
-    $labels = @($rawLabels | ConvertFrom-Json)
+    $parsedLabels = ConvertFrom-Json -InputObject $rawLabels
+    $labels = @()
+    foreach ($parsedLabel in $parsedLabels) {
+      $labels += $parsedLabel
+    }
   } catch {
     throw "runner_labels must be a valid JSON array containing self-hosted and the expected target label."
   }

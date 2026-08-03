@@ -180,9 +180,27 @@ function Invoke-SmokeCase {
   $appRoot = Join-Path $testRoot "app"
   $port = New-FreeTcpPort
   $process = $null
+  $previousProcessEnvironment = @{}
+  $environmentConfigured = $false
 
   try {
     $smokeApp = New-SmokeApp -AppRoot $appRoot -Mode $Mode
+
+    $processEnvironment = [ordered]@{
+      NODE_ENV = "production"
+      PORT = [string]$port
+      APP_PORT = [string]$port
+      APP_NAME = [string]$smokeApp.AppName
+      NEXTJS_DEPLOYMENT_MODE = $Mode
+      BIND_ADDRESS = "127.0.0.1"
+      HOST = "127.0.0.1"
+      HOSTNAME = "127.0.0.1"
+    }
+    foreach ($environmentEntry in $processEnvironment.GetEnumerator()) {
+      $previousProcessEnvironment[$environmentEntry.Key] = [System.Environment]::GetEnvironmentVariable($environmentEntry.Key)
+      [System.Environment]::SetEnvironmentVariable($environmentEntry.Key, [string]$environmentEntry.Value)
+    }
+    $environmentConfigured = $true
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $ResolvedNode
@@ -191,14 +209,6 @@ function Invoke-SmokeCase {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.Environment["NODE_ENV"] = "production"
-    $startInfo.Environment["PORT"] = [string]$port
-    $startInfo.Environment["APP_PORT"] = [string]$port
-    $startInfo.Environment["APP_NAME"] = [string]$smokeApp.AppName
-    $startInfo.Environment["NEXTJS_DEPLOYMENT_MODE"] = $Mode
-    $startInfo.Environment["BIND_ADDRESS"] = "127.0.0.1"
-    $startInfo.Environment["HOST"] = "127.0.0.1"
-    $startInfo.Environment["HOSTNAME"] = "127.0.0.1"
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -254,6 +264,11 @@ function Invoke-SmokeCase {
   }
   finally {
     Stop-ProcessTree $process
+    if ($environmentConfigured) {
+      foreach ($environmentName in $previousProcessEnvironment.Keys) {
+        [System.Environment]::SetEnvironmentVariable($environmentName, $previousProcessEnvironment[$environmentName])
+      }
+    }
     if (Test-Path -LiteralPath $testRoot) {
       Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

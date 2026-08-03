@@ -11,6 +11,10 @@ function assert(condition, message) {
   }
 }
 
+function parseJsonText(text) {
+  return JSON.parse(text.replace(/^\uFEFF/, ''));
+}
+
 function parseArguments(args) {
   const values = { inputPath: '', outputPath: '', summaryPath: '' };
   for (let index = 0; index < args.length; index += 1) {
@@ -169,7 +173,7 @@ export async function buildSummary(inputPath) {
   const invalidArtifacts = [];
   for (const filePath of files) {
     try {
-      const result = JSON.parse(await readFile(filePath, 'utf8'));
+      const result = parseJsonText(await readFile(filePath, 'utf8'));
       validateHostedIntegrationResult(result);
       records.push(toRecord(result));
     } catch (error) {
@@ -195,7 +199,7 @@ export async function buildSummary(inputPath) {
 }
 
 async function validateSummary(summaryPath) {
-  const summary = JSON.parse(await readFile(summaryPath, 'utf8'));
+  const summary = parseJsonText(await readFile(summaryPath, 'utf8'));
   assert(summary && typeof summary === 'object' && !Array.isArray(summary), 'Summary must be a JSON object.');
   assert(Array.isArray(summary.missingSuccessfulJobs), 'Summary is missing missingSuccessfulJobs.');
   if (summary.missingSuccessfulJobs.length > 0) {
@@ -213,9 +217,9 @@ function selfTestResult(status) {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: 'linux', arch: 'x64', release: '6.8.0', identity: { family: 'linux', id: 'ubuntu', version: '24.04', variant: null } },
-    node: { version: 'v24.17.0' },
+    node: { version: 'v26.5.1' },
     nextJs: {
-      requestedVersion: 'latest',
+      requestedVersion: '16.2.10',
       installedVersion: passed ? '16.2.10' : null,
       expectedModes: ['standalone', 'next-start'],
       verifiedModes: passed ? ['standalone', 'next-start'] : []

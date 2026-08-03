@@ -143,7 +143,11 @@ function Invoke-NextJsHostIntegrationWorkflowInputValidation {
     throw "runner_labels must be a JSON array containing self-hosted and the expected target label."
   }
   try {
-    $labels = @($RunnerLabels.Trim() | ConvertFrom-Json)
+    $parsedLabels = ConvertFrom-Json -InputObject $RunnerLabels.Trim()
+    $labels = @()
+    foreach ($parsedLabel in $parsedLabels) {
+      $labels += $parsedLabel
+    }
   } catch {
     throw "runner_labels must be a valid JSON array containing self-hosted and the expected target label."
   }

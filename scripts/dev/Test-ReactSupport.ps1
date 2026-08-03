@@ -35,6 +35,71 @@ function ConvertTo-ForwardSlashPath {
   return $Path.Replace("\", "/")
 }
 
+function Resolve-BashPath {
+  $candidates = @()
+  foreach ($programFiles in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+    if (-not [string]::IsNullOrWhiteSpace($programFiles)) {
+      $candidates += @(
+        (Join-Path $programFiles "Git\usr\bin\bash.exe"),
+        (Join-Path $programFiles "Git\bin\bash.exe")
+      )
+    }
+  }
+
+  foreach ($candidate in @($candidates | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+
+  $command = Get-Command bash -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+  return $null
+}
+
+function ConvertTo-BashArgument {
+  param([AllowEmptyString()][string]$Value)
+
+  $normalized = ConvertTo-ForwardSlashPath ([string]$Value)
+  $singleQuote = [char]39
+  $replacement = $singleQuote + "\" + $singleQuote + $singleQuote
+  $escaped = $normalized.Replace([string]$singleQuote, $replacement)
+  return $singleQuote + $escaped + $singleQuote
+}
+
+function ConvertTo-BashCommand {
+  param([string[]]$Arguments)
+
+  $parts = @()
+  foreach ($argument in @($Arguments)) {
+    $parts += ConvertTo-BashArgument -Value ([string]$argument)
+  }
+  return ($parts -join " ")
+}
+
+function Invoke-BashWithOutput {
+  param(
+    [string]$BashPath,
+    [string[]]$Arguments
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if (@($Arguments).Count -gt 0 -and [string]$Arguments[0] -eq "-lc") {
+      & $BashPath @Arguments 2>&1
+    } else {
+      $command = ConvertTo-BashCommand -Arguments (@("bash") + @($Arguments))
+      & $BashPath "-lc" $command 2>&1
+    }
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+}
+
 function Convert-ToBashPath {
   param([string]$Path)
 
@@ -63,7 +128,7 @@ function Get-BashPathCandidates {
 
 function Resolve-BashVisiblePath {
   param(
-    [System.Management.Automation.CommandInfo]$Bash,
+    [object]$Bash,
     [string]$Path
   )
 
@@ -103,9 +168,9 @@ function Invoke-ExpectFailure {
     $failed = $true
   }
 
-  $output = $outputItems | Out-String
+  $output = ($outputItems | ForEach-Object { $_.ToString() }) -join "`n"
   if ($failed) {
-    if ($output -notmatch [regex]::Escape($ExpectedText)) {
+    if ($output.IndexOf($ExpectedText, [System.StringComparison]::Ordinal) -lt 0) {
       throw "Expected failure containing '$ExpectedText', got: $output"
     }
     return
@@ -312,8 +377,9 @@ try {
     & (Join-Path $RepoRoot "scripts/windows/Test-ReactStaticPackage.ps1") -PackagePath $badReactZip -ReactDocumentRoot "build" -StripSingleTopLevelDirectory
   }
 
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
-  if ($bash) {
+  $bashPath = Resolve-BashPath
+  if ($bashPath) {
+    $bash = [pscustomobject]@{ Source = $bashPath }
     Write-Step "Unix React preflight and package validation"
     $unixRoot = Join-Path $tempRoot "unix"
     $unixApp = Join-Path $unixRoot "app"
@@ -324,7 +390,7 @@ try {
     $unixEnvBash = Resolve-BashVisiblePath -Bash $bash -Path $unixEnv
     Push-Location $RepoRoot
     try {
-      & $bash.Source "scripts/linux/test-deployment-preflight.sh" $unixEnvBash --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+      Invoke-BashWithOutput -BashPath $bash.Source -Arguments @("scripts/linux/test-deployment-preflight.sh", $unixEnvBash, "--skip-reverse-proxy", "--skip-health-check", "--skip-service-manager-check")
       if ($LASTEXITCODE -ne 0) {
         throw "Unix React preflight failed."
       }
@@ -343,7 +409,7 @@ try {
     Push-Location $RepoRoot
     try {
       Invoke-ExpectFailure -ExpectedText "React deployment root is missing index.html" -Script {
-        & $bash.Source "scripts/linux/test-deployment-preflight.sh" $unixBadEnvBash --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+        Invoke-BashWithOutput -BashPath $bash.Source -Arguments @("scripts/linux/test-deployment-preflight.sh", $unixBadEnvBash, "--skip-reverse-proxy", "--skip-health-check", "--skip-service-manager-check")
       }
     }
     finally {
@@ -356,13 +422,13 @@ try {
     $tarPath = Join-Path $tarParent "react-app.tar"
     New-Directory $tarParent
     $tarParentBash = Escape-BashSingleQuoted (Resolve-BashVisiblePath -Bash $bash -Path $tarParent)
-    & $bash.Source -lc "cd $tarParentBash && tar -cf react-app.tar react-app"
+    Invoke-BashWithOutput -BashPath $bash.Source -Arguments @("-lc", "cd $tarParentBash && tar -cf react-app.tar react-app")
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to create React tar package."
     }
     Push-Location $RepoRoot
     try {
-      & $bash.Source "scripts/linux/validate-react-static-package.sh" --package-path (Resolve-BashVisiblePath -Bash $bash -Path $tarPath) --react-document-root build --strip-single-top-level
+      Invoke-BashWithOutput -BashPath $bash.Source -Arguments @("scripts/linux/validate-react-static-package.sh", "--package-path", (Resolve-BashVisiblePath -Bash $bash -Path $tarPath), "--react-document-root", "build", "--strip-single-top-level")
       if ($LASTEXITCODE -ne 0) {
         throw "Unix React package validator failed."
       }

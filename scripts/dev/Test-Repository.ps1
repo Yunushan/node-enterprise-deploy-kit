@@ -84,6 +84,25 @@ function Test-LineEndings {
   Write-Host "Line endings OK"
 }
 
+function Resolve-BashPath {
+  $candidates = @()
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $candidates += Join-Path $env:ProgramFiles "Git\usr\bin\bash.exe"
+    $candidates += Join-Path $env:ProgramFiles "Git\bin\bash.exe"
+  }
+  $command = Get-Command bash -ErrorAction SilentlyContinue
+  if ($command) {
+    $candidates += $command.Source
+  }
+
+  foreach ($candidate in ($candidates | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+  return $null
+}
+
 function Test-ShellSyntax {
   if ($SkipShellSyntax) {
     Write-Host "Skipping shell syntax check."
@@ -91,14 +110,14 @@ function Test-ShellSyntax {
   }
 
   Write-Step "Shell syntax"
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  $bash = Resolve-BashPath
   if (-not $bash) {
     throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
   }
 
   Push-Location $RepoRoot
   try {
-    & $bash.Source "scripts/dev/lint-shell-basic.sh"
+    & $bash "-lc" "bash scripts/dev/lint-shell-basic.sh"
     if ($LASTEXITCODE -ne 0) {
       throw "Shell syntax check failed."
     }
@@ -115,14 +134,14 @@ function Test-ShellCheck {
   }
 
   Write-Step "ShellCheck"
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  $bash = Resolve-BashPath
   if (-not $bash) {
     throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
   }
 
   Push-Location $RepoRoot
   try {
-    & $bash.Source "scripts/dev/lint-shellcheck.sh"
+    & $bash "-lc" "bash scripts/dev/lint-shellcheck.sh"
     if ($LASTEXITCODE -eq 127) {
       Write-Host "ShellCheck was not found; skipping optional ShellCheck."
       return
@@ -181,14 +200,14 @@ function Test-PlatformMatrix {
   }
 
   Write-Step "Platform matrix"
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  $bash = Resolve-BashPath
   if (-not $bash) {
     throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
   }
 
   Push-Location $RepoRoot
   try {
-    & $bash.Source "scripts/dev/test-platform-matrix.sh"
+    & $bash "-lc" "bash scripts/dev/test-platform-matrix.sh"
     if ($LASTEXITCODE -ne 0) {
       throw "Platform matrix check failed."
     }
@@ -205,14 +224,14 @@ function Test-LinuxContainerSmokeSelfTest {
   }
 
   Write-Step "Linux container smoke self-test"
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
+  $bash = Resolve-BashPath
   if (-not $bash) {
     throw "bash was not found. Install Git Bash, WSL, or run with -SkipShellSyntax."
   }
 
   Push-Location $RepoRoot
   try {
-    & $bash.Source "scripts/dev/test-linux-container-smoke.sh" "--self-test"
+    & $bash "-lc" "bash scripts/dev/test-linux-container-smoke.sh --self-test"
     if ($LASTEXITCODE -ne 0) {
       throw "Linux container smoke self-test failed."
     }

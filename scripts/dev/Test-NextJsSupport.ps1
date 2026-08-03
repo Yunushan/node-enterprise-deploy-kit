@@ -35,6 +35,70 @@ function ConvertTo-ForwardSlashPath {
   return $Path.Replace("\", "/")
 }
 
+function Resolve-BashPath {
+  $candidates = @()
+  foreach ($programFiles in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+    if (-not [string]::IsNullOrWhiteSpace($programFiles)) {
+      $candidates += @(
+        (Join-Path $programFiles "Git\usr\bin\bash.exe"),
+        (Join-Path $programFiles "Git\bin\bash.exe")
+      )
+    }
+  }
+
+  foreach ($candidate in @($candidates | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+
+  $command = Get-Command bash -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+  return $null
+}
+
+function ConvertTo-BashArgument {
+  param([AllowEmptyString()][string]$Value)
+
+  $normalized = ConvertTo-ForwardSlashPath ([string]$Value)
+  $singleQuote = [char]39
+  $replacement = $singleQuote + "\" + $singleQuote + $singleQuote
+  $escaped = $normalized.Replace([string]$singleQuote, $replacement)
+  return $singleQuote + $escaped + $singleQuote
+}
+
+function ConvertTo-BashCommand {
+  param([string[]]$Arguments)
+
+  $parts = @()
+  foreach ($argument in @($Arguments)) {
+    $parts += ConvertTo-BashArgument -Value ([string]$argument)
+  }
+  return ($parts -join " ")
+}
+
+function Invoke-BashCommand {
+  param(
+    [string]$BashPath,
+    [string]$Command
+  )
+
+  & $BashPath "-lc" $Command
+}
+
+function Invoke-BashScript {
+  param(
+    [string]$BashPath,
+    [string]$Script,
+    [string[]]$Arguments = @()
+  )
+
+  $command = ConvertTo-BashCommand -Arguments (@("bash", $Script) + @($Arguments))
+  & $BashPath "-lc" $command
+}
+
 function Assert-FileContainsText {
   param(
     [string]$Path,
@@ -191,13 +255,18 @@ function Test-WindowsPreparationEnvironmentIsolation {
 
     $config.PreparationEnvironment = [ordered]@{ "INVALID-NAME" = "value" }
     Write-Utf8NoBom -Path $configPath -Text (($config | ConvertTo-Json -Depth 10) + "`n")
-    $invalidError = ""
-    try {
-      & $preparationPath -ConfigPath $configPath -SkipInstall -SkipBuild
-    }
-    catch {
-      $invalidError = $_.Exception.Message
-    }
+    $invalidStdoutPath = Join-Path $testRoot "invalid-preparation.stdout.txt"
+    $invalidStderrPath = Join-Path $testRoot "invalid-preparation.stderr.txt"
+    $invalidArguments = @(
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", ('"{0}"' -f $preparationPath),
+      "-ConfigPath", ('"{0}"' -f $configPath),
+      "-SkipInstall",
+      "-SkipBuild"
+    )
+    $invalidProcess = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList $invalidArguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $invalidStdoutPath -RedirectStandardError $invalidStderrPath
+    $invalidError = ((Get-Content -LiteralPath $invalidStdoutPath -Raw -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $invalidStderrPath -Raw -ErrorAction SilentlyContinue))
     if ($invalidError -notmatch "invalid environment variable name") {
       throw "PreparationEnvironment should reject invalid variable names."
     }
@@ -395,9 +464,9 @@ function New-UnixEnv {
   $nodeBinPath = Join-Path (Split-Path -Parent $Path) "fake-node.sh"
   $nodeBinRelative = "$relativeRoot/fake-node.sh"
   Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v20.11.1`n  exit 0`nfi`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 0`n"
-  $bashForChmod = Get-Command bash -ErrorAction SilentlyContinue
+  $bashForChmod = Resolve-BashPath
   if ($bashForChmod) {
-    & $bashForChmod.Source "-lc" "chmod +x '$nodeBinRelative'" | Out-Null
+    Invoke-BashCommand -BashPath $bashForChmod -Command "chmod +x '$nodeBinRelative'" | Out-Null
   }
   if ($NextjsDeploymentMode.ToLowerInvariant() -eq "next-start" -and [string]::IsNullOrWhiteSpace($NodeArguments)) {
     $NodeArguments = "start -H 127.0.0.1"
@@ -634,6 +703,27 @@ function New-ZipWithCaseCollisionEntries {
   }
 }
 
+function Invoke-BashWithOutput {
+  param(
+    [string]$BashPath,
+    [string[]]$Arguments
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if (@($Arguments).Count -gt 0 -and [string]$Arguments[0] -eq "-lc") {
+      & $BashPath @Arguments 2>&1
+    } else {
+      $command = ConvertTo-BashCommand -Arguments (@("bash") + @($Arguments))
+      & $BashPath "-lc" $command 2>&1
+    }
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+}
+
 function Assert-TarContains {
   param(
     [string]$BashPath,
@@ -642,7 +732,8 @@ function Assert-TarContains {
   )
 
   $archive = ConvertTo-ForwardSlashPath $ArchivePath
-  $entries = @(& $BashPath "-lc" "tar -tzf '$archive'" 2>&1 | ForEach-Object {
+  $tarOutput = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("-lc", "tar -tzf '$archive'"))
+  $entries = @($tarOutput | ForEach-Object {
       $entry = [string]$_
       if ($entry.StartsWith("./")) { $entry = $entry.Substring(2) }
       $entry
@@ -687,7 +778,7 @@ function Invoke-ExpectPackageValidatorPowerShellFailure {
     throw "Expected Windows package validator failure, but command succeeded."
   }
   $outputText = $captured -join "`n"
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package validator failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -699,7 +790,7 @@ function Invoke-ExpectPackageValidatorBashSuccess {
     [string]$Mode = "standalone"
   )
 
-  $output = & $BashPath "scripts/linux/validate-nextjs-standalone-package.sh" "--package-path" $PackagePath "--mode" $Mode 2>&1
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/validate-nextjs-standalone-package.sh", "--package-path", $PackagePath, "--mode", $Mode))
   if ($LASTEXITCODE -ne 0) {
     $output | ForEach-Object { Write-Host $_ }
     throw "Expected Unix package validator success, but command exited with $LASTEXITCODE."
@@ -714,12 +805,12 @@ function Invoke-ExpectPackageValidatorBashFailure {
     [string]$Mode = "standalone"
   )
 
-  $output = & $BashPath "scripts/linux/validate-nextjs-standalone-package.sh" "--package-path" $PackagePath "--mode" $Mode 2>&1
-  $outputText = ($output | Out-String)
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/validate-nextjs-standalone-package.sh", "--package-path", $PackagePath, "--mode", $Mode))
+  $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package validator failure, but command succeeded."
   }
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package validator failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -762,7 +853,7 @@ function Invoke-ExpectImportPowerShellFailure {
     throw "Expected Windows package import failure, but command succeeded."
   }
   $outputText = $captured -join "`n"
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package import failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -781,12 +872,12 @@ function Invoke-ExpectImportBashFailure {
     $nativePackagePath = Join-Path (Split-Path -Parent $nativeEnvPath) $nativePackagePath
   }
   $packageExpectedSha256 = (Get-FileHash -LiteralPath $nativePackagePath -Algorithm SHA256).Hash
-  $output = & $BashPath "scripts/linux/import-app-package.sh" $EnvPath $PackagePath $packageExpectedSha256 2>&1
-  $outputText = ($output | Out-String)
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/import-app-package.sh", $EnvPath, $PackagePath, $packageExpectedSha256))
+  $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package import failure, but command succeeded."
   }
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package import failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -813,7 +904,7 @@ function Invoke-ExpectPackagePowerShellFailure {
     throw "Expected Windows package helper failure, but command succeeded."
   }
   $outputText = $captured -join "`n"
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package helper failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -832,12 +923,12 @@ function Invoke-ExpectPackageBashFailure {
   if (-not [string]::IsNullOrWhiteSpace($NodeBin)) {
     $arguments += @("--node-bin", $NodeBin)
   }
-  $output = & $BashPath @arguments 2>&1
-  $outputText = ($output | Out-String)
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments $arguments)
+  $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix package helper failure, but command succeeded."
   }
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected package helper failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -880,7 +971,7 @@ function Invoke-ExpectPowerShellFailure {
     throw "Expected PowerShell preflight failure, but command succeeded."
   }
   $outputText = $captured -join "`n"
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -911,7 +1002,7 @@ function Invoke-ExpectRuntimeLayoutPowerShellFailure {
     throw "Expected Windows runtime layout failure, but command succeeded."
   }
   $outputText = $captured -join "`n"
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected runtime layout failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -923,7 +1014,7 @@ function Invoke-ExpectBashSuccess {
     [string[]]$ExtraArgs = @()
   )
 
-  $output = & $BashPath "scripts/linux/test-deployment-preflight.sh" $EnvPath "--skip-reverse-proxy" "--skip-health-check" @ExtraArgs 2>&1
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments (@("scripts/linux/test-deployment-preflight.sh", $EnvPath, "--skip-reverse-proxy", "--skip-health-check") + $ExtraArgs))
   if ($LASTEXITCODE -ne 0) {
     $output | ForEach-Object { Write-Host $_ }
     throw "Expected Unix preflight success, but command exited with $LASTEXITCODE."
@@ -936,7 +1027,7 @@ function Invoke-ExpectRuntimeLayoutBashSuccess {
     [string]$EnvPath
   )
 
-  $output = & $BashPath "scripts/linux/test-nextjs-runtime-layout.sh" $EnvPath 2>&1
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/test-nextjs-runtime-layout.sh", $EnvPath))
   if ($LASTEXITCODE -ne 0) {
     $output | ForEach-Object { Write-Host $_ }
     throw "Expected Unix runtime layout success, but command exited with $LASTEXITCODE."
@@ -950,12 +1041,12 @@ function Invoke-ExpectRuntimeLayoutBashFailure {
     [string]$ExpectedText
   )
 
-  $output = & $BashPath "scripts/linux/test-nextjs-runtime-layout.sh" $EnvPath 2>&1
-  $outputText = ($output | Out-String)
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/test-nextjs-runtime-layout.sh", $EnvPath))
+  $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix runtime layout failure, but command succeeded."
   }
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected runtime layout failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -967,12 +1058,12 @@ function Invoke-ExpectBashFailure {
     [string]$ExpectedText
   )
 
-  $output = & $BashPath "scripts/linux/test-deployment-preflight.sh" $EnvPath "--skip-reverse-proxy" "--skip-health-check" 2>&1
-  $outputText = ($output | Out-String)
+  $output = @(Invoke-BashWithOutput -BashPath $BashPath -Arguments @("scripts/linux/test-deployment-preflight.sh", $EnvPath, "--skip-reverse-proxy", "--skip-health-check"))
+  $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
   if ($LASTEXITCODE -eq 0) {
     throw "Expected Unix preflight failure, but command succeeded."
   }
-  if ($outputText -notmatch [regex]::Escape($ExpectedText)) {
+  if ($outputText.IndexOf($ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Expected failure containing '$ExpectedText', got: $outputText"
   }
 }
@@ -1396,8 +1487,8 @@ try {
   Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsBlockedValidatorPackage -ExpectedText "blocked private file"
   Invoke-ExpectImportPowerShellFailure -ConfigPath $windowsImportConfig -PackagePath $windowsUnsafeTypePackage -ExpectedText "Unsafe archive entry type"
 
-  $bash = Get-Command bash -ErrorAction SilentlyContinue
-  if ($bash) {
+  $bash = [pscustomobject]@{ Source = Resolve-BashPath }
+  if (-not [string]::IsNullOrWhiteSpace($bash.Source)) {
     Push-Location $RepoRoot
     try {
       $unixOkRoot = Join-Path $testRoot "unix-ok"
@@ -1435,7 +1526,7 @@ try {
       $unixOldNodeEnv = Join-Path $unixOldNodeRoot "app.env"
       New-UnixEnv -Path $unixOldNodeEnv -RelativeRoot $unixOldNodeRel -Port 39126
       Write-Utf8NoBom -Path (Join-Path $unixOldNodeRoot "fake-node.sh") -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v18.20.0`n  exit 0`nfi`nexit 0`n"
-      & $bash.Source "-lc" "chmod +x '$unixOldNodeRel/fake-node.sh'" | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "chmod +x '$unixOldNodeRel/fake-node.sh'" | Out-Null
       Invoke-ExpectBashFailure -BashPath $bash.Source -EnvPath "$unixOldNodeRel/app.env" -ExpectedText "Node.js >= 20.9.0"
       Invoke-ExpectRuntimeLayoutBashFailure -BashPath $bash.Source -EnvPath "$unixOldNodeRel/app.env" -ExpectedText "Node.js >= 20.9.0"
 
@@ -1443,13 +1534,13 @@ try {
       $unixNextStartRel = Get-RepoRelativePath $unixNextStartRoot
       $unixNextStartApp = Join-Path $unixNextStartRoot "app"
       New-NextStartLayout -AppDirectory $unixNextStartApp
-      & $bash.Source "-lc" "mkdir -p '$unixNextStartRel/app/node_modules/.bin' && ln -sf '../next/dist/bin/next' '$unixNextStartRel/app/node_modules/.bin/next' 2>/dev/null || true" | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "mkdir -p '$unixNextStartRel/app/node_modules/.bin' && ln -sf '../next/dist/bin/next' '$unixNextStartRel/app/node_modules/.bin/next' 2>/dev/null || true" | Out-Null
       $unixNextStartEnv = Join-Path $unixNextStartRoot "app.env"
       New-UnixEnv -Path $unixNextStartEnv -RelativeRoot $unixNextStartRel -Port 39107 -NextjsDeploymentMode "next-start" -StartScript "node_modules/next/dist/bin/next"
       Invoke-ExpectBashSuccess -BashPath $bash.Source -EnvPath "$unixNextStartRel/app.env"
       Invoke-ExpectRuntimeLayoutBashSuccess -BashPath $bash.Source -EnvPath "$unixNextStartRel/app.env"
       $unixNextStartStatusJson = Join-Path $unixNextStartRoot "status.json"
-      & $bash.Source "scripts/linux/status-node-app.sh" "$unixNextStartRel/app.env" "--skip-service-manager-check" "--skip-port-check" "--skip-health-check" "--json-output" "$unixNextStartRel/status.json" | Out-Null
+      Invoke-BashScript -BashPath $bash.Source -Script "scripts/linux/status-node-app.sh" -Arguments @("$unixNextStartRel/app.env", "--skip-service-manager-check", "--skip-port-check", "--skip-health-check", "--json-output", "$unixNextStartRel/status.json") | Out-Null
       if ($LASTEXITCODE -ne 0) {
         throw "Unix next-start status JSON command failed."
       }
@@ -1468,7 +1559,7 @@ try {
       Invoke-ExpectBashFailure -BashPath $bash.Source -EnvPath "$unixWrongNextCliRel/app.env" -ExpectedText "node_modules/next/dist/bin/next"
       Invoke-ExpectRuntimeLayoutBashFailure -BashPath $bash.Source -EnvPath "$unixWrongNextCliRel/app.env" -ExpectedText "node_modules/next/dist/bin/next"
       $unixWrongNextCliStatusJson = Join-Path $unixWrongNextCliRoot "status.json"
-      & $bash.Source "scripts/linux/status-node-app.sh" "$unixWrongNextCliRel/app.env" "--skip-service-manager-check" "--skip-port-check" "--skip-health-check" "--json-output" "$unixWrongNextCliRel/status.json" | Out-Null
+      Invoke-BashScript -BashPath $bash.Source -Script "scripts/linux/status-node-app.sh" -Arguments @("$unixWrongNextCliRel/app.env", "--skip-service-manager-check", "--skip-port-check", "--skip-health-check", "--json-output", "$unixWrongNextCliRel/status.json") | Out-Null
       if ($LASTEXITCODE -ne 0) {
         throw "Unix wrong next-start CLI status JSON command failed."
       }
@@ -1537,10 +1628,10 @@ try {
       $unixPackageNode = Join-Path $unixPackageRoot "package-node.sh"
       $unixPackageNodeRel = "$unixPackageRel/package-node.sh"
       Write-Utf8NoBom -Path $unixPackageNode -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 1`n"
-      & $bash.Source "-lc" "chmod +x '$unixPackageNodeRel'" | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "chmod +x '$unixPackageNodeRel'" | Out-Null
       $unixPackageOutput = Join-Path $testRoot "packages\example-next.tar.gz"
       $unixPackageOutputRel = Get-RepoRelativePath $unixPackageOutput
-      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" $unixPackageRel "--output-path" $unixPackageOutputRel "--node-bin" $unixPackageNodeRel | Out-Null
+      Invoke-BashScript -BashPath $bash.Source -Script "scripts/linux/package-nextjs-standalone.sh" -Arguments @("--project-path", $unixPackageRel, "--output-path", $unixPackageOutputRel, "--node-bin", $unixPackageNodeRel) | Out-Null
       Assert-TarContains -BashPath $bash.Source -ArchivePath $unixPackageOutputRel -ExpectedEntries @(
         "server.js",
         ".next/BUILD_ID",
@@ -1551,28 +1642,28 @@ try {
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixPackageOutputRel
 
       $unixNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start.tar.gz")
-      & $bash.Source "scripts/linux/package-nextjs-standalone.sh" "--project-path" "$unixNextStartRel/app" "--output-path" $unixNextStartPackage "--mode" "next-start" "--node-bin" $unixPackageNodeRel | Out-Null
+      Invoke-BashScript -BashPath $bash.Source -Script "scripts/linux/package-nextjs-standalone.sh" -Arguments @("--project-path", "$unixNextStartRel/app", "--output-path", $unixNextStartPackage, "--mode", "next-start", "--node-bin", $unixPackageNodeRel) | Out-Null
       Assert-TarContains -BashPath $bash.Source -ArchivePath $unixNextStartPackage -ExpectedEntries @(
         "package.json",
         ".next/BUILD_ID",
         "node_modules/next/package.json",
         "node_modules/next/dist/bin/next"
       )
-      & $bash.Source "-lc" "if tar -tzf '$unixNextStartPackage' | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then exit 1; fi" | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "if tar -tzf '$unixNextStartPackage' | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then exit 1; fi" | Out-Null
       if ($LASTEXITCODE -ne 0) {
         throw "Unix next-start package helper should not include node_modules/.bin symlink entries."
       }
       Invoke-ExpectPackageValidatorBashSuccess -BashPath $bash.Source -PackagePath $unixNextStartPackage -Mode "next-start"
 
       $unixBadNextStartPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixBadNextStartRel/app' -czf '$unixBadNextStartPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixBadNextStartRel/app' -czf '$unixBadNextStartPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixBadNextStartPackage -ExpectedText "node_modules/next" -Mode "next-start"
 
       $unixMissingNextPackageJsonRoot = Join-Path $testRoot "unix-next-start-missing-next-package-json"
       $unixMissingNextPackageJsonRel = Get-RepoRelativePath $unixMissingNextPackageJsonRoot
       New-NextStartLayout -AppDirectory (Join-Path $unixMissingNextPackageJsonRoot "app") -WithoutNextPackageJson
       $unixMissingNextPackageJsonPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-next-package-json.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixMissingNextPackageJsonRel/app' -czf '$unixMissingNextPackageJsonPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixMissingNextPackageJsonRel/app' -czf '$unixMissingNextPackageJsonPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextPackageJsonPackage -ExpectedText "node_modules/next/package.json" -Mode "next-start"
       Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextPackageJsonRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-next-package-json.tar.gz")) -ExpectedText "package metadata" -Mode "next-start" -NodeBin $unixPackageNodeRel
 
@@ -1580,7 +1671,7 @@ try {
       $unixMissingNextCliRel = Get-RepoRelativePath $unixMissingNextCliRoot
       New-NextStartLayout -AppDirectory (Join-Path $unixMissingNextCliRoot "app") -WithoutNextCli
       $unixMissingNextCliPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-missing-cli.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixMissingNextCliRel/app' -czf '$unixMissingNextCliPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixMissingNextCliRel/app' -czf '$unixMissingNextCliPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingNextCliPackage -ExpectedText "node_modules/next/dist/bin/next" -Mode "next-start"
       Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath "$unixMissingNextCliRel/app" -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\next-start-helper-missing-cli.tar.gz")) -ExpectedText "next-start CLI file" -Mode "next-start" -NodeBin $unixPackageNodeRel
 
@@ -1588,26 +1679,26 @@ try {
       $unixUnsafeLinkRel = Get-RepoRelativePath $unixUnsafeLinkRoot
       New-StandaloneLayout -AppDirectory $unixUnsafeLinkRoot
       $unixUnsafeLinkPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\unsafe-link.tar.gz")
-      & $bash.Source "-lc" "ln -s /etc/passwd '$unixUnsafeLinkRel/unsafe-link' 2>/dev/null && test -L '$unixUnsafeLinkRel/unsafe-link'" | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "ln -s /etc/passwd '$unixUnsafeLinkRel/unsafe-link' 2>/dev/null && test -L '$unixUnsafeLinkRel/unsafe-link'" | Out-Null
       if ($LASTEXITCODE -eq 0) {
-        & $bash.Source "-lc" "tar -C '$unixUnsafeLinkRel' -czf '$unixUnsafeLinkPackage' ." | Out-Null
+        Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixUnsafeLinkRel' -czf '$unixUnsafeLinkPackage' ." | Out-Null
         Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixUnsafeLinkPackage -ExpectedText "Unsafe tar link entry"
 
         $unixUnsafeHelperRoot = Join-Path $testRoot "unix-package-helper-unsafe-link"
         $unixUnsafeHelperRel = Get-RepoRelativePath $unixUnsafeHelperRoot
         New-NextProjectLayout -ProjectDirectory $unixUnsafeHelperRoot
-        & $bash.Source "-lc" "ln -s /etc/passwd '$unixUnsafeHelperRel/.next/standalone/unsafe-link'" | Out-Null
+        Invoke-BashCommand -BashPath $bash.Source -Command "ln -s /etc/passwd '$unixUnsafeHelperRel/.next/standalone/unsafe-link'" | Out-Null
         Invoke-ExpectPackageBashFailure -BashPath $bash.Source -ProjectPath $unixUnsafeHelperRel -OutputPath (Get-RepoRelativePath (Join-Path $testRoot "packages\unsafe-helper.tar.gz")) -ExpectedText "Unsafe tar link entry" -NodeBin $unixPackageNodeRel
       } else {
         Write-Host "Skipping unsafe symlink package check; this shell cannot create real symlinks."
       }
 
       $unixMissingStaticPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\missing-static.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixBadRel/app' -czf '$unixMissingStaticPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixBadRel/app' -czf '$unixMissingStaticPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingStaticPackage -ExpectedText ".next/static"
 
       $unixMissingBuildIdPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\missing-build-id.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixMissingBuildIdRel/app' -czf '$unixMissingBuildIdPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixMissingBuildIdRel/app' -czf '$unixMissingBuildIdPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixMissingBuildIdPackage -ExpectedText "BUILD_ID"
 
       $unixBlockedValidatorRoot = Join-Path $testRoot "unix-validator-blocked-private-file"
@@ -1615,7 +1706,7 @@ try {
       New-StandaloneLayout -AppDirectory $unixBlockedValidatorRoot
       Write-Utf8NoBom -Path (Join-Path $unixBlockedValidatorRoot ".env.production") -Text "SECRET_VALUE=placeholder`n"
       $unixBlockedValidatorPackage = Get-RepoRelativePath (Join-Path $testRoot "packages\validator-blocked.tar.gz")
-      & $bash.Source "-lc" "tar -C '$unixBlockedValidatorRel' -czf '$unixBlockedValidatorPackage' ." | Out-Null
+      Invoke-BashCommand -BashPath $bash.Source -Command "tar -C '$unixBlockedValidatorRel' -czf '$unixBlockedValidatorPackage' ." | Out-Null
       Invoke-ExpectPackageValidatorBashFailure -BashPath $bash.Source -PackagePath $unixBlockedValidatorPackage -ExpectedText "blocked private file"
 
       $unixImportRoot = Join-Path $testRoot "unix-import"

@@ -256,6 +256,14 @@ EOF
   fi
   assert_contains "$state_file" "stopped"
   assert_contains "$log_file" "disable --now example-new-service"
+
+  package_stop_app_service none example-no-service
+  if [[ "$PACKAGE_APP_SERVICE_EXISTED" != "false" || "$PACKAGE_APP_SERVICE_WAS_RUNNING" != "false" ]]; then
+    echo "SERVICE_MANAGER=none should report no service state during package import." >&2
+    exit 1
+  fi
+  package_remove_new_service_after_failure none example-no-service
+
   PATH="$old_path"
   unset FAKE_SERVICE_STATE_FILE FAKE_SERVICE_LOG_FILE FAKE_SERVICE_EXISTS_FILE REAL_RM
 }
@@ -507,6 +515,9 @@ test_dependency_bootstrap_requires_package_manager() {
   fi
   expect_failure "macOS dependency bootstrap without Homebrew" "$macos_expected" env PATH="$macos_fake_bin" "$BASH" "$REPO_ROOT/scripts/linux/install-dependencies.sh"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Neither dnf nor yum was found"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "packages+=(libatomic1)"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "--allowerasing"
+  assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "packages+=(libatomic)"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "pkgin was not found"
   assert_contains "$REPO_ROOT/scripts/linux/install-dependencies.sh" "Unsupported/unknown OS family"
 }

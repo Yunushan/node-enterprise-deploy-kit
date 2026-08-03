@@ -11,6 +11,10 @@ function assert(condition, message) {
   }
 }
 
+function parseJsonText(text) {
+  return JSON.parse(text.replace(/^\uFEFF/, ''));
+}
+
 function parseArguments(args) {
   const values = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -86,8 +90,8 @@ function selfTestResult() {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: 'linux', arch: 'x64', release: '6.8.0', identity: { family: 'linux', id: 'ubuntu', version: '24.04', variant: null } },
-    node: { version: 'v24.17.0' },
-    nextJs: { requestedVersion: 'latest', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
+    node: { version: 'v26.5.1' },
+    nextJs: { requestedVersion: '16.2.10', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
     verification: { serviceManager: 'systemd', reverseProxy: 'nginx', packageImport: true, loopbackHttp: true, forwardedHeaders: true },
     execution: { kind: 'native', target: 'ubuntu', runnerEnvironment: 'self-hosted' },
     ci: { provider: 'github-actions', workflow: 'Next.js Self-Hosted Integration', job: 'collect', runId: '123', runAttempt: '1', sha: 'a'.repeat(40) }
@@ -176,7 +180,7 @@ if (isMainModule) {
     for (const key of ['result', 'target', 'manager', 'proxy', 'sha', 'workflow', 'job', 'runId', 'runAttempt']) {
       assert(typeof options[key] === 'string' && options[key], `--${key} is required.`);
     }
-    const result = JSON.parse(await readFile(options.result, 'utf8'));
+    const result = parseJsonText(await readFile(options.result, 'utf8'));
     validateHostIntegrationResult(result, options);
     console.log(`Next.js host integration result OK: ${options.result}`);
   }

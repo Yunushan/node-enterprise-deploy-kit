@@ -11,6 +11,7 @@ $ResultValidatorPath = Join-Path $ScriptDir "Test-NextJsIntegrationResult.mjs"
 $ResultSummaryPath = Join-Path $ScriptDir "New-NextJsIntegrationSummary.mjs"
 $LinuxContainerScriptPath = Join-Path $ScriptDir "test-linux-container-smoke.sh"
 $ResultActionPath = Join-Path $RepoRoot ".github\actions\upload-nextjs-integration-result\action.yml"
+$VersionConfigPath = Join-Path $RepoRoot "config\nextjs-integration-versions.json"
 
 function Assert-Contains {
   param(
@@ -45,6 +46,9 @@ if (-not (Test-Path -LiteralPath $LinuxContainerScriptPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $ResultActionPath -PathType Leaf)) {
   throw "Missing Next.js integration result upload action: .github/actions/upload-nextjs-integration-result/action.yml"
 }
+if (-not (Test-Path -LiteralPath $VersionConfigPath -PathType Leaf)) {
+  throw "Missing pinned Next.js integration version config: config/nextjs-integration-versions.json"
+}
 
 $workflow = Get-Content -LiteralPath $WorkflowPath -Raw
 $script = Get-Content -LiteralPath $IntegrationScriptPath -Raw
@@ -52,6 +56,14 @@ $resultValidator = Get-Content -LiteralPath $ResultValidatorPath -Raw
 $resultSummary = Get-Content -LiteralPath $ResultSummaryPath -Raw
 $containerScript = Get-Content -LiteralPath $LinuxContainerScriptPath -Raw
 $resultAction = Get-Content -LiteralPath $ResultActionPath -Raw
+$versionConfig = Get-Content -LiteralPath $VersionConfigPath -Raw | ConvertFrom-Json
+
+foreach ($property in @('next', 'react', 'reactDom')) {
+  $version = [string]$versionConfig.$property
+  if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Pinned Next.js integration version '$property' must be a semantic version."
+  }
+}
 
 foreach ($expected in @(
     "real-nextjs-integration:",
@@ -60,9 +72,9 @@ foreach ($expected in @(
     "windows-2022",
     "windows-2025",
     "macos-15",
-    "Set up Node.js 22",
-    "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-    "node-version: '22'",
+    "Set up Node.js 26",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "node-version: '26'",
     "node scripts/dev/test-real-nextjs-integration.mjs",
     "RUN_LAUNCHD_SERVICE_INTEGRATION:",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -142,6 +154,11 @@ foreach ($expected in @(
 
 foreach ($expected in @(
     "next@`${nextVersion}",
+    "react@`${reactVersion}",
+    "react-dom@`${reactDomVersion}",
+    "readPinnedVersion",
+    "package-lock.json",
+    "npm package lock",
     "NEXTJS_INTEGRATION_RESULT_PATH",
     "writeIntegrationResult",
     "hosted-nextjs-integration",
@@ -205,6 +222,7 @@ foreach ($expected in @(
     "RUN_OPENRC_SERVICE_INTEGRATION",
     "verifyLinuxOpenRcService",
     "SERVICE_MANAGER: 'openrc'",
+    'HEALTH_URL: `http://127.0.0.1:${port}/`',
     "RUN_SYSTEMD_SERVICE_INTEGRATION",
     "verifyLinuxSystemdService",
     "SERVICE_MANAGER: 'systemd'",

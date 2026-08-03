@@ -13,6 +13,10 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function parseJsonText(text) {
+  return JSON.parse(text.replace(/^\uFEFF/, ''));
+}
+
 function parseArguments(args) {
   const values = { planPath: '', inputPath: '', outputPath: '', summaryPath: '', sha: '', runIds: '' };
   for (let index = 0; index < args.length; index += 1) {
@@ -131,7 +135,7 @@ export async function buildCoverage(planPath, inputPath, expectedSha, sourceRunI
   assertCommitSha(expectedSha, 'Expected commit SHA');
   const sourceRunIds = parseRunIds(sourceRunIdsJson, 'Source run IDs');
   const sourceRunIdSet = new Set(sourceRunIds);
-  const plan = JSON.parse(await readFile(planPath, 'utf8'));
+  const plan = parseJsonText(await readFile(planPath, 'utf8'));
   const expected = validatePlan(plan);
   const passed = [];
   const invalid = [];
@@ -140,7 +144,7 @@ export async function buildCoverage(planPath, inputPath, expectedSha, sourceRunI
   const seen = new Set();
   for (const filePath of (await findJsonFiles(inputPath)).sort()) {
     try {
-      const result = JSON.parse(await readFile(filePath, 'utf8'));
+      const result = parseJsonText(await readFile(filePath, 'utf8'));
       validateIntegrationResult(result);
       const target = result.execution.target;
       const manager = result.verification.serviceManager;
@@ -274,8 +278,8 @@ function selfTestResult(target, manager, proxy, platform) {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: platform, arch: 'x64', release: 'test', identity },
-    node: { version: 'v24.17.0' },
-    nextJs: { requestedVersion: 'latest', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
+    node: { version: 'v26.5.1' },
+    nextJs: { requestedVersion: '16.2.10', installedVersion: '16.2.10', expectedModes: ['standalone', 'next-start'], verifiedModes: ['standalone', 'next-start'] },
     verification: { serviceManager: manager, reverseProxy: proxy, packageImport: true, loopbackHttp: true, forwardedHeaders: true },
     execution: { kind: 'native', target, runnerEnvironment: 'self-hosted' },
     ci: { provider: 'github-actions', workflow: hostIntegrationWorkflow, job: hostIntegrationJob, runId: '123', runAttempt: '1', sha: 'a'.repeat(40) }
@@ -329,7 +333,7 @@ if (options.selfTest) {
   await runSelfTest();
 } else if (options.summaryPath) {
   assertCommitSha(options.sha, '--sha');
-  validateCoverageSummary(JSON.parse(await readFile(options.summaryPath, 'utf8')), options.sha);
+  validateCoverageSummary(parseJsonText(await readFile(options.summaryPath, 'utf8')), options.sha);
 } else {
   assert(options.planPath, '--plan is required.');
   assert(options.inputPath, '--input is required.');

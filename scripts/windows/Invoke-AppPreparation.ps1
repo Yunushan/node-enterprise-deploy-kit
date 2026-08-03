@@ -32,7 +32,7 @@ function Get-PreparationEnvironment {
 
     foreach ($property in @($config.PreparationEnvironment.PSObject.Properties)) {
         $name = [string]$property.Name
-        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+        if ($name -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
             throw "PreparationEnvironment contains an invalid environment variable name."
         }
 

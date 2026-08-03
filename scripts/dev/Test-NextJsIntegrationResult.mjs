@@ -14,6 +14,10 @@ function assert(condition, message) {
   }
 }
 
+function parseJsonText(text) {
+  return JSON.parse(text.replace(/^\uFEFF/, ''));
+}
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -106,9 +110,9 @@ function createSelfTestResult(status) {
     startedAt: '2026-01-01T00:00:00.000Z',
     completedAt: '2026-01-01T00:01:00.000Z',
     platform: { os: 'linux', arch: 'x64', release: '6.8.0', identity: { family: 'linux', id: 'ubuntu', version: '24.04', variant: null } },
-    node: { version: 'v24.17.0' },
+    node: { version: 'v26.5.1' },
     nextJs: {
-      requestedVersion: 'latest',
+      requestedVersion: '16.2.10',
       installedVersion: passed ? '16.2.10' : null,
       expectedModes: [...expectedModes],
       verifiedModes: passed ? [...expectedModes] : []
@@ -158,7 +162,7 @@ if (isMainModule) {
     if (!resultPath) {
       throw new Error('Usage: node scripts/dev/Test-NextJsIntegrationResult.mjs <result.json> | --self-test');
     }
-    const parsed = JSON.parse(await readFile(resultPath, 'utf8'));
+    const parsed = parseJsonText(await readFile(resultPath, 'utf8'));
     validateIntegrationResult(parsed);
     console.log(`Next.js integration result OK: ${resultPath}`);
   }

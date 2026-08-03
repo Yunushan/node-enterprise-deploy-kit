@@ -17,8 +17,8 @@ $expectedActions = [ordered]@{
     Version = "v7"
   }
   "actions/setup-node" = [pscustomobject]@{
-    Sha = "249970729cb0ef3589644e2896645e5dc5ba9c38"
-    Version = "v6"
+    Sha = "820762786026740c76f36085b0efc47a31fe5020"
+    Version = "v7"
   }
   "actions/upload-artifact" = [pscustomobject]@{
     Sha = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"

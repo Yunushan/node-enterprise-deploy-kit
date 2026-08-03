@@ -104,19 +104,29 @@ if [[ "$PLATFORM_FAMILY" == "debian" ]]; then
   require_command "apt-get" "apt-get was not found. Install dependencies manually or run this bootstrap on a Debian-compatible host."
   apt-get update
   packages=(curl ca-certificates)
+  if [[ "$APP_RUNTIME_NORMALIZED" == "node" ]]; then
+    # Node.js 26 official Linux archives require libatomic on Debian-family hosts.
+    packages+=(libatomic1)
+  fi
   add_reverse_proxy_package
   add_runtime_package
   add_package_import_package
   apt-get install -y "${packages[@]}"
 elif [[ "$PLATFORM_FAMILY" == "rhel" ]]; then
   packages=(curl ca-certificates)
+  if [[ "$APP_RUNTIME_NORMALIZED" == "node" ]]; then
+    # Node.js 26 official Linux archives require libatomic on RHEL-family hosts.
+    packages+=(libatomic)
+  fi
   add_reverse_proxy_package
   add_runtime_package
   add_package_import_package
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y "${packages[@]}"
+    # RHEL-family base images may ship curl-minimal while repositories offer
+    # the full curl package. Allow the package manager to converge that choice.
+    dnf install -y --allowerasing "${packages[@]}"
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y "${packages[@]}"
+    yum install -y --allowerasing "${packages[@]}"
   else
     echo "Neither dnf nor yum was found. Install dependencies manually or run this bootstrap on a RHEL-compatible host." >&2
     exit 1

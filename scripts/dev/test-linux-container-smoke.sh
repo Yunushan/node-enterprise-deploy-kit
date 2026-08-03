@@ -13,6 +13,9 @@ Runs the Unix deployment and Next.js smoke checks inside a target or
 target-family Linux container. This is intended for CI on hosted Ubuntu runners
 where Docker is available. --real-nextjs additionally builds, packages, and
 runs a temporary real Next.js application in the container.
+REAL_NEXTJS_CA_CERT_FILE may point to a host PEM bundle when an enterprise TLS
+inspection root must be mounted into the container; certificate validation is
+never disabled.
 --systemv-service-integration additionally installs, probes, and removes the
 generated System V service; it is currently supported on the Ubuntu container.
 --openrc-service-integration additionally installs, probes, and removes the
@@ -40,7 +43,8 @@ image_for_platform() {
     rocky) printf '%s\n' "rockylinux:9" ;;
     almalinux) printf '%s\n' "almalinux:9" ;;
     fedora) printf '%s\n' "fedora:latest" ;;
-    alpine) printf '%s\n' "alpine:latest" ;;
+    # Keep Alpine real-runtime coverage on the same Node.js major as CI.
+    alpine) printf '%s\n' "node:26-alpine" ;;
     *)
       return 1
       ;;
@@ -50,6 +54,37 @@ image_for_platform() {
 build_container_script() {
   cat <<'CONTAINER'
 set -eu
+
+if [ -n "${REAL_NEXTJS_CA_CERT_FILE:-}" ]; then
+  if [ ! -r "$REAL_NEXTJS_CA_CERT_FILE" ]; then
+    echo "Configured REAL_NEXTJS_CA_CERT_FILE is not readable: $REAL_NEXTJS_CA_CERT_FILE" >&2
+    exit 1
+  fi
+  ca_bundle="/tmp/node-enterprise-deploy-kit-ca-bundle.pem"
+  system_ca_bundle=""
+  for candidate in \
+    /etc/ssl/cert.pem \
+    /etc/ssl/certs/ca-certificates.crt \
+    /etc/pki/tls/certs/ca-bundle.crt; do
+    if [ -r "$candidate" ]; then
+      system_ca_bundle="$candidate"
+      break
+    fi
+  done
+  if [ -n "$system_ca_bundle" ]; then
+    cat "$system_ca_bundle" "$REAL_NEXTJS_CA_CERT_FILE" > "$ca_bundle"
+  else
+    cp "$REAL_NEXTJS_CA_CERT_FILE" "$ca_bundle"
+  fi
+  export CURL_CA_BUNDLE="$ca_bundle"
+  export SSL_CERT_FILE="$ca_bundle"
+  export NODE_EXTRA_CA_CERTS="$REAL_NEXTJS_CA_CERT_FILE"
+
+  if [ -d /etc/pki/ca-trust/source/anchors ] && command -v update-ca-trust >/dev/null 2>&1; then
+    cp "$REAL_NEXTJS_CA_CERT_FILE" /etc/pki/ca-trust/source/anchors/node-enterprise-deploy-kit-ca.crt
+    update-ca-trust extract
+  fi
+fi
 
 install_traefik() {
   local version="${TRAEFIK_VERSION:-v3.7.1}"
@@ -71,7 +106,8 @@ case "$PLATFORM_CASE" in
   ubuntu|debian|linux-mint)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils
+    # Node.js 26 official Linux archives require libatomic on Debian-family images.
+    apt-get install -y --no-install-recommends bash nodejs tar gzip zip unzip findutils procps ca-certificates curl xz-utils libatomic1
     if [ "${RUN_APACHE_PROXY_INTEGRATION:-false}" = "true" ]; then
       apt-get install -y --no-install-recommends apache2
     fi
@@ -90,25 +126,42 @@ case "$PLATFORM_CASE" in
     case "$PLATFORM_CASE" in
       rhel|oracle-linux|centos|centos-stream|rocky|almalinux) curl_package="curl-minimal" ;;
     esac
+
+    rhel_install() {
+      case "$package_manager" in
+        dnf|yum|microdnf)
+          "$package_manager" install -y --allowerasing "$@"
+          ;;
+        *)
+          echo "Unsupported RHEL-family package manager: $package_manager" >&2
+          exit 1
+          ;;
+      esac
+    }
+
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
       package_manager="dnf"
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
       package_manager="yum"
     elif command -v microdnf >/dev/null 2>&1; then
-      microdnf install -y bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz
       package_manager="microdnf"
     else
       echo "No dnf, yum, or microdnf package manager found for $PLATFORM_CASE." >&2
       exit 1
     fi
+
+    # Node.js official Linux archives require libatomic on RHEL-family images.
+    # --allowerasing lets the image's curl/curl-minimal choice converge safely.
+    rhel_install bash nodejs tar gzip zip unzip findutils procps-ng ca-certificates xz libatomic "$curl_package"
     if ! command -v curl >/dev/null 2>&1; then
-      "$package_manager" install -y "$curl_package"
+      echo "curl was not available after installing $curl_package on $PLATFORM_CASE." >&2
+      exit 1
     fi
     ;;
   alpine)
-    apk add --no-cache bash nodejs npm tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
+    # node:26-alpine supplies the Node.js 26 runtime and npm. Install only the
+    # remaining test/deployment tools so apk cannot replace that runtime.
+    apk add --no-cache bash tar gzip zip unzip coreutils findutils procps ca-certificates curl xz
     if [ "${RUN_OPENRC_SERVICE_INTEGRATION:-false}" = "true" ]; then
       apk add --no-cache openrc
       mkdir -p /run/openrc
@@ -133,6 +186,14 @@ case "$PLATFORM_CASE" in
     ;;
 esac
 
+if [ -n "${REAL_NEXTJS_CA_CERT_FILE:-}" ] && command -v update-ca-certificates >/dev/null 2>&1; then
+  mkdir -p /usr/local/share/ca-certificates
+  cp "$REAL_NEXTJS_CA_CERT_FILE" /usr/local/share/ca-certificates/node-enterprise-deploy-kit-ca.crt
+  update-ca-certificates
+  export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+fi
+
 export TEST_ROOT="/tmp/node-enterprise-deploy-kit-unix-nextjs-support-$PLATFORM_CASE"
 rm -rf "$TEST_ROOT"
 
@@ -142,15 +203,22 @@ bash scripts/dev/test-unix-nextjs-support.sh
 
 install_real_nextjs_node() {
   local node_version node_platform node_archive node_root checksum_line
-  node_version="${REAL_NEXTJS_NODE_VERSION:-24.17.0}"
+  node_version="${REAL_NEXTJS_NODE_VERSION:-26.5.1}"
   case "$node_version" in
     v*) ;;
     *) node_version="v$node_version" ;;
   esac
 
   if [ "$PLATFORM_CASE" = "alpine" ]; then
-    echo "Using the signed Alpine nodejs package for real Next.js coverage."
-    node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 20 || (major === 20 && minor < 9)) { console.error(`Alpine nodejs package ${process.versions.node} is below the Next.js minimum of 20.9.0.`); process.exit(1); }'
+    echo "Using Node.js $(node --version) and npm $(npm --version) from node:26-alpine."
+    if ! node --version | grep -Eq '^v26\.'; then
+      echo "Alpine real Next.js coverage requires Node.js 26." >&2
+      exit 1
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "npm was not found in the node:26-alpine runtime." >&2
+      exit 1
+    fi
     return
   fi
 
@@ -183,6 +251,10 @@ install_real_nextjs_node() {
     tar -xJf "$node_archive"
   )
   export PATH="$node_root/node-${node_version}-${node_platform}/bin:$PATH"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm was not found in the checksum-verified Node.js runtime." >&2
+    exit 1
+  fi
 }
 
 if [ "${RUN_REAL_NEXTJS:-false}" = "true" ]; then
@@ -216,7 +288,8 @@ resolve_image() {
 
 run_container_smoke() {
   local platform="$1" image_override="$2" dry_run="$3" real_nextjs="$4" systemv_service_integration="$5" openrc_service_integration="$6" apache_proxy_integration="$7" nginx_proxy_integration="$8" haproxy_integration="$9" traefik_proxy_integration="${10}"
-  local image container_script docker_bin result_path
+  local image container_script docker_bin result_path ca_cert_file docker_ca_cert_file container_ca_path
+  local ca_volume_args=()
 
   if ! image="$(resolve_image "$platform" "$image_override")"; then
     echo "Unsupported Linux container smoke platform: $platform" >&2
@@ -234,7 +307,17 @@ run_container_smoke() {
       require_contains "$container_script" "node scripts/dev/test-real-nextjs-integration.mjs" "container script"
       require_contains "$container_script" 'curl_package="curl-minimal"' "container script"
       require_contains "$container_script" 'if ! command -v curl >/dev/null 2>&1; then' "container script"
-      require_contains "$container_script" "apk add --no-cache bash nodejs npm" "container script"
+      require_contains "$container_script" "libatomic" "container script"
+      require_contains "$container_script" "--allowerasing" "container script"
+      require_contains "$container_script" "apk add --no-cache bash tar gzip zip unzip" "container script"
+      require_contains "$container_script" "command -v npm" "container script"
+      require_contains "$container_script" "REAL_NEXTJS_CA_CERT_FILE" "container script"
+      require_contains "$container_script" "/etc/pki/tls/certs/ca-bundle.crt" "container script"
+      require_contains "$container_script" "update-ca-trust extract" "container script"
+      require_contains "$container_script" "SSL_CERT_FILE" "container script"
+      if [[ "$platform" == "alpine" && -z "$image_override" ]]; then
+        require_contains "$image" "node:26-alpine" "container image"
+      fi
       require_contains "$container_script" "apk add --no-cache openrc" "container script"
       if [[ "$systemv_service_integration" == "true" && "$platform" != "ubuntu" ]]; then
         echo "System V service integration is only supported for the Ubuntu container." >&2
@@ -269,6 +352,21 @@ run_container_smoke() {
 
   docker_bin="${DOCKER_BIN:-docker}"
   result_path="${NEXTJS_INTEGRATION_RESULT_PATH:-}"
+  ca_cert_file="${REAL_NEXTJS_CA_CERT_FILE:-}"
+  if [[ -n "$ca_cert_file" ]]; then
+    if [[ ! -f "$ca_cert_file" ]]; then
+      echo "REAL_NEXTJS_CA_CERT_FILE was not found: $ca_cert_file" >&2
+      return 2
+    fi
+    docker_ca_cert_file="$ca_cert_file"
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+      docker_ca_cert_file="$(cygpath -m "$ca_cert_file")"
+    fi
+    container_ca_path="/run/node-enterprise-deploy-kit/ca.pem"
+    ca_volume_args=(-v "$docker_ca_cert_file:$container_ca_path:ro")
+  else
+    container_ca_path=""
+  fi
   if ! command -v "$docker_bin" >/dev/null 2>&1; then
     echo "Docker was not found. Install Docker or run this check on a GitHub-hosted Ubuntu runner." >&2
     return 1
@@ -322,6 +420,8 @@ run_container_smoke() {
     -e GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
     -e GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-}" \
     -e GITHUB_SHA="${GITHUB_SHA:-}" \
+    -e REAL_NEXTJS_CA_CERT_FILE="$container_ca_path" \
+    "${ca_volume_args[@]}" \
     -v "$docker_repo_root:/repo" \
     -w /repo \
     "$image" \
@@ -350,6 +450,8 @@ run_container_smoke() {
 
 run_self_test() {
   local platform output status
+
+  require_contains "$(image_for_platform alpine)" "node:26-alpine" "Alpine container image"
 
   for platform in ubuntu debian linux-mint rhel oracle-linux centos centos-stream rocky almalinux fedora alpine; do
     output="$(run_container_smoke "$platform" "" true false false false false false false false)"

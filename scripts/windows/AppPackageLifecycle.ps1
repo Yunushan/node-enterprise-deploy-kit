@@ -19,13 +19,27 @@ function Get-AppPackagePm2State {
         throw "Could not query PM2 state before package import."
     }
     try {
-        $entries = @(($output -join "`n") | ConvertFrom-Json)
+        $parsedEntries = ($output -join "`n") | ConvertFrom-Json
+        $entries = @($parsedEntries)
     }
     catch {
         throw "PM2 returned invalid process state JSON before package import."
     }
-    $entry = @($entries | Where-Object { [string]$_.name -eq $Name } | Select-Object -First 1)
-    $status = if ($entry.Count -gt 0 -and $entry[0].pm2_env) { ([string]$entry[0].pm2_env.status).ToLowerInvariant() } else { "" }
+    $entry = @($entries | Where-Object {
+        if ($null -eq $_) { return $false }
+        $nameProperty = $_.PSObject.Properties["name"]
+        $null -ne $nameProperty -and [string]$nameProperty.Value -eq $Name
+    } | Select-Object -First 1)
+    $status = ""
+    if ($entry.Count -gt 0) {
+        $pm2EnvironmentProperty = $entry[0].PSObject.Properties["pm2_env"]
+        if ($null -ne $pm2EnvironmentProperty -and $null -ne $pm2EnvironmentProperty.Value) {
+            $statusProperty = $pm2EnvironmentProperty.Value.PSObject.Properties["status"]
+            if ($null -ne $statusProperty) {
+                $status = ([string]$statusProperty.Value).ToLowerInvariant()
+            }
+        }
+    }
     $runningStatuses = @("online", "launching", "stopping", "waiting restart", "one-launch-status")
     return [pscustomobject]@{
         Kind = "pm2"

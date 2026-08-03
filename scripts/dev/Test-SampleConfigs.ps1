@@ -53,7 +53,7 @@ function Read-EnvExample {
     $lineNumber++
     $trimmed = $line.Trim()
     if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) { continue }
-    if ($trimmed -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+    if ($trimmed -cnotmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
       throw "$(Get-RelativePath $Path):$lineNumber is not KEY=value syntax."
     }
 
@@ -171,7 +171,7 @@ function Test-WindowsExampleConfig {
     throw "$relativePathForMessage is missing PreparationEnvironment."
   }
   foreach ($property in @($config.PreparationEnvironment.PSObject.Properties)) {
-    if ([string]$property.Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+    if ([string]$property.Name -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
       throw "$relativePathForMessage PreparationEnvironment contains an invalid environment variable name."
     }
     if ($null -eq $property.Value) {
@@ -260,7 +260,7 @@ function Test-WindowsExampleConfig {
   Assert-BoolString ([string]$config.PackageStripSingleTopLevelDirectory) "PackageStripSingleTopLevelDirectory"
   $iisHealthProxyPath = ([string]$config.IisHealthProxyPath).Trim() -replace "\\", "/"
   $iisHealthProxyPath = $iisHealthProxyPath.Trim("/")
-  if ([string]::IsNullOrWhiteSpace($iisHealthProxyPath) -or $iisHealthProxyPath -match '(^|/)\.\.($|/)' -or $iisHealthProxyPath -notmatch '^[A-Za-z0-9._~/-]+$') {
+  if ([string]::IsNullOrWhiteSpace($iisHealthProxyPath) -or $iisHealthProxyPath -match '(^|/)\.\.($|/)' -or $iisHealthProxyPath -cnotmatch '^[A-Za-z0-9._~/-]+$') {
     throw "Windows IisHealthProxyPath must be a safe relative URL path."
   }
 

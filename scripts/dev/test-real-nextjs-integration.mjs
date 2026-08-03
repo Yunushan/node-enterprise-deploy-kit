@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, promises as fs } from 'node:fs';
+import { createReadStream, promises as fs, readFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -21,7 +21,10 @@ async function sha256File(filePath) {
 }
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const nextVersion = process.env.NEXTJS_INTEGRATION_NEXT_VERSION || 'latest';
+const integrationVersionConfig = JSON.parse(readFileSync(path.join(repoRoot, 'config', 'nextjs-integration-versions.json'), 'utf8'));
+const nextVersion = readPinnedVersion('next', 'NEXTJS_INTEGRATION_NEXT_VERSION');
+const reactVersion = readPinnedVersion('react', 'NEXTJS_INTEGRATION_REACT_VERSION');
+const reactDomVersion = readPinnedVersion('reactDom', 'NEXTJS_INTEGRATION_REACT_DOM_VERSION');
 const keepTestRoot = process.env.KEEP_REAL_NEXTJS_INTEGRATION === 'true';
 const runWindowsServiceIntegration = process.env.RUN_WINSW_SERVICE_INTEGRATION === 'true';
 const runWindowsNssmServiceIntegration = process.env.RUN_NSSM_SERVICE_INTEGRATION === 'true';
@@ -60,6 +63,14 @@ let hostIdentity = {
   version: null,
   variant: null
 };
+
+function readPinnedVersion(configKey, environmentName) {
+  const version = process.env[environmentName] || integrationVersionConfig[configKey];
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`${environmentName} must resolve to a pinned semantic version.`);
+  }
+  return version;
+}
 
 function readTimeout(name, defaultValue) {
   const value = process.env[name];
@@ -440,11 +451,12 @@ async function buildProject(projectPath, standalone) {
     npm_config_fetch_timeout: '30000'
   };
 
-  await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, 'react@latest', 'react-dom@latest'], {
+  await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, `react@${reactVersion}`, `react-dom@${reactDomVersion}`], {
     cwd: projectPath,
     env,
     timeoutMs: npmInstallTimeoutMs
   });
+  await assertExists(path.join(projectPath, 'package-lock.json'), 'npm package lock');
   await run(npm, ['run', 'build'], { cwd: projectPath, env, timeoutMs: npmBuildTimeoutMs });
 
   await assertExists(path.join(projectPath, '.next', 'BUILD_ID'), 'Next.js build ID');
@@ -610,7 +622,7 @@ async function importPackage(packagePath, mode) {
     const configPath = path.join(testRoot, `import-${mode}.config.json`);
     const expectedFiles = mode === 'standalone'
       ? ['server.js', '.next/BUILD_ID', '.next/static', 'node_modules/next/package.json']
-      : ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next/package.json', 'node_modules/next/dist/bin/next'];
+      : ['package.json', 'package-lock.json', '.next/BUILD_ID', '.next', 'node_modules/next/package.json', 'node_modules/next/dist/bin/next'];
     await fs.writeFile(configPath, JSON.stringify({
       AppName: `NodeDeployKitRealNextImport${Date.now()}${mode}`,
       AppFramework: 'nextjs',
@@ -635,7 +647,7 @@ async function importPackage(packagePath, mode) {
     const configPath = path.join(testRoot, `import-${mode}.env`);
     const expectedFiles = mode === 'standalone'
       ? 'server.js .next/BUILD_ID .next/static node_modules/next/package.json'
-      : 'package.json .next/BUILD_ID .next node_modules/next/package.json node_modules/next/dist/bin/next';
+      : 'package.json package-lock.json .next/BUILD_ID .next node_modules/next/package.json node_modules/next/dist/bin/next';
     await fs.writeFile(configPath, [
       `APP_NAME=${shellQuote(`node-deploy-kit-real-next-import-${mode}`)}`,
       'APP_RUNTIME="node"',
@@ -1419,6 +1431,7 @@ async function verifyLinuxSystemVService(runtimePath, mode, port, afterServiceRe
     START_SCRIPT: startScript,
     NODE_ARGUMENTS: nodeArguments,
     APP_PORT: String(port),
+    HEALTH_URL: `http://127.0.0.1:${port}/`,
     BIND_ADDRESS: '127.0.0.1',
     SERVICE_MANAGER: 'systemv',
     SERVICE_USER: 'root',
@@ -1471,6 +1484,7 @@ async function verifyLinuxOpenRcService(runtimePath, mode, port, afterServiceRea
     START_SCRIPT: startScript,
     NODE_ARGUMENTS: nodeArguments,
     APP_PORT: String(port),
+    HEALTH_URL: `http://127.0.0.1:${port}/`,
     BIND_ADDRESS: '127.0.0.1',
     SERVICE_MANAGER: 'openrc',
     SERVICE_USER: 'root',
@@ -1523,6 +1537,7 @@ async function verifyLinuxSystemdService(runtimePath, mode, port, afterServiceRe
     START_SCRIPT: startScript,
     NODE_ARGUMENTS: nodeArguments,
     APP_PORT: String(port),
+    HEALTH_URL: `http://127.0.0.1:${port}/`,
     BIND_ADDRESS: '127.0.0.1',
     SERVICE_MANAGER: 'systemd',
     SERVICE_USER: 'root',
@@ -1648,7 +1663,7 @@ let integrationStatus = 'failed';
 let primaryFailure = false;
 
 try {
-  console.log(`==> Real Next.js integration (${process.platform}, Next.js ${nextVersion})`);
+  console.log(`==> Real Next.js integration (${process.platform}, Next.js ${nextVersion}, React ${reactVersion})`);
   hostIdentity = await collectHostIdentity();
   assertSelfHostedTargetIdentity(hostIdentity);
   await verifyNpmRegistryAccess();

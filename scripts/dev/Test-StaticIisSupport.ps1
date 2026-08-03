@@ -51,9 +51,9 @@ function Invoke-ExpectFailure {
     $failed = $true
   }
 
-  $output = $outputItems | Out-String
+  $output = ($outputItems | ForEach-Object { $_.ToString() }) -join "`n"
   if ($failed) {
-    if ($output -notmatch [regex]::Escape($ExpectedText)) {
+    if ($output.IndexOf($ExpectedText, [System.StringComparison]::Ordinal) -lt 0) {
       throw "Expected failure containing '$ExpectedText', got: $output"
     }
     return

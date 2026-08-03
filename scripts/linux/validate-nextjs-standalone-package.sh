@@ -91,7 +91,7 @@ safe_relative_path() {
 
 blocked_artifact_path() {
   local rel="$1" name ext
-  name="$(basename "$rel")"
+  name="${rel##*/}"
   ext="${name##*.}"
   ext="$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')"
   [[ "$name" == ".env" || "$name" == .env.* ]] && return 0
