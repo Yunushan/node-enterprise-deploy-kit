@@ -285,6 +285,10 @@ function Invoke-NativeIisDeploymentState {
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Invoke-IisDeploymentState.ps1'), '-Action', $Action,
         '-ConfigSnapshotPath', $configPath, '-StatePath', (Join-Path $Transaction.Directory 'iis-state.xml'), '-IisDeploymentLockLeasePath', $Transaction.IisLockLeasePath, '-IisDeploymentLockToken', $Transaction.IisLockToken)
     $native = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    & $native @arguments
+    $savedModulePath = $env:PSModulePath
+    try {
+        Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+        & $native @arguments
+    } finally { $env:PSModulePath = $savedModulePath }
     if ($LASTEXITCODE -ne 0) { throw "Native IIS deployment state $Action failed; recovery journal is retained." }
 }

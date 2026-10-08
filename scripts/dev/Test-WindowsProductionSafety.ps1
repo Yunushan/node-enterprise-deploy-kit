@@ -346,7 +346,7 @@ try {
     function Invoke-NssmFixture {
         [CmdletBinding(SupportsShouldProcess=$true)]
         param($config, $accountSettings, $ExistingDeploymentLock, $ExistingManagedDeploymentTransaction)
-        $sourceNssm = "C:\trusted tools\nssm.exe"
+        $sourceNssm = $trustedNssmPath
         $nssm = Join-Path $config.ServiceDirectory "$($config.AppName).nssm.exe"
         $escapedName = $config.AppName
         function Get-CimInstance {
@@ -389,6 +389,16 @@ try {
         Set-Content -LiteralPath $binarySource -Value 'new fake wrapper bytes'
         Set-Content -LiteralPath $binaryRuntime -Value 'previous fake wrapper bytes'
         $binaryConfig = [pscustomobject]@{ AppName = 'ManagedApp'; ServiceDirectory = $binaryFixtureRoot; BackupDirectory = $binaryBackups }
+        $chocolateyRoot = Join-Path $binaryFixtureRoot 'chocolatey'
+        $shimPath = Join-Path $chocolateyRoot 'bin/nssm.exe'
+        $realPath = Join-Path $chocolateyRoot 'lib/nssm/tools/nssm.exe'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $shimPath), (Split-Path -Parent $realPath) -Force | Out-Null
+        Set-Content -LiteralPath $shimPath -Value 'non-relocatable shim'
+        Set-Content -LiteralPath $realPath -Value 'actual NSSM executable fixture'
+        Assert-True ((Resolve-NssmSourceExecutable $shimPath $chocolateyRoot) -eq [IO.Path]::GetFullPath($realPath)) 'NSSM copied the non-relocatable Chocolatey shim.'
+        Assert-True ((Resolve-NssmSourceExecutable $binarySource $chocolateyRoot) -eq [IO.Path]::GetFullPath($binarySource)) 'Explicit standalone NSSM source was changed.'
+        Remove-Item -LiteralPath $realPath -Force
+        Assert-Throws { Resolve-NssmSourceExecutable $shimPath $chocolateyRoot } 'actual nssm.exe'
         Copy-ManagedNssmBinary $binaryConfig $binarySource $binaryRuntime 'NT AUTHORITY\NetworkService'
         Assert-True ((Get-FileHash -LiteralPath $binarySource).Hash -eq (Get-FileHash -LiteralPath $binaryRuntime).Hash) 'NSSM protected runtime binary did not match its source.'
         $binaryBackup = @(Get-ChildItem -LiteralPath $binaryBackups -File)[0]

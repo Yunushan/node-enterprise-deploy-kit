@@ -28,7 +28,7 @@ rotate_app_logs() {
     done
     tmp="$(mktemp "$directory/.log-rotation.XXXXXX")"
     if cp -- "$path" "$tmp" && [[ ! -L "$path" ]]; then
-      chmod 0600 -- "$tmp"
+      chmod 0600 "$tmp"
       mv -- "$tmp" "$path.1"
       : > "$path"
     else

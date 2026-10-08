@@ -140,7 +140,7 @@ validate_tar_has_no_links() {
 
 validate_zip_has_no_special_entries() {
   local archive_path="$1" unsafe_line
-  unsafe_line="$(LC_ALL=C unzip -Z -l "$archive_path" 2>/dev/null | awk '$1 ~ /^[bclps]/ { print; exit }')"
+  unsafe_line="$(LC_ALL=C unzip -Z -l "$archive_path" 2>/dev/null | awk '$1 ~ /^[bclps]/ && !found { print; found=1 }')"
   if [[ -n "$unsafe_line" ]]; then
     echo "Unsafe zip entry type detected. Symlinks and special files are intentionally unsupported in deployment archives: $unsafe_line" >&2
     exit 1

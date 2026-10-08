@@ -17,6 +17,26 @@ expect_failure() {
   if "$@" > "$TEST_ROOT/failure-output" 2>&1; then echo "Unexpected success: $*" >&2; exit 1; fi
 }
 
+# Exercise BSD stat fallback on every host, including the special bits that
+# distinguish a trusted sticky temporary parent from a writable directory.
+(
+  stat() {
+    [[ "$1" == -f && "$2" == '%u %Op' ]] || return 1
+    printf '0 %s\n' "$bsd_mode"
+  }
+  bsd_mode=41777
+  [[ "$(hardening_stat "$TEST_ROOT")" == '0 1777' ]]
+  hardening_assert_trusted_directory "$TEST_ROOT"
+  bsd_mode=40777
+  expect_failure hardening_assert_trusted_directory "$TEST_ROOT"
+  bsd_mode=44755
+  [[ "$(hardening_stat "$TEST_ROOT")" == '0 4755' ]]
+  bsd_mode=100640
+  [[ "$(hardening_stat "$TEST_ROOT")" == '0 640' ]]
+  bsd_mode='invalid-mode'
+  expect_failure hardening_stat "$TEST_ROOT"
+)
+
 # The final key must be a complete read record, including a single custom key.
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
@@ -526,4 +546,16 @@ if ln -s ../service "$TEST_ROOT/registration/rc2.d/S20hardening_test" && [[ -L "
 else
   echo 'Native SysV/OpenRC/systemd registration-link restoration skipped: Unix symlinks unavailable.'
 fi
+if [[ "$(uname -s)" == Linux ]]; then
+  # Actual native registration starts at /etc; a nested fixture alone misses
+  # the distinction between a trusted directory and a managed file's parent.
+  registration_app="nodekit-root-registration-$BASHPID-$RANDOM"
+  transaction_begin "$TEST_ROOT/native-root.managed-transaction.fixture"
+  transaction_record_registration /etc sysv "$registration_app"
+  transaction_record_registration /etc openrc "$registration_app"
+  transaction_restore_registration
+  expect_failure transaction_record_registration / sysv "$registration_app"
+  transaction_finish
+fi
+
 echo "Unix hardening behavioral checks passed."

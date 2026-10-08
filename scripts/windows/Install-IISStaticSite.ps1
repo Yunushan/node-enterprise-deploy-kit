@@ -648,7 +648,11 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
     if ($WhatIfPreference) { $nativeArguments += '-WhatIf' }
     if ($PSBoundParameters.ContainsKey('Confirm')) { $nativeArguments += "-Confirm:$([bool]$PSBoundParameters['Confirm'])" }
     if ($IisDeploymentLockLeasePath -or $IisDeploymentLockToken) { $nativeArguments += @('-IisDeploymentLockLeasePath', $IisDeploymentLockLeasePath, '-IisDeploymentLockToken', $IisDeploymentLockToken) }
-    & $native @nativeArguments
+    $savedModulePath = $env:PSModulePath
+    try {
+        Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+        & $native @nativeArguments
+    } finally { $env:PSModulePath = $savedModulePath }
     if ($LASTEXITCODE -ne 0) { throw 'Native Windows PowerShell failed while deploying the static IIS site.' }
     $coreFailed = $false
     } finally { Complete-IisInstallerTransaction -Transaction $coreTransaction -Failed:$coreFailed }

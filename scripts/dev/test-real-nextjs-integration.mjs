@@ -291,10 +291,19 @@ function run(command, args, options = {}) {
     ? ['/d', '/s', '/c', [command, ...args].join(' ')]
     : args;
 
+  // PowerShell 7 exports its module search path to native children. Windows
+  // PowerShell must initialize its own defaults to load Security/WebAdministration.
+  const childEnv = { ...env };
+  if (process.platform === 'win32' && /(?:^|[\\/])powershell(?:\.exe)?$/i.test(executable)) {
+    for (const key of Object.keys(childEnv)) {
+      if (key.toLowerCase() === 'psmodulepath') delete childEnv[key];
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(executable, executableArgs, {
       cwd,
-      env,
+      env: childEnv,
       stdio: 'inherit',
       windowsHide: true
     });

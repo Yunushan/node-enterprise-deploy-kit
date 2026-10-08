@@ -114,6 +114,23 @@ function Assert-NssmServicePathCompatible {
         throw "A service named '$($ExistingDefinition.Name)' already exists but points to a different executable: $pathName. Uninstall it or change AppName before deploying."
     }
 }
+function Resolve-NssmSourceExecutable {
+    param([string]$Path, [string]$ChocolateyRoot = $env:ChocolateyInstall)
+    $source = [IO.Path]::GetFullPath($Path)
+    if (-not $ChocolateyRoot -and $env:ProgramData) { $ChocolateyRoot = Join-Path $env:ProgramData 'chocolatey' }
+    if ($ChocolateyRoot) {
+        $shim = [IO.Path]::GetFullPath((Join-Path $ChocolateyRoot 'bin/nssm.exe'))
+        if ($source -ieq $shim) {
+            # Chocolatey's shim resolves its target relative to its original
+            # directory and cannot be relocated into the protected service tree.
+            $source = [IO.Path]::GetFullPath((Join-Path $ChocolateyRoot 'lib/nssm/tools/nssm.exe'))
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw 'Chocolatey NSSM executable is missing. Pass -NssmPath pointing to the actual nssm.exe rather than its bin shim.'
+            }
+        }
+    }
+    return $source
+}
 function Copy-ManagedNssmBinary {
     param($Config, [string]$SourcePath, [string]$RuntimePath, [string]$Account)
     if ([IO.Path]::GetFullPath($SourcePath) -ieq [IO.Path]::GetFullPath($RuntimePath)) {
@@ -209,6 +226,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 . (Join-Path $repoRoot "scripts\windows\DeploymentTransaction.ps1")
 [void](Assert-WindowsServiceSecurityPaths -Config $config)
 $sourceNssm = Resolve-RepoPath -Path $NssmPath -BasePath $repoRoot
+$sourceNssm = Resolve-NssmSourceExecutable -Path $sourceNssm
 if (-not (Test-Path $sourceNssm -PathType Leaf)) { throw "NSSM not found at $sourceNssm. Place nssm.exe there or pass -NssmPath." }
 $nssm = Join-Path $config.ServiceDirectory "$($config.AppName).nssm.exe"
 

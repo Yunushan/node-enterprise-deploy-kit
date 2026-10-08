@@ -1356,7 +1356,10 @@ if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
   mkdir -p "$UNSAFE_ZIP_ROOT" "$UNSAFE_ZIP_IMPORT_ROOT/app"
   new_standalone_layout "$UNSAFE_ZIP_ROOT"
   ln -s /etc/passwd "$UNSAFE_ZIP_ROOT/unsafe-link"
-  (cd "$UNSAFE_ZIP_ROOT" && zip -qry "$UNSAFE_ZIP_PACKAGE" .)
+  # Put the unsafe entry first with enough trailing output to expose readers
+  # that stop early and turn a deliberate rejection into an unzip SIGPIPE.
+  for zip_index in {1..200}; do : > "$UNSAFE_ZIP_ROOT/trailing-entry-$zip_index-with-a-long-name.txt"; done
+  (cd "$UNSAFE_ZIP_ROOT" && zip -qy "$UNSAFE_ZIP_PACKAGE" unsafe-link && zip -qry "$UNSAFE_ZIP_PACKAGE" .)
   expect_failure "unsafe zip link package validator" "Unsafe zip entry type" bash "$REPO_ROOT/scripts/linux/validate-nextjs-standalone-package.sh" --package-path "$UNSAFE_ZIP_PACKAGE"
   write_env "$UNSAFE_ZIP_IMPORT_ROOT/app.env" "$UNSAFE_ZIP_IMPORT_ROOT" 39227 "standalone" "server.js" "launchd"
   printf 'active release remains untouched\n' > "$UNSAFE_ZIP_IMPORT_ROOT/app/resource-sentinel.txt"

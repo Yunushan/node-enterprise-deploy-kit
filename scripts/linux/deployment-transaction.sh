@@ -300,20 +300,20 @@ transaction_registration_paths() {
       for directory in "$root"/rc[0-6S].d "$root"/rc.d/rc[0-6S].d; do
         [[ -d "$directory" ]] || continue
         canonical="$(cd -P "$directory" && pwd -P)" || return 1
-        transaction_assert_safe_path "$canonical" || return 1
+        hardening_assert_trusted_directory "$canonical" || return 1
         for link in "$canonical"/[SK][0-9][0-9]"$app"; do [[ ! -L "$link" ]] || printf '%s\n' "$link"; done
       done ;;
     openrc)
       for directory in "$root"/runlevels/*; do
         [[ -d "$directory" ]] || continue
         canonical="$(cd -P "$directory" && pwd -P)" || return 1
-        transaction_assert_safe_path "$canonical" || return 1
+        hardening_assert_trusted_directory "$canonical" || return 1
         link="$canonical/$app"; [[ ! -L "$link" ]] || printf '%s\n' "$link"
       done ;;
     systemd)
       for directory in "$root" "$root"/*.wants "$root"/*.requires; do
         [[ -d "$directory" ]] || continue
-        transaction_assert_safe_path "$directory" || return 1
+        hardening_assert_trusted_directory "$directory" || return 1
         link="$directory/$app"; [[ ! -L "$link" ]] || printf '%s\n' "$link"
       done ;;
     *) return 1 ;;
@@ -325,7 +325,9 @@ transaction_record_registration() {
   transaction_assert_journal || return 1
   local root="$1" kind="$2" app="$3" entry next=0 link index=0
   [[ "$app" =~ ^[A-Za-z0-9_.-]+$ && ( "$kind" == sysv || "$kind" == openrc || "$kind" == systemd ) ]] || return 1
-  transaction_assert_safe_path "$root" || return 1
+  # This is a directory being inspected, not a file being replaced. Checking
+  # its parent would reject /etc because '/' is not a managed control leaf.
+  hardening_assert_trusted_directory "$root" || return 1
   for entry in "$NODE_DEPLOY_TRANSACTION_DIR"/registration.*; do
     [[ -d "$entry" ]] || continue
     [[ "$(cat "$entry/root")" != "$root" || "$(cat "$entry/kind")" != "$kind" || "$(cat "$entry/app")" != "$app" ]] || return 0
@@ -350,7 +352,7 @@ transaction_restore_registration() {
     [[ -d "$entry" ]] || continue
     [[ "$(cat "$entry/ready")" == complete ]] || return 1
     root="$(cat "$entry/root")"; kind="$(cat "$entry/kind")"; app="$(cat "$entry/app")"
-    transaction_assert_safe_path "$root" || return 1
+    hardening_assert_trusted_directory "$root" || return 1
     [[ "$app" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
     transaction_registration_paths "$root" "$kind" "$app" > "$entry/current.links" || return 1
     while IFS= read -r link; do [[ -z "$link" ]] || rm -f "$link" || return 1; done < "$entry/current.links"

@@ -267,7 +267,11 @@ if ($PSVersionTable.PSEdition -eq "Core") {
     if ($PSBoundParameters.ContainsKey("Confirm")) {
         $nativeArguments += "-Confirm:$([bool]$PSBoundParameters['Confirm'])"
     }
-    & $nativeWindowsPowerShell @nativeArguments
+    $savedModulePath = $env:PSModulePath
+    try {
+        Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+        & $nativeWindowsPowerShell @nativeArguments
+    } finally { $env:PSModulePath = $savedModulePath }
     if ($LASTEXITCODE -ne 0) {
         throw "Native Windows PowerShell failed while configuring the IIS reverse proxy."
     }

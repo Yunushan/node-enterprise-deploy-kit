@@ -364,7 +364,11 @@ if ($PSVersionTable.PSEdition -eq "Core") {
         throw "Latest-release IIS deployment requires Windows PowerShell, but powershell.exe was not found."
     }
     $nativeArguments = @(Get-LatestReleaseNativePowerShellArguments -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WhatIf:$WhatIfPreference)
-    & $nativeWindowsPowerShell @nativeArguments
+    $savedModulePath = $env:PSModulePath
+    try {
+        Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+        & $nativeWindowsPowerShell @nativeArguments
+    } finally { $env:PSModulePath = $savedModulePath }
     if ($LASTEXITCODE -ne 0) { throw "Native Windows PowerShell failed while deploying the latest release." }
     return
 }

@@ -14,8 +14,17 @@ hardening_path_is_absolute() {
 }
 
 hardening_stat() {
-  local path="$1"
-  stat -c '%u %a' -- "$path" 2>/dev/null || stat -f '%u %Lp' "$path" 2>/dev/null
+  local path="$1" metadata owner mode
+  if metadata="$(stat -c '%u %a' -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$metadata"
+    return
+  fi
+  # BSD's low permission field (%Lp) omits the sticky/set-id bits. Read the
+  # complete octal mode, then remove only the file-type bits.
+  metadata="$(stat -f '%u %Op' "$path" 2>/dev/null)" || return 1
+  read -r owner mode <<< "$metadata"
+  [[ "$owner" =~ ^[0-9]+$ && "$mode" =~ ^[0-7]+$ && ${#mode} -le 7 ]] || return 1
+  printf '%s %o\n' "$owner" "$((8#$mode & 07777))"
 }
 
 hardening_assert_trusted_directory() {
@@ -57,7 +66,7 @@ hardening_prepare_control_directory() {
   hardening_assert_trusted_directory "$path" || return 1
   (umask 077; mkdir -p -- "$path") || return 1
   hardening_assert_trusted_directory "$path" || return 1
-  chmod 0700 -- "$path"
+  chmod 0700 "$path"
 }
 
 # A removed/stale mutex does not prove that the previous deployment completed.
@@ -98,7 +107,7 @@ hardening_create_control_file() {
   if [[ ! -e "$path" ]]; then
     (umask 077; set -o noclobber; : > "$path") || return 1
   fi
-  chmod 0600 -- "$path"
+  chmod 0600 "$path"
 }
 
 hardening_rotate_log() {

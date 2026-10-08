@@ -79,8 +79,18 @@ try {
     foreach ($iteration in 1..2) {
         $temporaryState = "$statePath.$PID.tmp"
         [IO.File]::WriteAllText($temporaryState, ('{"generation":' + $iteration + '}'))
-        $newFileRules = @((Get-Acl -LiteralPath $temporaryState).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
-        Assert-AclTest (@($newFileRules | Where-Object { $_.IdentityReference.Value -eq $ownerSid -and $_.IsInherited -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify) -eq [Security.AccessControl.FileSystemRights]::Modify }).Count -ge 1) 'New data file did not inherit Modify for its actual creator SID.'
+        $newFileAcl = Get-Acl -LiteralPath $temporaryState
+        $actualFileOwner = $newFileAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        # Elevated Windows tokens can default new-file ownership to the
+        # Administrators group. CREATOR OWNER resolves to the object owner,
+        # not necessarily WindowsIdentity.User. Production PM2 rejects an
+        # elevated owner; this fixture also runs in elevated CI jobs.
+        $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Assert-AclTest ($actualFileOwner -eq $ownerSid) 'Non-admin data-file owner differs from the PM2 owner.'
+        }
+        $newFileRules = @($newFileAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+        Assert-AclTest (@($newFileRules | Where-Object { $_.IdentityReference.Value -eq $actualFileOwner -and $_.IsInherited -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify) -eq [Security.AccessControl.FileSystemRights]::Modify }).Count -ge 1) 'New data file did not inherit Modify for its object owner SID.'
         Move-Item -LiteralPath $temporaryState -Destination $statePath -Force
         Assert-AclTest ([IO.File]::ReadAllText($statePath) -eq ('{"generation":' + $iteration + '}')) 'Atomic state replacement failed.'
     }
