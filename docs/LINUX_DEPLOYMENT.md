@@ -274,10 +274,17 @@ Mutations hold both the application lock and a shared native-service/proxy lock.
 The shared lock serializes repository operations across application names,
 including Apache registration and proxy reloads. It waits up to 60 seconds by
 default (`SHARED_CONTROL_LOCK_TIMEOUT_SECONDS`, range 0–3600), uses
-`SHARED_CONTROL_LOCK_ROOT` (default `/var/run/node-enterprise-deploy-kit`), and
+`SHARED_CONTROL_LOCK_ROOT` (default `/var/run/node-enterprise-deploy-kit`, or
+`/var/lib/node-enterprise-deploy-kit/locks` on macOS), and
 never steals an apparently stale lock. Children inherit a protected ownership
 token and cannot release their parent's lock. An operator must inspect an
 abandoned lock's owner before removing it after confirming no operation remains.
+
+macOS uses the same protected default for `DEPLOYMENT_LOCK_ROOT` because its
+native `/var/run` may be group-writable. Existing explicit lock overrides are
+preserved and must have trusted ancestors. When migrating a lock location, stop
+the app's health monitor and finish every deployment using the old location,
+then update all operations and the monitor together before restarting them.
 
 Updates preserve the service manager, Node/Tomcat runtime, proxy type, and
 Tomcat service identity recorded in the previous protected monitor config.

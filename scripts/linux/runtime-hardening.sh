@@ -3,6 +3,15 @@
 # Shared by privileged monitor/diagnostic entrypoints. Control directories must
 # have a trusted owner all the way to the filesystem root; a protected leaf
 # under an application-writable parent is not protected.
+hardening_default_lock_root() {
+  case "$(uname -s)" in
+    # Darwin's /var/run can be group-writable. Keep control state beneath a
+    # root-owned parent rather than relaxing ancestor permission checks.
+    Darwin) printf '/var/lib/node-enterprise-deploy-kit/locks\n' ;;
+    *) printf '/var/run/node-enterprise-deploy-kit\n' ;;
+  esac
+}
+
 hardening_path_is_absolute() {
   local path="${1:-}" part
   [[ "$path" == /* && "$path" != "/" && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 1

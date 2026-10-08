@@ -16,6 +16,14 @@ source "$REPO_ROOT/scripts/linux/runtime-hardening.sh"
 expect_failure() {
   if "$@" > "$TEST_ROOT/failure-output" 2>&1; then echo "Unexpected success: $*" >&2; exit 1; fi
 }
+(
+  uname() { printf '%s\n' "$lock_test_platform"; }
+  lock_test_platform=Darwin
+  [[ "$(hardening_default_lock_root)" == /var/lib/node-enterprise-deploy-kit/locks ]]
+  for lock_test_platform in Linux FreeBSD; do
+    [[ "$(hardening_default_lock_root)" == /var/run/node-enterprise-deploy-kit ]]
+  done
+)
 
 # Exercise BSD stat fallback on every host, including the special bits that
 # distinguish a trusted sticky temporary parent from a writable directory.

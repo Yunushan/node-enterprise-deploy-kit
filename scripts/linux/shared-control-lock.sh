@@ -3,7 +3,7 @@
 # child may reuse a parent's protected owner token, but never releases that lock.
 SHARED_CONTROL_LOCK_HELD=false
 shared_control_lock_acquire() {
-  local root="${SHARED_CONTROL_LOCK_ROOT:-/var/run/node-enterprise-deploy-kit}" deadline
+  local root="${SHARED_CONTROL_LOCK_ROOT:-$(hardening_default_lock_root)}" deadline
   local timeout="${SHARED_CONTROL_LOCK_TIMEOUT_SECONDS:-60}" token
   [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -le 3600 ]] || return 1
   deployment_lock_run_privileged bash -c 'source "$1"; hardening_prepare_control_directory "$2"' _ "$DEPLOYMENT_LOCK_HARDENING_HELPER" "$root" || return 1

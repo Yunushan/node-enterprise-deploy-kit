@@ -4,6 +4,8 @@ DEPLOYMENT_LOCK_PATH=""
 DEPLOYMENT_LOCK_HELD=false
 DEPLOYMENT_TRANSACTION_PREFIX=""
 DEPLOYMENT_LOCK_HARDENING_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-hardening.sh"
+# shellcheck source=scripts/linux/runtime-hardening.sh
+source "$DEPLOYMENT_LOCK_HARDENING_HELPER"
 
 deployment_lock_run_privileged() {
   if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
@@ -53,7 +55,7 @@ deployment_assert_no_pending_transactions() {
 
 deployment_lock_acquire() {
   local app_name="$1"
-  local lock_root="${DEPLOYMENT_LOCK_ROOT:-/var/run/node-enterprise-deploy-kit}"
+  local lock_root="${DEPLOYMENT_LOCK_ROOT:-$(hardening_default_lock_root)}"
   local timeout_seconds="${DEPLOYMENT_LOCK_TIMEOUT_SECONDS:-0}"
   local safe_name deadline now owner_file
 

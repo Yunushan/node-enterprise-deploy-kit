@@ -127,7 +127,7 @@ done
 
 # Use the orchestrator's mutex, including during the HTTP probe. A mere existence
 # check would allow import to begin between the check and a service restart.
-DEPLOYMENT_LOCK_ROOT="${DEPLOYMENT_LOCK_ROOT:-/var/run/node-enterprise-deploy-kit}"
+DEPLOYMENT_LOCK_ROOT="${DEPLOYMENT_LOCK_ROOT:-$(hardening_default_lock_root)}"
 hardening_prepare_control_directory "$DEPLOYMENT_LOCK_ROOT"
 safe_app_name="$(printf '%s' "$APP_NAME" | sed 's/[^A-Za-z0-9_.-]/_/g')"
 [[ -n "$safe_app_name" && "$safe_app_name" != "." && "$safe_app_name" != ".." ]] || exit 1
