@@ -21,6 +21,15 @@ SKIP_BUILD="${SKIP_BUILD:-false}"
 RUNTIME_ENV_KEYS="${RUNTIME_ENV_KEYS:-}"
 PREPARATION_ENV_FILE="${PREPARATION_ENV_FILE:-}"
 PREPARATION_ENV_ASSIGNMENTS=()
+NODE_SERVICE_INSTALL_COMPLETE=false
+
+finish_node_service_install() {
+  local result="$1"
+  # Bash 3 can report zero to EXIT after a nounset expansion abort inside a
+  # function. Never commit an installer journal unless the full body finished.
+  if [[ "$result" -eq 0 && "$NODE_SERVICE_INSTALL_COMPLETE" != true ]]; then result=1; fi
+  managed_mutation_exit "$result"
+}
 
 require_root() { if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi; }
 write_env_value() {
@@ -57,13 +66,13 @@ run_as_service_user() {
   fi
   echo "Running $label..."
   if command -v runuser >/dev/null 2>&1; then
-    runuser -u "$SERVICE_USER" -- env "${PREPARATION_ENV_ASSIGNMENTS[@]}" bash -lc "cd \"$APP_DIR\" && $command_text"
+    runuser -u "$SERVICE_USER" -- env ${PREPARATION_ENV_ASSIGNMENTS[@]+"${PREPARATION_ENV_ASSIGNMENTS[@]}"} bash -lc "cd \"$APP_DIR\" && $command_text"
   elif command -v su >/dev/null 2>&1; then
     case "$PLATFORM_FAMILY" in
       macos|freebsd|openbsd|netbsd)
-        env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m "$SERVICE_USER" -c "bash -c $(shell_single_quote "cd \"$APP_DIR\" && $command_text")"
+        env ${PREPARATION_ENV_ASSIGNMENTS[@]+"${PREPARATION_ENV_ASSIGNMENTS[@]}"} su -m "$SERVICE_USER" -c "bash -c $(shell_single_quote "cd \"$APP_DIR\" && $command_text")"
         ;;
-      *) env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text" ;;
+      *) env ${PREPARATION_ENV_ASSIGNMENTS[@]+"${PREPARATION_ENV_ASSIGNMENTS[@]}"} su -m -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text" ;;
     esac
   else
     echo "Cannot run $label as $SERVICE_USER; install runuser/su or run the command manually." >&2
@@ -339,6 +348,7 @@ install_bsdrc_service() {
 
 require_root
 managed_mutation_begin
+trap 'finish_node_service_install $?' EXIT
 # shellcheck source=scripts/linux/app-package-lifecycle.sh
 source "$SCRIPT_DIR/app-package-lifecycle.sh"
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "$SERVICE_MANAGER")"
@@ -375,3 +385,4 @@ esac
 bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$CONFIG_FILE"
 
 echo "Logs: $LOG_DIR"
+NODE_SERVICE_INSTALL_COMPLETE=true

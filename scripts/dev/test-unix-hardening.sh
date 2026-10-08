@@ -557,7 +557,7 @@ fi
 if [[ "$(uname -s)" == Linux ]]; then
   # Actual native registration starts at /etc; a nested fixture alone misses
   # the distinction between a trusted directory and a managed file's parent.
-  registration_app="nodekit-root-registration-$BASHPID-$RANDOM"
+  registration_app="nodekit-root-registration-$$-$RANDOM"
   transaction_begin "$TEST_ROOT/native-root.managed-transaction.fixture"
   transaction_record_registration /etc sysv "$registration_app"
   transaction_record_registration /etc openrc "$registration_app"

@@ -148,7 +148,7 @@ function Test-LinuxRuntimeEnvironmentDefaults {
       'PREPARATION_ENV_FILE="${PREPARATION_ENV_FILE:-}"',
       'load_preparation_environment',
       'PREPARATION_ENV_FILE line $line_number must use NAME=value syntax.',
-      'env "${PREPARATION_ENV_ASSIGNMENTS[@]}" bash -lc',
+      'env ${PREPARATION_ENV_ASSIGNMENTS[@]+"${PREPARATION_ENV_ASSIGNMENTS[@]}"} bash -lc',
       'NODE_ENV|PORT|APP_PORT|APP_NAME|BIND_ADDRESS|HOST|HOSTNAME|"") continue ;;'
     )) {
     Assert-FileContainsText -Path $installerPath -ExpectedText $expected

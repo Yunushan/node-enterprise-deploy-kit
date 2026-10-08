@@ -531,7 +531,7 @@ jobs:
       - name: Install NSSM for service-only integration
         if: matrix.manager == 'nssm'
         shell: pwsh
-        run: choco install nssm --version=2.24.101.20180116 --yes --no-progress
+        run: ./scripts/dev/Install-CiChocolateyPackage.ps1 -Name nssm -Version 2.24.101.20180116
       - name: Build, package, and run real Next.js through the selected Windows service
         shell: pwsh
         env:
@@ -576,10 +576,10 @@ jobs:
           } else {
             Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole,IIS-WebSockets -All -NoRestart | Out-Host
           }
-          choco install urlrewrite --version=2.1.20190828 --yes --no-progress
-          choco install iis-arr --version=3.0.20210521 --yes --no-progress
+          ./scripts/dev/Install-CiChocolateyPackage.ps1 -Name urlrewrite -Version 2.1.20190828
+          ./scripts/dev/Install-CiChocolateyPackage.ps1 -Name iis-arr -Version 3.0.20210521
           if ('${{ matrix.manager }}' -eq 'nssm') {
-            choco install nssm --version=2.24.101.20180116 --yes --no-progress
+            ./scripts/dev/Install-CiChocolateyPackage.ps1 -Name nssm -Version 2.24.101.20180116
           }
           iisreset /restart
       - name: Build, package, and run real Next.js through IIS

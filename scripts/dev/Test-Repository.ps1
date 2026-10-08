@@ -538,6 +538,7 @@ Test-LinuxContainerSmokeSelfTest
 Test-SampleConfigsAndTemplates
 Test-NextJsSupport
 Test-RealNextJsIntegrationWorkflow
+& (Join-Path $ScriptDir "Test-CiChocolateyPackage.ps1")
 Test-NextJsHostIntegrationWorkflow
 Test-NextJsHostIntegrationPlan
 Test-NextJsHostIntegrationRunnerInventory

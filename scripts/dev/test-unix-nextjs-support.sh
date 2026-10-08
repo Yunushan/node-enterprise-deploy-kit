@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+"$BASH" "$(dirname "${BASH_SOURCE[0]}")/test-service-preparation-environment.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/.tmp/unix-nextjs-support-$$}"
