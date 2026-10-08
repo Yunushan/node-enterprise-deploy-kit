@@ -604,11 +604,12 @@ async function getUnixPrimaryGroup(userName = null) {
   child.stdout.on('data', (chunk) => { output += chunk; });
   child.stderr.pipe(process.stderr);
   return new Promise((resolve, reject) => {
-    child.on('error', reject);
-    child.on('exit', (code) => {
+    child.once('error', reject);
+    // Process exit can precede the final stdout chunk; close waits for stdio.
+    child.once('close', (code) => {
       const group = output.trim();
       if (code !== 0 || !group) {
-        reject(new Error('Could not determine the invoking Unix user primary group for launchd integration.'));
+        reject(new Error(`Could not determine the primary group for launchd user ${userName || '(current user)'}: id exited with ${code}, output ${JSON.stringify(group)}.`));
         return;
       }
       resolve(group);
@@ -1042,7 +1043,8 @@ async function getApacheBuiltInModules(command) {
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { errorOutput += chunk; });
     child.once('error', reject);
-    child.once('exit', (code) => {
+    // Inspect the complete module listing after both output streams close.
+    child.once('close', (code) => {
       if (code !== 0) {
         reject(new Error(`${command} -l failed with exit code ${code}: ${errorOutput.trim()}`));
         return;

@@ -568,6 +568,8 @@ Test-WindowsServiceManagers
 & (Join-Path $ScriptDir "Test-NodeRuntimePolicy.ps1")
 & node (Join-Path $ScriptDir "Test-IntegrationDependencies.mjs")
 if ($LASTEXITCODE -ne 0) { throw "Integration dependency checks failed." }
+& node (Join-Path $ScriptDir "Test-IntegrationChildOutput.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Integration child output checks failed." }
 if (-not $SkipShellSyntax) {
   $bash = Resolve-BashPath
   & $bash "-lc" "bash scripts/dev/test-deployment-transactions.sh"
