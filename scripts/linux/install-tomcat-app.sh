@@ -43,13 +43,20 @@ else
   target_war="$TOMCAT_WEBAPPS_DIR/${context_name}.war"
 fi
 
+managed_mutation_begin
 mkdir -p "$LOG_DIR" "$TOMCAT_WEBAPPS_DIR"
+# shellcheck source=scripts/linux/app-package-lifecycle.sh
+source "$SCRIPT_DIR/app-package-lifecycle.sh"
+package_stop_app_service "$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$(detect_platform_family)")}")" "$TOMCAT_SERVICE"
 copy_file_with_backup "$TOMCAT_WAR_FILE" "$target_war" "$BACKUP_DIR"
 
 if is_true "$TOMCAT_RESTART"; then
   reload_or_restart_service "$TOMCAT_SERVICE" "Tomcat"
 else
-  echo "Tomcat WAR deployed without service restart because TOMCAT_RESTART=false."
+  if [[ "$PACKAGE_APP_SERVICE_WAS_RUNNING" == true ]]; then
+    package_restart_app_service_after_failure "$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$(detect_platform_family)")}")" "$TOMCAT_SERVICE"
+  fi
+  echo "Tomcat WAR deployed; the previously running service was resumed after the guarded copy."
 fi
 
 bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$CONFIG_FILE"

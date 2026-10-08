@@ -20,6 +20,10 @@ $expectedActions = [ordered]@{
     Sha = "820762786026740c76f36085b0efc47a31fe5020"
     Version = "v7"
   }
+  "actions/setup-python" = [pscustomobject]@{
+    Sha = "5fda3b95a4ea91299a34e894583c3862153e4b97"
+    Version = "v7.0.0"
+  }
   "actions/upload-artifact" = [pscustomobject]@{
     Sha = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
     Version = "v7"

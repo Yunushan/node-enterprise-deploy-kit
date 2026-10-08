@@ -386,27 +386,37 @@ write_deployment_manifest() {
 }
 
 write_package_transaction_state() {
-  local state_path="$1" temporary_path
+  local state_path="$1" phase="${2:-replacement-ready}" temporary_path
   [[ -n "$state_path" ]] || return 0
   [[ "$state_path" == /* ]] || {
     echo "Package transaction state path must be absolute." >&2
     return 1
   }
-  temporary_path="${state_path}.$$.tmp"
+  transaction_assert_safe_path "$state_path" || return 1
+  hardening_assert_control_file "$state_path" || return 1
+  temporary_path="$(mktemp "$state_path.tmp.XXXXXX")" || return 1
   umask 077
   mkdir -p "$(dirname "$state_path")"
   {
     printf '%s\n' "node-enterprise-deploy-kit/package-transaction/v2"
     printf '%s\n' "$APP_DIR"
     printf '%s\n' "$PACKAGE_APP_BACKUP_PATH"
-    if [[ -n "$PACKAGE_APP_BACKUP_PATH" ]]; then printf '%s\n' "true"; else printf '%s\n' "false"; fi
+    printf '%s\n' "$PACKAGE_APP_PREVIOUS_EXISTED"
     printf '%s\n' "$service_manager_normalized"
     printf '%s\n' "$APP_NAME"
     printf '%s\n' "$PACKAGE_APP_SERVICE_EXISTED"
     printf '%s\n' "$PACKAGE_APP_SERVICE_WAS_RUNNING"
+    printf '%s\n' "$phase"
   } > "$temporary_path"
   chmod 0600 "$temporary_path"
   mv -f -- "$temporary_path" "$state_path"
+  # sync without GNU-only flags also works on the supported BSD/macOS shells.
+  # Make the write-ahead record durable before moving the previous app.
+  sync
+}
+
+write_prepared_package_transaction_state() {
+  write_package_transaction_state "$PACKAGE_TRANSACTION_STATE_PATH" prepared
 }
 
 PACKAGE_EXPECTED_SHA256="$(printf '%s' "$PACKAGE_EXPECTED_SHA256" | tr '[:upper:]' '[:lower:]')"
@@ -449,7 +459,15 @@ fi
 
 work_root="$(mktemp -d)"
 extract_root="$work_root/extract"
-cleanup() { rm -rf -- "$work_root"; }
+package_state_owned=false
+package_import_succeeded=false
+cleanup() {
+  rm -rf -- "$work_root"
+  if [[ "$package_state_owned" == true && "$package_import_succeeded" == true ]]; then
+    rm -f -- "$PACKAGE_TRANSACTION_STATE_PATH"
+  fi
+  mutation_locks_release
+}
 trap cleanup EXIT
 mkdir -p "$extract_root"
 
@@ -527,6 +545,40 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 service_manager_normalized="$(normalize_name "$SERVICE_MANAGER")"
+mutation_locks_acquire
+if [[ -n "${NODE_DEPLOY_TRANSACTION_DIR:-}" ]]; then
+  transaction_assert_journal
+  deployment_assert_no_pending_transactions "$NODE_DEPLOY_TRANSACTION_DIR"
+else
+  deployment_assert_no_pending_transactions
+  existing_runtime=false
+  if package_app_service_exists "$service_manager_normalized" "$APP_NAME"; then
+    existing_runtime=true
+  else
+    service_presence_result=$?
+    [[ "$service_presence_result" -ne 2 ]] || exit "$service_presence_result"
+  fi
+  existing_monitor=false
+  for monitor_marker in "/etc/node-enterprise-deploy-kit/$APP_NAME.env" "/usr/local/sbin/$APP_NAME-healthcheck.sh" \
+    "/etc/systemd/system/$APP_NAME-healthcheck.timer" "/Library/LaunchDaemons/$APP_NAME-healthcheck.plist"; do
+    if [[ -e "$monitor_marker" || -L "$monitor_marker" ]]; then existing_monitor=true; fi
+  done
+  if command -v crontab >/dev/null 2>&1; then
+    monitor_cron="$(crontab -l 2>/dev/null || true)"
+    if grep -Fxq "# node-enterprise-deploy-kit:$APP_NAME:healthcheck:start" <<< "$monitor_cron"; then existing_monitor=true; fi
+  fi
+  if [[ "$existing_runtime" == true || "$existing_monitor" == true ]]; then
+    echo 'Standalone package import is limited to staging without a registered runtime or monitor. Use deploy.sh for an existing deployment so its previous monitor is quiesced and its configuration is recovered together.' >&2
+    exit 1
+  fi
+fi
+if [[ -z "$PACKAGE_TRANSACTION_STATE_PATH" ]]; then
+  PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_TRANSACTION_PREFIX}.package-transaction.$$.state"
+  package_state_owned=true
+fi
+case "$PACKAGE_TRANSACTION_STATE_PATH" in "$DEPLOYMENT_TRANSACTION_PREFIX".package-transaction.*.state) ;;
+  *) echo 'New package state must use the protected persistent application transaction namespace.' >&2; exit 1 ;;
+esac
 if package_stop_app_service "$service_manager_normalized" "$APP_NAME"; then
   :
 else
@@ -537,7 +589,7 @@ else
   exit "$package_stop_exit"
 fi
 
-if package_replace_app_directory "$source_root" "$APP_DIR" "$BACKUP_DIR" write_deployment_manifest; then
+if package_replace_app_directory "$source_root" "$APP_DIR" "$BACKUP_DIR" write_deployment_manifest write_prepared_package_transaction_state; then
   if write_package_transaction_state "$PACKAGE_TRANSACTION_STATE_PATH"; then
     :
   else
@@ -563,4 +615,5 @@ else
   exit "$package_replace_exit"
 fi
 
+package_import_succeeded=true
 echo "Imported package into APP_DIR: $APP_DIR"

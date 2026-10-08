@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "reviewedAtUtc": "2026-10-07",
+  "frameworkMinimumNodeVersion": "20.9.0",
+  "recommendedMajor": 24,
+  "scheduleSource": "https://github.com/nodejs/Release/blob/main/schedule.json",
+  "releaseLines": [
+    { "major": 20, "start": "2023-04-18", "end": "2026-04-30", "macosMinimum": "10.15", "macosArm64Minimum": "11.0", "platformSource": "https://github.com/nodejs/node/blob/v20.x/BUILDING.md" },
+    { "major": 22, "start": "2024-04-24", "end": "2027-04-30", "macosMinimum": "11.0", "macosArm64Minimum": "11.0", "platformSource": "https://github.com/nodejs/node/blob/v22.x/BUILDING.md" },
+    { "major": 24, "start": "2025-05-06", "end": "2028-04-30", "macosMinimum": "13.5", "macosArm64Minimum": "13.5", "platformSource": "https://github.com/nodejs/node/blob/v24.x/BUILDING.md" },
+    { "major": 26, "start": "2026-05-05", "end": "2029-04-30", "macosMinimum": "13.5", "macosArm64Minimum": "13.5", "platformSource": "https://github.com/nodejs/node/blob/v26.x/BUILDING.md" }
+  ]
+}

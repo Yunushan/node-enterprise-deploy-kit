@@ -1,0 +1,18 @@
+title = "Repository secret detection"
+
+[extend]
+useDefault = true
+
+# This exact test-only AES fixture decodes to repeated ASCII 0123456789abcdef.
+# Keep real keys detectable in this file and every other file/history entry.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Known deterministic Next.js encryption-key validation fixture"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+  '''^MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=?$''',
+  '''^0123456789abcdef0123456789abcdef$'''
+]
+paths = ['''(^|/)scripts/dev/Test-NextJsSupport\.ps1$''']

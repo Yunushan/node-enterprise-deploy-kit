@@ -146,7 +146,7 @@ For long-running confidence after days of uptime, check these signals together:
 | Service | `Running` and automatic startup |
 | Service uptime | Meets your expected runtime window, for example 72 hours |
 | Port ownership | Configured port is owned by the service process tree |
-| HTTP health | 2xx/3xx response inside the configured timeout |
+| HTTP health | 2xx response inside the configured timeout, without following redirects |
 | Scheduled task | Correct protected action/principal, recent successful run, no missed runs |
 | Health task trust | Managed script/config hashes and ACL checks pass |
 | Protected health state | Recent `LastSuccess`, zero consecutive failures |
@@ -186,10 +186,12 @@ HEALTHCHECK_TIMEOUT="10"
 HEALTHCHECK_STATE_DIR="/var/lib/node-enterprise-deploy-kit/example-node-app"
 ```
 
-The Linux health check writes `healthcheck.log` under `LOG_DIR` and writes
-`healthcheck.state` under the root-owned `HEALTHCHECK_STATE_DIR`. Keep
-`HEALTHCHECK_STATE_DIR` outside `LOG_DIR` so app-writable logs cannot influence
-root-run health-check control state. Use diagnostics for a safe summary:
+The Unix health check writes `healthcheck.log` under the protected
+`HEALTHCHECK_LOG_DIR`, which defaults to `HEALTHCHECK_STATE_DIR/logs`, and writes
+`healthcheck.state` under the root-owned `HEALTHCHECK_STATE_DIR`. Diagnostics
+default to `HEALTHCHECK_STATE_DIR/diagnostics`. Keep these control paths outside
+application-writable directories; their ancestor ownership and permissions are
+checked before privileged writes. Use diagnostics for a safe summary:
 
 ```bash
 sudo bash scripts/linux/status-node-app.sh config/linux/app.env --minimum-uptime-hours 72 --fail-on-critical
@@ -250,5 +252,27 @@ Health checks also prune old managed files using these defaults:
 | Backups | `BackupRetentionDays` | `BACKUP_RETENTION_DAYS` | 90 days |
 | Diagnostics | `DiagnosticRetentionDays` | `DIAGNOSTIC_RETENTION_DAYS` | 14 days |
 
-Retention cleanup is intentionally age-based and only targets managed log,
-diagnostic, and backup file patterns.
+Unix health logs rotate at 10 MiB and retain seven generations by default
+(`HEALTHCHECK_LOG_MAX_BYTES`, `HEALTHCHECK_LOG_GENERATIONS`). Application
+`stdout.log` and `stderr.log` rotate with the same defaults (`APP_LOG_MAX_BYTES`,
+`APP_LOG_GENERATIONS`) as the service user. Rotation copy-truncates the active
+application log inode so a running daemon continues writing; output written
+during that brief copy/truncate interval can be lost. Active log files are
+never age-deleted. Rotation runs at each monitor tick, so growth between ticks
+can exceed the threshold; use external log shipping for very high-volume apps.
+
+Nginx and Apache logs use the protected `PROXY_LOG_DIR`, defaulting to
+`/var/log/node-enterprise-deploy-kit/proxy/<APP_NAME>`. Proxy masters open these
+files with elevated privileges, so their directory must never be owned or
+writable by the application account. The monitor verifies directory and file
+ownership and copy-truncates these logs at 10 MiB with seven generations
+(`PROXY_LOG_MAX_BYTES`, `PROXY_LOG_GENERATIONS`), preserving the active native
+proxy descriptor with the same copy/truncate loss window described above.
+
+Age cleanup targets protected rotated monitor logs, diagnostic bundles, managed
+configuration backup files, and `app.<timestamp>.<pid>.bak` release directories.
+Release directory age comes from its backup creation timestamp, not the original
+application file modification times. The monitor holds the same per-app lock
+as deployment through probes, recovery, and retention; a busy deployment defers
+that monitor tick. Stopped services use the same failure threshold and restart
+cooldown as HTTP failures. Only HTTP 2xx responses are healthy.

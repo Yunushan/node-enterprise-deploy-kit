@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
     [string] $PackagePath = "",
     [string] $PackageExpectedSha256 = "",
-    [string] $TransactionStatePath = ""
+    [string] $TransactionStatePath = "",
+    [object] $ExistingDeploymentLock,
+    [object] $ExistingManagedDeploymentTransaction
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,8 @@ $PackageProvenanceFileName = ".node-enterprise-package.json"
 $PackageProvenanceSchema = "node-enterprise-deploy-kit/nextjs-package-provenance/v2"
 . (Join-Path $PSScriptRoot "AppPackageSafety.ps1")
 . (Join-Path $PSScriptRoot "AppPackageLifecycle.ps1")
+. (Join-Path $PSScriptRoot "DeploymentLock.ps1")
+. (Join-Path $PSScriptRoot "DeploymentTransaction.ps1")
 
 function Resolve-ConfigRelativePath {
     param(
@@ -38,6 +42,16 @@ function Get-ConfigString {
         return [string]$Config.$Name
     }
     return $Default
+}
+
+function Initialize-AppPackageImportConfig {
+    param($Config)
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
+    foreach ($default in @(@{ Name = 'ServiceManager'; Value = 'winsw' }, @{ Name = 'DeploymentMode'; Value = 'node_service' })) {
+        if (-not $Config.PSObject.Properties[$default.Name] -or [string]::IsNullOrWhiteSpace([string]$Config.($default.Name))) {
+            $Config | Add-Member -MemberType NoteProperty -Name $default.Name -Value $default.Value -Force
+        }
+    }
 }
 
 function Get-ConfigEnvironmentString {
@@ -443,6 +457,7 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 
 $ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+Initialize-AppPackageImportConfig -Config $config
 if ([string]::IsNullOrWhiteSpace($PackagePath)) {
     $PackagePath = Get-ConfigString $config "PackagePath" ""
 }
@@ -463,7 +478,8 @@ function Write-PackageTransactionState {
         [string]$AppDirectory,
         [string]$BackupPath,
         $ServiceState,
-        [bool]$IsStaticIis
+        [bool]$IsStaticIis,
+        [ValidateSet('prepared', 'replacement-ready')][string]$Phase = 'replacement-ready'
     )
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -474,6 +490,7 @@ function Write-PackageTransactionState {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     $state = [ordered]@{
         schema = "node-enterprise-deploy-kit/package-transaction/v1"
+        phase = $Phase
         appName = [string]$Config.AppName
         appDirectory = $AppDirectory
         backupPath = $BackupPath
@@ -486,11 +503,10 @@ function Write-PackageTransactionState {
     }
     $temporaryPath = "$Path.$PID.tmp"
     try {
-        [System.IO.File]::WriteAllText(
-            $temporaryPath,
-            (($state | ConvertTo-Json -Depth 5) + "`r`n"),
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        $stateBytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($state | ConvertTo-Json -Depth 5) + "`r`n")
+        $stateStream = [IO.File]::Open($temporaryPath, 'Create', 'Write', 'None')
+        try { $stateStream.Write($stateBytes, 0, $stateBytes.Length); $stateStream.Flush($true) }
+        finally { $stateStream.Dispose() }
         Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
     }
     finally {
@@ -568,11 +584,61 @@ try {
 
     if ($PSCmdlet.ShouldProcess($appDirectory, "Import application package $sourcePackagePath")) {
         $isStaticIis = Test-StaticIisDeploymentMode $config
+        if ($isStaticIis -and $config.PSObject.Properties['IisSitePath'] -and $config.IisSitePath) {
+            $liveSitePath = [IO.Path]::GetFullPath([string]$config.IisSitePath).TrimEnd('\', '/')
+            $importAppPath = $appDirectory.TrimEnd('\', '/')
+            $separator = [IO.Path]::DirectorySeparatorChar
+            if ($liveSitePath.Equals($importAppPath, [StringComparison]::OrdinalIgnoreCase) -or
+                $liveSitePath.StartsWith($importAppPath + $separator, [StringComparison]::OrdinalIgnoreCase) -or
+                $importAppPath.StartsWith($liveSitePath + $separator, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Static package AppDirectory must be separate from and nonoverlapping with live IisSitePath; use full deploy to update the IIS site transactionally.'
+            }
+        }
+        if ($ExistingManagedDeploymentTransaction -and -not $ExistingDeploymentLock) {
+            throw 'A borrowed package transaction requires its live deployment lock.'
+        }
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { Assert-ManagedDeploymentManagerTransition -Config $config }
+        $importLock = $null
+        $ownsImportLock = -not $ExistingDeploymentLock
+        $removeOwnedTransactionState = $false
+        if ($ExistingDeploymentLock) {
+            Assert-ExistingDeploymentLock -Config $config -Lock $ExistingDeploymentLock
+            $importLock = $ExistingDeploymentLock
+        } else {
+            $importLock = Enter-DeploymentLock -Config $config
+        }
+        try {
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { Assert-ManagedDeploymentManagerTransition -Config $config }
+        $lockDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $importLock.Path))
+        $safeAppName = ([string]$config.AppName -creplace '[^A-Za-z0-9_.-]', '_')
+        if ([string]::IsNullOrWhiteSpace($TransactionStatePath)) {
+            $TransactionStatePath = Join-Path $lockDirectory "$safeAppName.$PID.package-transaction.json"
+        }
+        if (-not [IO.Path]::IsPathRooted($TransactionStatePath) -or
+            [IO.Path]::GetFullPath((Split-Path -Parent $TransactionStatePath)) -ne $lockDirectory -or
+            (Split-Path -Leaf $TransactionStatePath) -notmatch ('^' + [regex]::Escape($safeAppName) + '\.[0-9]+\.package-transaction\.json$')) {
+            throw 'TransactionStatePath must use AppName.ProcessId.package-transaction.json in the held deployment lock directory.'
+        }
+        Assert-DeploymentPathNotReparsePoint $TransactionStatePath
+        if (Test-Path -LiteralPath $TransactionStatePath) { throw 'Package recovery state already exists; recover it before importing again.' }
         $serviceState = $null
+        $serviceStopAttempted = $false
         $script:AppPackageDirectoryRecoverySucceeded = $true
         try {
             if (-not $isStaticIis) {
                 $serviceState = Get-AppPackageServiceState -Config $config
+                if ($serviceState.Exists -and -not $ExistingManagedDeploymentTransaction) {
+                    throw 'A managed runtime already exists. Import packages through the full deploy wrapper with its managed recovery transaction; standalone import cannot safely suspend SCM recovery or PM2 watchers.'
+                }
+            }
+            if ($ExistingManagedDeploymentTransaction) {
+                Assert-ManagedDeploymentTransaction -Config $config -Transaction $ExistingManagedDeploymentTransaction
+                if ($ExistingManagedDeploymentTransaction.Manager -ne (Get-ManagedDeploymentManager $config)) { throw 'Borrowed package transaction has a different service manager.' }
+                Suspend-ManagedDeploymentServiceState -Config $config -Transaction $ExistingManagedDeploymentTransaction
+            }
+            if (-not $isStaticIis) {
+                $serviceState = Get-AppPackageServiceState -Config $config
+                $serviceStopAttempted = $true
                 Stop-AppPackageService -State $serviceState
             }
 
@@ -582,6 +648,10 @@ try {
                 BackupDirectory = $backupDirectory
                 WriteManifest = {
                     Write-DeploymentManifest -Config $config -AppDirectory $appDirectory -PackageName $packageName -PackageSha256 $verifiedPackageSha256 -PackageProvenance $packageProvenance
+                }
+                WritePreparedState = {
+                    param($PlannedBackupPath)
+                    Write-PackageTransactionState -Path $TransactionStatePath -Config $config -AppDirectory $appDirectory -BackupPath $PlannedBackupPath -ServiceState $serviceState -IsStaticIis $isStaticIis -Phase prepared
                 }
             }
             if ($isStaticIis) { $replacementArgs.RedactBackupPath = $true }
@@ -613,23 +683,35 @@ try {
         }
         catch {
             $originalError = $_
-            if ($serviceState -and $serviceState.WasRunning) {
+            $serviceRecoverySucceeded = $true
+            if ($ownsImportLock -and $serviceStopAttempted -and $serviceState -and $serviceState.WasRunning) {
                 if ($script:AppPackageDirectoryRecoverySucceeded) {
                     try { Start-AppPackageServiceAfterFailure -State $serviceState }
                     catch {
+                        $serviceRecoverySucceeded = $false
                         throw "$($originalError.Exception.Message) The previous application directory was restored, but service recovery failed: $($_.Exception.Message)"
                     }
                 } else {
                     Write-Error "CRITICAL: The previous application directory could not be restored, so the service was intentionally left stopped." -ErrorAction Continue
                 }
             }
+            $removeOwnedTransactionState = $script:AppPackageDirectoryRecoverySucceeded -and $serviceRecoverySucceeded
             throw $originalError
         }
+
+        $removeOwnedTransactionState = $true
 
         if ($isStaticIis) {
             Write-Host "Imported package into AppDirectory." -ForegroundColor Green
         } else {
             Write-Host "Imported package into AppDirectory: $appDirectory" -ForegroundColor Green
+        }
+        } finally {
+            try {
+                if ($ownsImportLock -and $removeOwnedTransactionState -and (Test-Path -LiteralPath $TransactionStatePath -PathType Leaf)) {
+                    Remove-Item -LiteralPath $TransactionStatePath -Force -ErrorAction Stop
+                }
+            } finally { if ($ownsImportLock -and $importLock) { Exit-DeploymentLock -Lock $importLock } }
         }
     }
 }

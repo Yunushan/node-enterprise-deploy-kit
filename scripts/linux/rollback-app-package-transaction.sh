@@ -23,6 +23,9 @@ manager="$(sed -n '5p' "$STATE_FILE")"
 transaction_app_name="$(sed -n '6p' "$STATE_FILE")"
 service_existed="$(sed -n '7p' "$STATE_FILE")"
 service_was_running="$(sed -n '8p' "$STATE_FILE")"
+phase="$(sed -n '9p' "$STATE_FILE")"
+phase="${phase:-replacement-ready}"
+case "$phase" in prepared|replacement-ready) ;; *) echo 'Unsupported package transaction phase.' >&2; exit 1 ;; esac
 [[ "$schema" == "node-enterprise-deploy-kit/package-transaction/v2" ]] || {
   echo "Unsupported package transaction state schema." >&2
   exit 1
@@ -66,8 +69,9 @@ package_rollback_deployment_transaction \
   "$manager" \
   "$transaction_app_name" \
   "$service_existed" \
-  "$service_was_running"
+  "$service_was_running" \
+  "$phase"
 
-if [[ "$service_existed" == "true" && "$service_was_running" == "true" ]]; then
+if [[ "$service_existed" == "true" && "$service_was_running" == "true" && -z "${NODE_DEPLOY_TRANSACTION_DIR:-}" ]]; then
   bash "$REPO_ROOT/scripts/linux/test-post-deploy-health.sh" "$CONFIG_FILE"
 fi

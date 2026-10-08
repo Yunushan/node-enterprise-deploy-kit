@@ -44,6 +44,7 @@ node_deploy_skip_preflight: false
 node_deploy_allow_port_in_use: false
 node_deploy_deployment_lock_timeout_seconds: 0
 node_deploy_linux_deployment_lock_root: /var/run/node-enterprise-deploy-kit
+node_deploy_linux_deployment_transaction_root: /var/lib/node-enterprise-deploy-kit/deployment-transactions
 node_deploy_skip_install: false
 node_deploy_skip_build: false
 node_deploy_skip_reverse_proxy: false
@@ -75,7 +76,7 @@ node_deploy_windows_winsw_source: ""
 node_deploy_failure_restart_delay_seconds: 60
 node_deploy_linux_service_manager: systemd
 node_deploy_linux_deploy_dir: /opt/node-enterprise-deploy-kit
-node_deploy_linux_config_path: /etc/node-enterprise-deploy-kit/example-node-app.env
+node_deploy_linux_config_path: /etc/node-enterprise-deploy-kit/incoming/example-node-app.env
 node_deploy_linux_env_file: /etc/example-node-app/example-node-app.env
 node_deploy_linux_install_dependencies: false
 node_deploy_linux_node_bin: /usr/bin/node

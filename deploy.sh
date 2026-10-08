@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 # shellcheck source=scripts/linux/common.sh
@@ -16,7 +16,10 @@ run_root() {
   if [[ "${EUID}" -eq 0 ]]; then
     bash "$@"
   else
-    sudo bash "$@"
+    sudo env NODE_DEPLOY_TRANSACTION_DIR="${NODE_DEPLOY_TRANSACTION_DIR:-}" \
+      NODE_DEPLOY_APP_LOCK_PATH="${NODE_DEPLOY_APP_LOCK_PATH:-}" NODE_DEPLOY_APP_LOCK_TOKEN="${NODE_DEPLOY_APP_LOCK_TOKEN:-}" \
+      NODE_DEPLOY_SHARED_CONTROL_LOCK_PATH="${NODE_DEPLOY_SHARED_CONTROL_LOCK_PATH:-}" NODE_DEPLOY_SHARED_CONTROL_LOCK_TOKEN="${NODE_DEPLOY_SHARED_CONTROL_LOCK_TOKEN:-}" \
+      bash "$@"
   fi
 }
 
@@ -30,28 +33,60 @@ run_privileged() {
 
 # shellcheck source=scripts/linux/deployment-lock.sh
 source "$REPO_ROOT/scripts/linux/deployment-lock.sh"
-deployment_lock_acquire "$APP_NAME"
-trap deployment_lock_release EXIT
-PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_LOCK_PATH}.package-transaction.$$.state"
+MANAGED_TRANSACTION_STARTED=false
+DEPLOYMENT_COMPLETE=false
+PACKAGE_TRANSACTION_STATE_PATH=""
 
-deployment_error_handler() {
+deployment_exit_handler() {
   local deployment_exit=$?
   local rollback_failed=false
-  trap - ERR
-  if run_privileged test -f "$PACKAGE_TRANSACTION_STATE_PATH"; then
+  trap - ERR EXIT
+  if [[ "$DEPLOYMENT_COMPLETE" == true ]]; then
+    mutation_locks_release || deployment_exit=1
+    exit "$deployment_exit"
+  fi
+  [[ "$deployment_exit" -ne 0 ]] || deployment_exit=1
+  if [[ -n "$PACKAGE_TRANSACTION_STATE_PATH" ]] && run_privileged test -f "$PACKAGE_TRANSACTION_STATE_PATH"; then
     if ! run_root "$REPO_ROOT/scripts/linux/rollback-app-package-transaction.sh" "$CONFIG_FILE" "$PACKAGE_TRANSACTION_STATE_PATH"; then
       echo "CRITICAL: Deployment failed and automatic package rollback also failed. The service remains stopped when APP_DIR recovery was unsafe." >&2
       echo "Recovery state preserved at: $PACKAGE_TRANSACTION_STATE_PATH" >&2
       rollback_failed=true
     fi
   fi
-  if [[ "$rollback_failed" != "true" ]]; then
-    run_privileged rm -f "$PACKAGE_TRANSACTION_STATE_PATH" ||
-      echo "WARNING: Could not remove package transaction state: $PACKAGE_TRANSACTION_STATE_PATH" >&2
+  if [[ "$MANAGED_TRANSACTION_STARTED" == true && "$rollback_failed" != true ]]; then
+    if ! run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" restore "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR"; then
+      echo "CRITICAL: Managed configuration rollback failed. Recovery journal preserved at: $NODE_DEPLOY_TRANSACTION_DIR" >&2
+      rollback_failed=true
+    fi
   fi
+  if [[ "$rollback_failed" != "true" ]]; then
+    if [[ -n "$PACKAGE_TRANSACTION_STATE_PATH" ]]; then run_privileged rm -f "$PACKAGE_TRANSACTION_STATE_PATH" ||
+      echo "WARNING: Could not remove package transaction state: $PACKAGE_TRANSACTION_STATE_PATH" >&2
+    fi
+    if [[ "$MANAGED_TRANSACTION_STARTED" == true ]]; then
+      run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" finish "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR" ||
+        echo "WARNING: Could not remove managed recovery journal." >&2
+    fi
+  fi
+  mutation_locks_release || deployment_exit=1
   exit "$deployment_exit"
 }
+trap deployment_exit_handler EXIT
+# ERR inheritance catches failures inside run_root/run_privileged. EXIT performs
+# the recovery once, including explicit exit and signal-triggered termination.
+deployment_error_handler() {
+  local deployment_error=$?
+  trap - ERR
+  exit "$deployment_error"
+}
 trap deployment_error_handler ERR
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mutation_locks_acquire
+deployment_assert_no_pending_transactions
+PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_TRANSACTION_PREFIX}.package-transaction.$$.state"
+NODE_DEPLOY_TRANSACTION_DIR="${DEPLOYMENT_TRANSACTION_PREFIX}.managed-transaction.$$"
+export NODE_DEPLOY_TRANSACTION_DIR
 
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-false}"
@@ -68,6 +103,10 @@ if ! is_true "$SKIP_PREFLIGHT"; then
   if [[ -n "${PACKAGE_EXPECTED_SHA256_OVERRIDE:-}" ]]; then preflight_args+=(--package-expected-sha256 "$PACKAGE_EXPECTED_SHA256_OVERRIDE"); fi
   bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "${preflight_args[@]}"
 fi
+
+run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" begin "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR" "$PACKAGE_TRANSACTION_STATE_PATH"
+MANAGED_TRANSACTION_STARTED=true
+run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" quiesce "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR"
 
 if ! is_true "$SKIP_PACKAGE_IMPORT" && [[ -n "${PACKAGE_PATH:-}" ]]; then
   if [[ "$APP_RUNTIME_NORMALIZED" != "node" ]]; then
@@ -91,7 +130,7 @@ case "$APP_RUNTIME_NORMALIZED" in
 esac
 
 if ! is_true "$SKIP_REVERSE_PROXY"; then
-  bash "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$CONFIG_FILE"
+  run_root "$REPO_ROOT/scripts/linux/install-reverse-proxy.sh" "$CONFIG_FILE"
 fi
 
 if is_true "$SKIP_HEALTH_CHECK"; then
@@ -100,6 +139,12 @@ else
   run_root "$REPO_ROOT/scripts/linux/install-healthcheck-scheduler.sh" "$CONFIG_FILE"
 fi
 
+if is_true "$SKIP_HEALTH_CHECK"; then
+  run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" resume-health "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR"
+fi
+
 run_privileged rm -f "$PACKAGE_TRANSACTION_STATE_PATH"
+run_root "$REPO_ROOT/scripts/linux/manage-deployment-transaction.sh" finish "$CONFIG_FILE" "$NODE_DEPLOY_TRANSACTION_DIR"
+DEPLOYMENT_COMPLETE=true
 trap - ERR
 echo "Deployment finished for ${APP_NAME}."

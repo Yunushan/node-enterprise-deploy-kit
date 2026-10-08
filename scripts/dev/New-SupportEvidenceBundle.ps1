@@ -697,7 +697,7 @@ function New-SelfTestEvidence {
       Status = "ok"
       AppFramework = "nextjs"
       Mode = "standalone"
-      NodeVersion = "v20.11.1"
+      NodeVersion = "v22.0.0"
       MinimumNodeVersion = "20.9.0"
       NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
@@ -817,7 +817,7 @@ function New-SelfTestEvidence {
       status = "ok"
       appFramework = "nextjs"
       mode = "standalone"
-      nodeVersion = "v20.11.1"
+      nodeVersion = "v22.0.0"
       minimumNodeVersion = "20.9.0"
       nodeVersionSatisfied = $true
       nextVersion = "14.2.3"

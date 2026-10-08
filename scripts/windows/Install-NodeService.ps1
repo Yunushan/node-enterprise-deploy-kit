@@ -14,7 +14,9 @@ param(
     [string] $WinSWPath = "tools\winsw\winsw-x64.exe",
     [string] $WinSWDownloadUrl = "",
     [string] $WinSWDownloadSha256 = "",
-    [switch] $SkipWinSWDownload
+    [switch] $SkipWinSWDownload,
+    [object] $ExistingDeploymentLock,
+    [object] $ExistingManagedDeploymentTransaction
 )
 
 function Assert-Admin {
@@ -149,58 +151,73 @@ function ConvertTo-EnvironmentBlock($EnvironmentMap) {
     }
     return $block.TrimEnd()
 }
-function Get-ServiceAccountSettings($Config) {
-    $account = Get-ConfigString $Config "ServiceAccount" "LocalSystem"
+function ConvertTo-WinSWServiceAccountName([string]$Account) {
+    switch ($Account.Trim().ToLowerInvariant()) {
+        "localsystem" { return "LocalSystem" }
+        "nt authority\system" { return "LocalSystem" }
+        "localservice" { return "NT AUTHORITY\LocalService" }
+        "nt authority\localservice" { return "NT AUTHORITY\LocalService" }
+        "networkservice" { return "NT AUTHORITY\NetworkService" }
+        "nt authority\networkservice" { return "NT AUTHORITY\NetworkService" }
+        default { return $Account.Trim() }
+    }
+}
+function Get-ServiceAccountSettings($Config, $ExistingDefinition = $null) {
+    $account = Get-ConfigString $Config "ServiceAccount" ""
+    $existingAccount = if ($ExistingDefinition) { ConvertTo-WinSWServiceAccountName ([string]$ExistingDefinition.StartName) } else { "" }
+    if (-not $account) { $account = if ($existingAccount) { $existingAccount } else { "NetworkService" } }
     $accountCredential = Get-ConfigString $Config "ServiceAccountPassword" ""
-    $normalized = $account.Trim()
+    $normalized = ConvertTo-WinSWServiceAccountName $account
+    $preserveExisting = $existingAccount -and $normalized.Equals($existingAccount, [StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($accountCredential)
+    if ($preserveExisting) {
+        return [pscustomobject]@{ Account = $normalized; Password = ""; NeedsPassword = $false; GrantAccess = ($normalized -ne "LocalSystem"); PreserveExisting = $true }
+    }
     $lower = $normalized.ToLowerInvariant()
 
     switch ($lower) {
         "localsystem" {
-            return [pscustomobject]@{ Account = "LocalSystem"; Password = ""; NeedsPassword = $false; GrantAccess = $false }
+            return [pscustomobject]@{ Account = "LocalSystem"; Password = ""; NeedsPassword = $false; GrantAccess = $false; PreserveExisting = $false }
         }
         "localservice" {
-            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true; PreserveExisting = $false }
         }
         "nt authority\localservice" {
-            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+            return [pscustomobject]@{ Account = "NT AUTHORITY\LocalService"; Password = ""; NeedsPassword = $false; GrantAccess = $true; PreserveExisting = $false }
         }
         "networkservice" {
-            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true; PreserveExisting = $false }
         }
         "nt authority\networkservice" {
-            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true }
+            return [pscustomobject]@{ Account = "NT AUTHORITY\NetworkService"; Password = ""; NeedsPassword = $false; GrantAccess = $true; PreserveExisting = $false }
         }
         default {
             $isGmsa = $normalized.EndsWith('$')
             if (-not $isGmsa -and [string]::IsNullOrWhiteSpace($accountCredential)) {
                 throw "ServiceAccount '$normalized' requires ServiceAccountPassword unless it is a built-in account or gMSA ending in '$'. Prefer a gMSA for production instead of storing passwords in config."
             }
-            return [pscustomobject]@{ Account = $normalized; Password = $accountCredential; NeedsPassword = (-not [string]::IsNullOrWhiteSpace($accountCredential)); GrantAccess = $true }
+            return [pscustomobject]@{ Account = $normalized; Password = $accountCredential; NeedsPassword = (-not [string]::IsNullOrWhiteSpace($accountCredential)); GrantAccess = $true; PreserveExisting = $false }
         }
     }
 }
-function Grant-ServiceAccountAccess([string]$Path, [string]$Account, [string]$Rights) {
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return }
-    $grant = "{0}:(OI)(CI){1}" -f $Account, $Rights
-    Invoke-NativeCommand "icacls.exe" @($Path, "/grant", $grant, "/T", "/C") "Grant $Rights access on $Path to $Account"
-}
-function Set-ServiceAccount($Config) {
-    $settings = Get-ServiceAccountSettings $Config
-    $args = @("config", $Config.AppName, "obj=", $settings.Account)
+function Set-ServiceAccount($Config, $Settings = $null) {
+    $settings = if ($Settings) { $Settings } else { Get-ServiceAccountSettings $Config }
+    if ($settings.PreserveExisting) { return }
+    Grant-WindowsServiceLogonRight -Account $settings.Account
     if ($settings.NeedsPassword) {
-        $args += @("password=", $settings.Password)
-    } elseif ($settings.Account.EndsWith('$')) {
+        # Keep passwords out of native process arguments and command logs.
+        $escapedName = ([string]$Config.AppName).Replace("'", "''")
+        $service = Get-CimInstance Win32_Service -Filter "Name='$escapedName'" -ErrorAction Stop
+        $changed = Invoke-CimMethod -InputObject $service -MethodName Change -Arguments @{ StartName = $settings.Account; StartPassword = $settings.Password } -ErrorAction Stop
+        if ([int]$changed.ReturnValue -ne 0) { throw "Set service account failed with Windows service return code $($changed.ReturnValue)." }
+        return
+    }
+    $args = @("config", $Config.AppName, "obj=", $settings.Account)
+    if ($settings.Account.EndsWith('$')) {
         $args += @("password=", "")
     }
 
     Invoke-NativeCommand "sc.exe" $args "Set service account"
 
-    if ($settings.GrantAccess) {
-        Grant-ServiceAccountAccess -Path $Config.ServiceDirectory -Account $settings.Account -Rights "RX"
-        Grant-ServiceAccountAccess -Path $Config.AppDirectory -Account $settings.Account -Rights "RX"
-        Grant-ServiceAccountAccess -Path $Config.LogDirectory -Account $settings.Account -Rights "M"
-    }
 }
 function Test-PostStartListener($Config) {
     if ($Config.Port -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
@@ -219,6 +236,10 @@ if ($config.ServiceManager -ne "winsw") {
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 . (Join-Path $repoRoot "scripts\windows\PostDeployHealth.ps1")
+. (Join-Path $repoRoot "scripts\windows\WindowsServiceSecurity.ps1")
+Assert-WindowsDeploymentConfigIdentity -Config $config
+. (Join-Path $repoRoot "scripts\windows\DeploymentTransaction.ps1")
+[void](Assert-WindowsServiceSecurityPaths -Config $config)
 $ensureWinswArgs = @{
     ConfigPath = $ConfigPath
     WinSWPath = $WinSWPath
@@ -228,9 +249,17 @@ if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $ensureWinswArgs.
 if ($SkipWinSWDownload) { $ensureWinswArgs.SkipDownload = $true }
 if ($WhatIfPreference) {
     & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @ensureWinswArgs -WhatIf
-} else {
-    & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @ensureWinswArgs
 }
+if ($PSCmdlet.ShouldProcess($config.AppName, "Deploy WinSW service with managed rollback")) {
+    $installerState = Start-ManagedServiceInstallerTransaction -Config $config -ExistingDeploymentLock $ExistingDeploymentLock -ExistingManagedDeploymentTransaction $ExistingManagedDeploymentTransaction
+    $installerFailure = $null
+    try {
+    # Snapshot/stop under the same lease before reading the identity or writing
+    # service binaries, secrets, permissions or runtime configuration.
+    $escapedServiceName = ([string]$config.AppName).Replace("'", "''")
+    $existingDefinition = Get-CimInstance Win32_Service -Filter "Name='$escapedServiceName'" -ErrorAction Stop
+    $accountSettings = Get-ServiceAccountSettings -Config $config -ExistingDefinition $existingDefinition
+    & (Join-Path $repoRoot "scripts\windows\Ensure-WinSW.ps1") @ensureWinswArgs
 
 $winswCandidate = Resolve-RepoPath -Path $WinSWPath -BasePath $repoRoot
 if (-not (Test-Path $winswCandidate)) {
@@ -241,17 +270,16 @@ if (-not (Test-Path $winswCandidate)) {
     throw "WinSW executable not found at '$winswCandidate'. Download WinSW separately and place it there, or pass -WinSWPath. No binaries are bundled in this repository."
 }
 
-New-Item -ItemType Directory -Force -Path $config.ServiceDirectory | Out-Null
-New-Item -ItemType Directory -Force -Path $config.LogDirectory | Out-Null
 $backupDirectory = Get-BackupDirectory $config
-New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
-
 $serviceExe = Join-Path $config.ServiceDirectory "$($config.AppName).exe"
 $serviceXml = Join-Path $config.ServiceDirectory "$($config.AppName).xml"
 Assert-ServicePathCompatible -Name $config.AppName -ExpectedWrapperPath $serviceExe
 $serviceExists = $null -ne (Get-Service -Name $config.AppName -ErrorAction SilentlyContinue)
 if ($serviceExists -and $PSCmdlet.ShouldProcess($config.AppName, "Stop existing Windows Service for update")) {
     [void](Stop-ExistingService -Name $config.AppName -WrapperPath $serviceExe)
+}
+if ($PSCmdlet.ShouldProcess($config.ServiceDirectory, "Protect service/code/cache directories and private backups")) {
+    Set-WindowsServiceFilesystemSecurity -Config $config -Account $accountSettings.Account
 }
 
 $envBlock = ConvertTo-EnvironmentBlock (ConvertTo-ServiceEnvironmentMap $config)
@@ -276,6 +304,7 @@ if ($PSCmdlet.ShouldProcess($serviceExe, "Update WinSW executable")) {
 }
 if ($PSCmdlet.ShouldProcess($serviceXml, "Write WinSW XML")) {
     Set-TextFileWithBackup -Path $serviceXml -Content $xml -BackupDirectory $backupDirectory
+    Set-WindowsProtectedFileSecurity -Path $serviceXml -Account $accountSettings.Account
 }
 
 if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
@@ -293,7 +322,7 @@ if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
     $thirdRestartDelayMs = $restartDelayMs * 5
 
     Invoke-NativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set service startup mode"
-    Set-ServiceAccount $config
+    Set-ServiceAccount $config $accountSettings
     Invoke-NativeCommand "sc.exe" @("failure", $config.AppName, "reset=", "86400", "actions=", "restart/$restartDelayMs/restart/$restartDelayMs/restart/$thirdRestartDelayMs") "Set service recovery actions"
     Invoke-NativeCommand "sc.exe" @("failureflag", $config.AppName, "1") "Enable service recovery actions"
     Invoke-NativeCommand $serviceExe @("start") "WinSW start"
@@ -307,3 +336,10 @@ if ($PSCmdlet.ShouldProcess($config.AppName, "Install Windows Service")) {
 Write-Host "Installed service: $($config.AppName)" -ForegroundColor Green
 Write-Host "Service XML: $serviceXml"
 Write-Host "Logs: $($config.LogDirectory)"
+    } catch {
+        $installerFailure = $_
+        throw
+    } finally {
+        Complete-ManagedServiceInstallerTransaction -Config $config -State $installerState -Failure $installerFailure
+    }
+}

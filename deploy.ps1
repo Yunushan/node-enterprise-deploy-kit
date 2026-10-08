@@ -20,7 +20,9 @@ param(
     [switch] $SkipWinSWDownload,
     [switch] $SkipAppPreparation,
     [switch] $SkipInstall,
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [object] $ExistingDeploymentLock,
+    [object] $ExistingManagedDeploymentTransaction
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,12 +42,25 @@ function Normalize-Name([string]$Value) {
 $deploymentMode = Normalize-Name ([string]$config.DeploymentMode)
 $isStaticIis = ($deploymentMode -eq "static-iis")
 . (Join-Path $repoRoot "scripts\windows\DeploymentLock.ps1")
+Assert-WindowsDeploymentConfigIdentity -Config $config
 . (Join-Path $repoRoot "scripts\windows\AppPackageLifecycle.ps1")
+. (Join-Path $repoRoot "scripts\windows\DeploymentTransaction.ps1")
 $deploymentLock = $null
+$ownsDeploymentLock = $false
 $packageTransactionStatePath = ""
 $preservePackageTransactionState = $false
+$managedTransaction = $null
+$ownsManagedTransaction = $false
+$preserveManagedTransaction = $false
 if (-not $WhatIfPreference) {
-    $deploymentLock = Enter-DeploymentLock -Config $config
+    Assert-ManagedDeploymentManagerTransition -Config $config
+    if ($ExistingDeploymentLock) {
+        Assert-ExistingDeploymentLock -Config $config -Lock $ExistingDeploymentLock
+        $deploymentLock = $ExistingDeploymentLock
+    } else {
+        $deploymentLock = Enter-DeploymentLock -Config $config
+        $ownsDeploymentLock = $true
+    }
 }
 
 try {
@@ -72,6 +87,17 @@ if (-not $SkipPreflight) {
     & (Join-Path $repoRoot "scripts\windows\Test-DeploymentPreflight.ps1") @preflightArgs
 }
 
+if (-not $WhatIfPreference) {
+    if ($ExistingManagedDeploymentTransaction) {
+        Assert-ManagedDeploymentTransaction -Config $config -Transaction $ExistingManagedDeploymentTransaction
+        $managedTransaction = $ExistingManagedDeploymentTransaction
+    } else {
+        $managedTransaction = Start-ManagedDeploymentTransaction -Config $config -Lock $deploymentLock
+        $ownsManagedTransaction = $true
+    }
+    Suspend-ManagedDeploymentServiceState -Config $config -Transaction $managedTransaction
+}
+
 if (-not $isStaticIis -and [string]$config.ServiceManager -eq "winsw") {
     $winswArgs = @{
         ConfigPath = $ConfigPath
@@ -92,9 +118,11 @@ if (-not $SkipPackageImport -and -not [string]::IsNullOrWhiteSpace($effectivePac
     $packageArgs = @{
         ConfigPath = $ConfigPath
         PackagePath = $effectivePackagePath
+        ExistingDeploymentLock = $deploymentLock
+        ExistingManagedDeploymentTransaction = $managedTransaction
     }
     $transactionRoot = if ($deploymentLock) { Split-Path -Parent $deploymentLock.Path } else { [System.IO.Path]::GetTempPath() }
-    $safeAppName = ([string]$config.AppName) -replace '[^A-Za-z0-9_.-]', '_'
+    $safeAppName = ([string]$config.AppName) -creplace '[^A-Za-z0-9_.-]', '_'
     $packageTransactionStatePath = Join-Path $transactionRoot "$safeAppName.$PID.package-transaction.json"
     $packageArgs.TransactionStatePath = $packageTransactionStatePath
     if (-not [string]::IsNullOrWhiteSpace($PackageExpectedSha256)) { $packageArgs.PackageExpectedSha256 = $PackageExpectedSha256 }
@@ -122,14 +150,16 @@ if ($isStaticIis) {
             $serviceArgs = @{
                 ConfigPath = $ConfigPath
                 WinSWPath = $WinSWPath
+                ExistingDeploymentLock = $deploymentLock
+                ExistingManagedDeploymentTransaction = $managedTransaction
             }
             if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadUrl)) { $serviceArgs.WinSWDownloadUrl = $WinSWDownloadUrl }
             if (-not [string]::IsNullOrWhiteSpace($WinSWDownloadSha256)) { $serviceArgs.WinSWDownloadSha256 = $WinSWDownloadSha256 }
             if ($SkipWinSWDownload) { $serviceArgs.SkipWinSWDownload = $true }
             & (Join-Path $repoRoot "scripts\windows\Install-NodeService.ps1") @serviceArgs
         }
-        "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }
-        "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }
+        "nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath -ExistingDeploymentLock $deploymentLock -ExistingManagedDeploymentTransaction $managedTransaction }
+        "pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath -ExistingDeploymentLock $deploymentLock -ExistingManagedDeploymentTransaction $managedTransaction }
         default  { throw "Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2." }
     }
 }
@@ -138,6 +168,11 @@ if (-not $SkipReverseProxy) {
     if ($isStaticIis) {
         $staticIisArgs = @{
             ConfigPath = $ConfigPath
+            ExistingDeploymentLock = $deploymentLock
+        }
+        if ($managedTransaction -and $managedTransaction.PSObject.Properties['IisLockLeasePath'] -and $managedTransaction.IisLockLeasePath) {
+            $staticIisArgs.IisDeploymentLockLeasePath = $managedTransaction.IisLockLeasePath
+            $staticIisArgs.IisDeploymentLockToken = $managedTransaction.IisLockToken
         }
         if ($WhatIfPreference) {
             & (Join-Path $repoRoot "scripts\windows\Install-IISStaticSite.ps1") @staticIisArgs -WhatIf
@@ -147,6 +182,11 @@ if (-not $SkipReverseProxy) {
     } else {
         $reverseProxyArgs = @{
             ConfigPath = $ConfigPath
+            ExistingDeploymentLock = $deploymentLock
+        }
+        if ($managedTransaction -and $managedTransaction.PSObject.Properties['IisLockLeasePath'] -and $managedTransaction.IisLockLeasePath) {
+            $reverseProxyArgs.IisDeploymentLockLeasePath = $managedTransaction.IisLockLeasePath
+            $reverseProxyArgs.IisDeploymentLockToken = $managedTransaction.IisLockToken
         }
         if ($WhatIfPreference) {
             & (Join-Path $repoRoot "scripts\windows\Install-ReverseProxy.ps1") @reverseProxyArgs -WhatIf
@@ -156,10 +196,8 @@ if (-not $SkipReverseProxy) {
     }
 }
 
-if (-not $SkipHealthCheck -and -not $isStaticIis) {
-    & (Join-Path $repoRoot "scripts\windows\Register-HealthCheckTask.ps1") -ConfigPath $ConfigPath
-} elseif (-not $SkipHealthCheck -and $isStaticIis) {
-    Write-Host "DeploymentMode=static_iis; skipping Node health-check task."
+if (-not $SkipHealthCheck) {
+    & (Join-Path $repoRoot "scripts\windows\Register-HealthCheckTask.ps1") -ConfigPath $ConfigPath -ExistingDeploymentLock $deploymentLock
 }
 
 Write-Host "Deployment finished for $($config.AppName)." -ForegroundColor Green
@@ -170,21 +208,41 @@ catch {
         (Test-Path -LiteralPath $packageTransactionStatePath -PathType Leaf)) {
         try {
             $transactionState = Get-Content -LiteralPath $packageTransactionStatePath -Raw | ConvertFrom-Json
-            Invoke-AppPackageDeploymentRollback -Config $config -TransactionState $transactionState
+            $recovery = if ($managedTransaction) {
+                {
+                    Restore-ManagedDeploymentTransaction -Config $config -Transaction $managedTransaction
+                    if ($ownsManagedTransaction) { Resume-ManagedDeploymentServiceState -Config $config -Transaction $managedTransaction }
+                }.GetNewClosure()
+            } else { $null }
+            Invoke-AppPackageDeploymentRollback -Config $config -TransactionState $transactionState -BeforeServiceRecovery $recovery
         }
         catch {
             $preservePackageTransactionState = $true
-            throw "Deployment failed: $($deploymentFailure.Exception.Message) Package rollback also failed: $($_.Exception.Message) Recovery state preserved at: $packageTransactionStatePath"
+            $preserveManagedTransaction = $true
+            throw "Deployment failed: $($deploymentFailure.Exception.Message) Rollback also failed: $($_.Exception.Message) Recovery state preserved at: $packageTransactionStatePath $($managedTransaction.Directory)"
+        }
+    } elseif ($managedTransaction -and $ownsManagedTransaction) {
+        try {
+            Restore-ManagedDeploymentTransaction -Config $config -Transaction $managedTransaction
+            Resume-ManagedDeploymentServiceState -Config $config -Transaction $managedTransaction
+        } catch {
+            $preserveManagedTransaction = $true
+            throw "Deployment failed: $($deploymentFailure.Exception.Message) Configuration rollback also failed: $($_.Exception.Message) Recovery state preserved at: $($managedTransaction.Directory)"
         }
     }
     throw $deploymentFailure
 }
 finally {
+    if ($ownsManagedTransaction -and $managedTransaction -and -not $preserveManagedTransaction) {
+        try { Complete-ManagedDeploymentTransaction -Config $config -Transaction $managedTransaction }
+        catch { Write-Warning "Could not remove managed recovery journal: $($managedTransaction.Directory)" }
+    }
     if (-not $preservePackageTransactionState -and
         -not [string]::IsNullOrWhiteSpace($packageTransactionStatePath) -and
         (Test-Path -LiteralPath $packageTransactionStatePath -PathType Leaf)) {
         try { Remove-Item -LiteralPath $packageTransactionStatePath -Force -ErrorAction Stop }
         catch { Write-Warning "Could not remove package transaction state: $packageTransactionStatePath" }
     }
-    Exit-DeploymentLock -Lock $deploymentLock
+    if ($managedTransaction -and $ownsManagedTransaction) { Release-ManagedIisDeploymentLock -Transaction $managedTransaction }
+    if ($ownsDeploymentLock) { Exit-DeploymentLock -Lock $deploymentLock }
 }

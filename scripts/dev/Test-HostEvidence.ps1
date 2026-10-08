@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir "NodeRuntimePolicy.ps1")
 
 function Write-Step {
   param([string]$Message)
@@ -416,7 +417,9 @@ function Get-HealthMonitorEvidence {
     TaskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists")
     TaskPrincipalChecked = Get-BooleanValue -Object $monitor -Names @("TaskPrincipalChecked", "taskPrincipalChecked")
     TaskRunsAsSystem = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsSystem", "taskRunsAsSystem")
+    TaskRunsAsPm2Owner = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsPm2Owner", "taskRunsAsPm2Owner")
     TaskRunLevelHighest = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelHighest", "taskRunLevelHighest")
+    TaskRunLevelLimited = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelLimited", "taskRunLevelLimited")
     TaskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked")
     TaskActionUsesSystemPowerShell = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesSystemPowerShell", "taskActionUsesSystemPowerShell")
     TaskActionUsesWorkingDirectory = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesWorkingDirectory", "taskActionUsesWorkingDirectory")
@@ -562,6 +565,9 @@ function Get-NextJsPlatformRuntimeIssues {
   }
   if ($minimumWindowsBuilds.ContainsKey($target)) {
     $minimumBuild = [int]$minimumWindowsBuilds[$target]
+    $windowsRuntime = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $windowsNodeMajor = Get-NodeRuntimeMajor -Version (Get-StringValue -Object $windowsRuntime -Names @("NodeVersion", "nodeVersion"))
+    if ($windowsNodeMajor -ge 24 -and $target -in @("windows-server-2012", "windows-server-2012-r2")) { $minimumBuild = 14393 }
     if ($null -eq $osBuild) {
       $issues.Add("$FileName does not prove a Windows build number for Next.js Node runtime platform support.") | Out-Null
     } elseif ($osBuild -lt $minimumBuild) {
@@ -594,12 +600,18 @@ function Get-NextJsPlatformRuntimeIssues {
     if ([string]::IsNullOrWhiteSpace($machine)) {
       $issues.Add("$FileName does not prove macOS machine architecture for Next.js Node runtime platform support.") | Out-Null
     }
-    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    $runtimeEvidence = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $reportedNodeVersion = Get-StringValue -Object $runtimeEvidence -Names @("NodeVersion", "nodeVersion")
+    $minimumMacosVersion = Get-NodeRuntimeMacosMinimumVersion -Version $reportedNodeVersion -Architecture $machine
+    if (-not $minimumMacosVersion) {
+      $issues.Add("$FileName does not prove a reviewed Node.js release and macOS architecture for runtime platform support.") | Out-Null
+      return @($issues)
+    }
     $macosOk = Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2
     if ($null -eq $macosOk) {
       $issues.Add("$FileName does not prove macOS product version for Next.js Node runtime platform support.") | Out-Null
     } elseif ($macosOk -ne $true) {
-      $issues.Add("$FileName has macOS version '$osVersion', below the Node.js 20.x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
+      $issues.Add("$FileName has macOS version '$osVersion', below the Node.js $(Get-NodeRuntimeMajor -Version $reportedNodeVersion).x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
     }
   }
 
@@ -1097,7 +1109,7 @@ function New-SelfTestEvidence {
           Status = "ok"
           AppFramework = "nextjs"
           Mode = "standalone"
-          NodeVersion = "v20.11.1"
+          NodeVersion = "v22.0.0"
           MinimumNodeVersion = "20.9.0"
           NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
@@ -1236,7 +1248,7 @@ function New-SelfTestEvidence {
           Status = "ok"
           AppFramework = "nextjs"
           Mode = "standalone"
-          NodeVersion = "v20.11.1"
+          NodeVersion = "v22.0.0"
           MinimumNodeVersion = "20.9.0"
           NodeVersionSatisfied = $true
           NextVersion = "14.2.3"
@@ -1304,7 +1316,7 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
-          nodeVersion = "v20.11.1"
+          nodeVersion = "v22.0.0"
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
@@ -1369,7 +1381,7 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
-          nodeVersion = "v20.11.1"
+          nodeVersion = "v22.0.0"
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
@@ -1429,7 +1441,7 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
-          nodeVersion = "v20.11.1"
+          nodeVersion = "v22.0.0"
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
@@ -1486,7 +1498,7 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
-          nodeVersion = "v20.11.1"
+          nodeVersion = "v22.0.0"
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
@@ -1543,7 +1555,7 @@ function New-SelfTestEvidence {
           status = "ok"
           appFramework = "nextjs"
           mode = "standalone"
-          nodeVersion = "v20.11.1"
+          nodeVersion = "v22.0.0"
           minimumNodeVersion = "20.9.0"
           nodeVersionSatisfied = $true
           nextVersion = "14.2.3"
@@ -1792,8 +1804,9 @@ function Test-EvidenceFile {
     if ($serviceEvidence.DefinitionExists -ne $true) {
       $Issues.Add("$displayFile does not prove the managed service definition exists.") | Out-Null
     }
-    if ($serviceManager -eq "winsw" -and $serviceEvidence.ServiceWrapperMatchesConfig -ne $true) {
-      $Issues.Add("$displayFile does not prove the WinSW service wrapper path matches the current ServiceDirectory/AppName.") | Out-Null
+    if ($serviceManager -in @("winsw", "nssm") -and $serviceEvidence.ServiceWrapperMatchesConfig -ne $true) {
+      $wrapperLabel = if ($serviceManager -eq 'winsw') { 'WinSW' } else { 'NSSM' }
+      $Issues.Add("$displayFile does not prove the $wrapperLabel service wrapper path matches the current ServiceDirectory/AppName.") | Out-Null
     }
     if ($serviceEvidence.NodeExeMatchesConfig -ne $true) {
       $Issues.Add("$displayFile does not prove the managed service Node executable matches the current config.") | Out-Null
@@ -1832,7 +1845,7 @@ function Test-EvidenceFile {
   if ($healthEvidence.Status -ne "ok") {
     $Issues.Add("$displayFile does not prove HTTP health status ok (status: $($healthEvidence.Status)).") | Out-Null
   }
-  if ($null -eq $healthEvidence.StatusCode -or $healthEvidence.StatusCode -lt 200 -or $healthEvidence.StatusCode -ge 400) {
+  if ($null -eq $healthEvidence.StatusCode -or $healthEvidence.StatusCode -lt 200 -or $healthEvidence.StatusCode -ge 300) {
     $Issues.Add("$displayFile does not prove a successful HTTP health status code.") | Out-Null
   }
   if ($uptimeEvidence.ServiceStartKnown -ne $true) {
@@ -1896,10 +1909,14 @@ function Test-EvidenceFile {
     if ($healthMonitorEvidence.TaskPrincipalChecked -ne $true) {
       $Issues.Add("$displayFile does not prove the Windows health check scheduled task principal was checked.") | Out-Null
     }
-    if ($healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
+    if ($serviceManager -eq 'pm2' -and $healthMonitorEvidence.TaskRunsAsPm2Owner -ne $true) {
+      $Issues.Add("$displayFile does not prove the Windows PM2 health check task runs as the deployment owner.") | Out-Null
+    } elseif ($serviceManager -ne 'pm2' -and $healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
       $Issues.Add("$displayFile does not prove the Windows health check scheduled task runs as SYSTEM.") | Out-Null
     }
-    if ($healthMonitorEvidence.TaskRunLevelHighest -ne $true) {
+    if ($serviceManager -eq 'pm2' -and ($healthMonitorEvidence.TaskRunLevelLimited -ne $true -or $healthMonitorEvidence.TaskRunLevelHighest -ne $false)) {
+      $Issues.Add("$displayFile does not prove the Windows PM2 health check task uses the Limited run level without elevation.") | Out-Null
+    } elseif ($serviceManager -ne 'pm2' -and $healthMonitorEvidence.TaskRunLevelHighest -ne $true) {
       $Issues.Add("$displayFile does not prove the Windows health check scheduled task uses the highest run level.") | Out-Null
     }
     if ($healthMonitorEvidence.TaskActionChecked -ne $true) {
@@ -2034,7 +2051,7 @@ function Test-EvidenceFile {
     if ((-not $serviceOnlyReverseProxy) -and $reverseProxyEvidence.Status -ne "ok") {
       $Issues.Add("$displayFile does not prove a successful reverse-proxy health probe (status: $($reverseProxyEvidence.Status)).") | Out-Null
     }
-    if ((-not $serviceOnlyReverseProxy) -and ($null -eq $reverseProxyEvidence.StatusCode -or $reverseProxyEvidence.StatusCode -lt 200 -or $reverseProxyEvidence.StatusCode -ge 400)) {
+    if ((-not $serviceOnlyReverseProxy) -and ($null -eq $reverseProxyEvidence.StatusCode -or $reverseProxyEvidence.StatusCode -lt 200 -or $reverseProxyEvidence.StatusCode -ge 300)) {
       $Issues.Add("$displayFile does not prove a successful reverse-proxy HTTP status code.") | Out-Null
     }
     if ($normalizedProxyMode -eq "iis") {
@@ -2143,6 +2160,28 @@ if ($SelfTest) {
   }
 
   $nonJsonEvidenceFile = Join-Path $EvidencePath "not-json.txt"
+  # A claimed Healthy verdict cannot turn a redirect into successful health evidence.
+  foreach ($redirectStatusCode in @(301, 302, 307, 399)) {
+    foreach ($probeName in @('health', 'reverseProxy')) {
+      $redirectEvidenceFile = Join-Path (Split-Path $EvidencePath -Parent) ("host-evidence-negative-redirect-$probeName-$redirectStatusCode-$([Guid]::NewGuid().ToString('N')).json")
+      $redirectEvidence = Get-Content -LiteralPath (Join-Path $EvidencePath 'windows-server-2022.json') -Raw | ConvertFrom-Json
+      $redirectEvidence.$probeName.statusCode = $redirectStatusCode
+      $redirectEvidence | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $redirectEvidenceFile -Encoding UTF8
+      $expectedMessage = if ($probeName -eq 'health') { 'successful HTTP health status code' } else { 'successful reverse-proxy HTTP status code' }
+      Invoke-ExpectHostEvidenceFailure -ExpectedMessage $expectedMessage -Parameters @{
+        EvidencePath = $redirectEvidenceFile
+        RequireNextJs = $true
+        RequireReverseProxy = $true
+        RequireDeploymentIdentity = $true
+        RequireCollectorSha256 = $true
+        RequireMinimumUptimeHours = 72
+        ExpectedTargetId = 'windows-server-2022'
+        ExpectedNextJsMode = 'standalone'
+        ExpectedServiceManager = 'winsw'
+        ExpectedReverseProxy = 'iis'
+      }
+    }
+  }
   "not json" | Set-Content -Path $nonJsonEvidenceFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "Host evidence file must be a JSON file" -Parameters @{
     EvidencePath = $nonJsonEvidenceFile
@@ -2256,7 +2295,7 @@ if ($SelfTest) {
   $oldMacosRuntimeEvidence.platform.machine = "arm64"
   $oldMacosRuntimeEvidence.platform.osVersionId = "10.15"
   $oldMacosRuntimeEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $oldMacosRuntimeFile -Encoding UTF8
-  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "below the Node.js 20.x floor" -Parameters @{
+  Invoke-ExpectHostEvidenceFailure -ExpectedMessage "below the Node.js 22.x floor" -Parameters @{
     EvidencePath = $oldMacosRuntimeEvidencePath
     RequireNextJs = $true
     RequireReverseProxy = $true
@@ -2358,7 +2397,7 @@ if ($SelfTest) {
   New-SelfTestEvidence -Path $unsafeVersionEvidencePath
   $unsafeVersionFile = Join-Path $unsafeVersionEvidencePath "ubuntu.json"
   $unsafeVersionEvidence = Get-Content -LiteralPath $unsafeVersionFile -Raw | ConvertFrom-Json
-  $unsafeVersionEvidence.nextJsRuntime.nodeVersion = "v20.11.1 C:\unsafe\path"
+  $unsafeVersionEvidence.nextJsRuntime.nodeVersion = "v22.0.0 C:\unsafe\path"
   $unsafeVersionEvidence | ConvertTo-Json -Depth 8 | Set-Content -Path $unsafeVersionFile -Encoding UTF8
   Invoke-ExpectHostEvidenceFailure -ExpectedMessage "unsafe Node.js runtime version" -Parameters @{
     EvidencePath = $unsafeVersionEvidencePath

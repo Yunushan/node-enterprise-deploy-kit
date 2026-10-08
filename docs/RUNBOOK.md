@@ -35,6 +35,22 @@ Restart-Service <AppName>
 Get-EventLog Application -Newest 50
 ```
 
+Windows PM2 fallback commands must run as the daemon's unelevated owner. The
+PM2 app name must not be `all`, begin with `-`, or be a JavaScript numeric
+selector such as `123`, `1e2`, `0x10` or `Infinity`; PM2 can apply these to other
+processes. A name such as `1api` is supported. Windows app names also reject
+trailing dots and reserved device names (including extensions), so lock and
+monitor directories identify the same application on both PowerShell editions.
+The kit checks the caller's Windows token before each command, including status
+queries that could otherwise start a daemon. An existing `PM2Home\pm2.pid`
+must identify a readable, unelevated process owned by that account; a stale,
+unknown-owner or elevated daemon fails closed. Stop an old elevated daemon and
+migrate it to a dedicated unprivileged owner before retrying. Use WinSW/NSSM
+for the administrative `install.ps1`/`deploy.ps1` workflow. PM2's Limited
+monitor does not grant access to an elevated daemon's IPC. Protected monitor
+registration/removal remains an administrator task; PM2 process uninstall runs
+separately as its unelevated owner without `-RemoveHealthCheckTask`.
+
 ## Linux Commands
 
 ```bash
@@ -61,15 +77,73 @@ Reverse proxy checks:
 nginx -t
 apache2ctl configtest || httpd -t
 haproxy -c -f /etc/haproxy/haproxy.cfg
-traefik check --configFile=/etc/traefik/traefik.yml
+node scripts/linux/validate-traefik-config.mjs "$(command -v traefik)" \
+  /etc/traefik/dynamic/<app-name>.yml web <app-name>-router <app-name>-service
 ```
+
+Use the configured Traefik entrypoint, router and service names in that command.
+It validates the managed dynamic route with a disposable loopback Traefik
+instance; verify the production proxy response separately.
 
 Linux diagnostics are summary-only by default. For deep incident response, run
 `sudo bash scripts/linux/diagnose-node-app.sh config/linux/app.env --include-raw-details`
 and treat the generated file as sensitive because it may include logs, process
 arguments, and HTTP response bodies.
 
+Windows diagnostics also omit raw event messages, service command lines, Node
+arguments, HTTP exception text, and URL credentials/query values by default.
+Use `Diagnose-NodeApp.ps1 -IncludeRawDetails` only when those sensitive incident
+details are needed, and keep the resulting file private. Default diagnostics
+still contain operational host names and paths; review them before sharing.
+Default Windows reports are private under
+`%ProgramData%\node-enterprise-deploy-kit\healthchecks\<app>\diagnostics` and
+require administrative access. `-OutputDirectory` selects a private incident
+directory owned by the caller. Reparse paths are rejected. Reports have unique
+names and are published as `.txt` only when complete; retention preserves open
+reports and active `.tmp` files. A Limited PM2 monitor cannot prune administrator
+reports; administrators must clean those reports under the configured retention
+policy.
+
 ## Emergency Recovery
+
+### Interrupted Deployment or Retained Recovery Journal
+
+A caught deployment error restores the managed files and service state. A
+deployment process termination, power loss, or machine crash can interrupt that
+restoration. The kit does not automatically replay a journal after a reboot or
+from a new process. Application-process restart is a separate service-manager
+feature and does not prove deployment-process crash recovery.
+
+If a deployment leaves a managed journal or package transaction state, keep its
+service and health task stopped. New deployments and health monitoring refuse
+to proceed while this app's recovery state remains. Do not delete the lock
+directory, journal, or backup to bypass that refusal.
+
+1. Preserve a private copy of the journal, original config, and recorded backup.
+   They can contain environment values and other secrets.
+2. Confirm no deployment is running. Inspect the recorded app path, service
+   definition, monitor task, proxy configuration, and ACL snapshots; a partially
+   written package state may require inspecting the timestamped app backup.
+   For IIS recovery, pause all deployments on that host and hold the global IIS
+   configuration mutex while restoring ARR or global-header values. Managed
+   recovery journals block their own app; another app may have deployed since
+   the interruption. Inspect those later changes before applying an older
+   global snapshot. Direct IIS installer journals block new IIS installers
+   until the retained state has been recovered.
+3. With the service stopped, restore the previous application directory and
+   managed configuration, permissions, service identity and startup policy,
+   proxy configuration, and scheduler definition. Use the recorded pre-change
+   values rather than the replacement configuration. Windows custom-account
+   and Password-logon task restoration require the previous credentials.
+4. Start the previous service only if it was previously running. Verify its
+   previous HTTP endpoint and proxy route, then collect a clean status report.
+5. Archive the recovered state outside the deployment lock directory, retain it
+   with the incident record, and enable the restored monitor. A new deployment
+   can then acquire the app lock normally.
+
+The existing rollback commands below restore specific configuration backups;
+they are not a complete restart-safe journal recovery command. Rehearse manual
+recovery on the target host before making a crash-recovery support claim.
 
 If the application is unresponsive:
 
@@ -111,7 +185,7 @@ raw logs, raw host identity, and full filesystem paths.
 
 ```bash
 sudo cat /var/lib/node-enterprise-deploy-kit/<app-name>/healthcheck.state
-sudo grep -Ec ' OK |FAILED|RESTARTING_SERVICE|RESTART_SUPPRESSED' /var/log/<app-name>/healthcheck.log
+sudo grep -Ec ' OK |FAILED|RESTARTING_SERVICE|RESTART_SUPPRESSED' /var/lib/node-enterprise-deploy-kit/<app-name>/logs/healthcheck.log
 ```
 
 For Linux, macOS, and BSD service modes, treat the deployment as healthy only

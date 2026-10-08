@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir 'SecretPatterns.ps1')
 
 function Write-Step {
   param([string]$Message)
@@ -243,10 +244,6 @@ function Test-LinuxContainerSmokeSelfTest {
 
 function Test-NoObviousSecrets {
   Write-Step "Obvious secret patterns"
-  $patterns = @(
-    "(?i)(password|secret|token|apikey|api_key)\s*[:=]\s*['""]?[A-Za-z0-9_\-]{12,}",
-    "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
-  )
   $ignoreDirs = @(".git", ".tmp", "node_modules", ".next", "dist", "build", "evidence", "evidence-downloads", "release-evidence")
   $binaryExt = @(".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe")
   $failed = $false
@@ -293,12 +290,9 @@ function Test-NoObviousSecrets {
     } |
     ForEach-Object {
       $text = Get-Content -Path $_.FullName -Raw -ErrorAction SilentlyContinue
-      foreach ($pattern in $patterns) {
-        if ($text -match $pattern) {
-          Write-Host "Potential secret pattern in $($_.RelativePath)"
+      foreach ($finding in @(Get-ObviousSecretFindings -Text ([string]$text) -RelativePath $_.RelativePath)) {
+          Write-Host "Potential secret pattern in $($_.RelativePath):$($finding.Line) ($($finding.Rule))"
           $failed = $true
-          break
-        }
       }
     }
 
@@ -558,6 +552,34 @@ Test-GeneratedPrivateOutputNotTracked
 Test-HostEvidenceSelfTest
 Test-SupportMatrix
 Test-WindowsServiceManagers
+& (Join-Path $ScriptDir "Test-WindowsProductionSafety.ps1")
+& (Join-Path $ScriptDir "Test-WindowsServiceSecurity.ps1")
+& (Join-Path $ScriptDir "Test-WindowsPm2ExecutionPolicy.ps1")
+& (Join-Path $ScriptDir "Test-WindowsDeploymentIdentity.ps1")
+& (Join-Path $ScriptDir "Test-SecretPatterns.ps1")
+& (Join-Path $ScriptDir "Test-HealthMonitorCoordination.ps1")
+& (Join-Path $ScriptDir "Test-HealthTaskRegistration.ps1")
+& (Join-Path $ScriptDir "Test-WindowsRuntimeStatus.ps1")
+& (Join-Path $ScriptDir "Test-StatusHttpHealth.ps1")
+& (Join-Path $ScriptDir "Test-WindowsInstallerTransactions.ps1")
+& (Join-Path $ScriptDir "Test-WindowsDiagnosticPrivacy.ps1")
+& (Join-Path $ScriptDir "Test-DeploymentTransactions.ps1")
+& (Join-Path $ScriptDir "Test-NodeRuntimePolicy.ps1")
+& node (Join-Path $ScriptDir "Test-IntegrationDependencies.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Integration dependency checks failed." }
+if (-not $SkipShellSyntax) {
+  $bash = Resolve-BashPath
+  & $bash "-lc" "bash scripts/dev/test-deployment-transactions.sh"
+  if ($LASTEXITCODE -ne 0) { throw "Unix deployment transaction checks failed." }
+  & $bash "-lc" "bash scripts/dev/test-unix-orchestrator-transactions.sh"
+  if ($LASTEXITCODE -ne 0) { throw "Unix orchestrator recovery checks failed." }
+  & $bash "-lc" "bash scripts/dev/test-unix-hardening.sh"
+  if ($LASTEXITCODE -ne 0) { throw "Unix runtime hardening checks failed." }
+  & $bash "-lc" "bash scripts/dev/test-package-write-ahead.sh"
+  if ($LASTEXITCODE -ne 0) { throw "Unix package write-ahead recovery checks failed." }
+  & $bash "-lc" "bash scripts/dev/test-unix-uninstall-safety.sh"
+  if ($LASTEXITCODE -ne 0) { throw "Unix uninstall safety checks failed." }
+}
 Test-HostEvidenceWorkflow
 Test-SupportEvidenceBundleWorkflow
 Test-ReleaseEvidenceWorkflow

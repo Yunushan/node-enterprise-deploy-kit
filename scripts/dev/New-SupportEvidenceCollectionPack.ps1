@@ -152,9 +152,9 @@ function New-CollectionManifestFiles {
     Where-Object { $_.workflowDispatchSupported -ne $true } |
     ForEach-Object { ConvertTo-ManifestRow -Entry $_ -ArtifactPath $ArtifactPath })
 
-  $workflowRows | ConvertTo-Json -Depth 6 | Set-Content -Path $WorkflowArtifactsJson -Encoding UTF8
+  ConvertTo-Json -InputObject @($workflowRows) -Depth 6 | Set-Content -Path $WorkflowArtifactsJson -Encoding UTF8
   $workflowRows | Export-Csv -Path $WorkflowArtifactsCsv -NoTypeInformation -Encoding UTF8
-  $localOnlyRows | ConvertTo-Json -Depth 6 | Set-Content -Path $LocalOnlyJson -Encoding UTF8
+  ConvertTo-Json -InputObject @($localOnlyRows) -Depth 6 | Set-Content -Path $LocalOnlyJson -Encoding UTF8
   $localOnlyRows | Export-Csv -Path $LocalOnlyCsv -NoTypeInformation -Encoding UTF8
 }
 
@@ -954,6 +954,29 @@ function Invoke-SelfTest {
     -PassThru `
     -Quiet
 
+  # Pipeline serialization used to turn a singleton into an object and an
+  # empty array into an empty file on Windows PowerShell 5.1.
+  $shapeRoot = Join-Path $selfTestRoot "manifest-json-shapes"
+  New-Item -ItemType Directory -Path $shapeRoot -Force | Out-Null
+  $shapePlan = Get-Content -LiteralPath $result.planJson -Raw | ConvertFrom-Json
+  $shapeWorkflowEntry = @((Get-PlanEntries -Plan $shapePlan) | Where-Object { $_.workflowDispatchSupported -eq $true } | Select-Object -First 1)[0]
+  foreach ($shapeCase in @("singleton", "empty")) {
+    $shapeArguments = @{
+      Plan = [pscustomobject]@{ strictEvidence = $(if ($shapeCase -eq "singleton") { @($shapeWorkflowEntry) } else { @() }); serviceOnlyEvidence = @(); fallbackEvidence = @() }
+      ArtifactPath = ".\evidence-downloads"
+      WorkflowArtifactsJson = Join-Path $shapeRoot "$shapeCase-workflow.json"
+      WorkflowArtifactsCsv = Join-Path $shapeRoot "$shapeCase-workflow.csv"
+      LocalOnlyJson = Join-Path $shapeRoot "$shapeCase-local.json"
+      LocalOnlyCsv = Join-Path $shapeRoot "$shapeCase-local.csv"
+    }
+    New-CollectionManifestFiles @shapeArguments
+    foreach ($shapePath in @($shapeArguments.WorkflowArtifactsJson, $shapeArguments.LocalOnlyJson)) {
+      $shapeJson = (Get-Content -LiteralPath $shapePath -Raw).Trim()
+      if (-not $shapeJson.StartsWith("[") -or -not $shapeJson.EndsWith("]")) { throw "Collection manifest must remain a JSON array for $shapeCase rows." }
+      $null = $shapeJson | ConvertFrom-Json
+    }
+  }
+
   foreach ($path in @(
       $result.planJson,
       $result.planMarkdown,
@@ -1057,14 +1080,14 @@ function Invoke-SelfTest {
       throw "Support evidence collection pack self-test failed: README is missing '$expected'."
     }
   }
-  $workflowArtifactManifest = @(Get-Content -LiteralPath $result.workflowArtifactsJson -Raw | ConvertFrom-Json)
+  $workflowArtifactManifest = @((Get-Content -LiteralPath $result.workflowArtifactsJson -Raw | ConvertFrom-Json))
   if ($workflowArtifactManifest.Count -lt 1 -or @($workflowArtifactManifest | Where-Object { [string]$_.evidenceName -eq "windows-11-standalone-winsw-iis" }).Count -ne 1) {
     throw "Support evidence collection pack self-test failed: workflow artifact manifest is missing windows-11 standalone WinSW IIS evidence."
   }
   if (@($workflowArtifactManifest | Where-Object { [string]$_.targetId -eq "freebsd" }).Count -ne 0) {
     throw "Support evidence collection pack self-test failed: workflow artifact manifest included local-command-only FreeBSD rows."
   }
-  $localOnlyManifest = @(Get-Content -LiteralPath $result.localOnlyJson -Raw | ConvertFrom-Json)
+  $localOnlyManifest = @((Get-Content -LiteralPath $result.localOnlyJson -Raw | ConvertFrom-Json))
   if ($localOnlyManifest.Count -lt 1 -or @($localOnlyManifest | Where-Object { [string]$_.targetId -eq "freebsd" }).Count -lt 1) {
     throw "Support evidence collection pack self-test failed: local-only manifest is missing FreeBSD rows."
   }

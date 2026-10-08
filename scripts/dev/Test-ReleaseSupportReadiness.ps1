@@ -31,6 +31,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir "NodeRuntimePolicy.ps1")
 
 if ([string]::IsNullOrWhiteSpace($MatrixPath)) {
   $MatrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
@@ -1498,6 +1499,14 @@ try {
   }
   if ($RequireRuntimeVersions -and ($runtimeVersionMissingCount -gt 0 -or $runtimeVersionUnsafeCount -gt 0)) {
     throw "Runtime version evidence is required for -RequireRuntimeVersions. Missing Node.js, minimum Node.js, compatible Node.js, or Next.js version evidence on $runtimeVersionMissingCount evidence file(s); unsafe runtime version text on $runtimeVersionUnsafeCount evidence file(s)."
+  }
+  if ($StrictCiRelease) {
+    foreach ($runtimeRow in @($manifest.files)) {
+      $runtimeVersion = Get-StringValue -Object $runtimeRow -Names @("nodeVersion")
+      if (-not (Test-SupportedNodeRuntimeVersion -Version $runtimeVersion)) {
+        throw "Strict release evidence requires a reviewed Node.js release line that has not reached end of life; '$runtimeVersion' is not currently supported."
+      }
+    }
   }
   if ($StrictCiRelease -and $runtimeSupportMetadataMissingCount -gt 0) {
     throw "Runtime support metadata is required for -StrictCiRelease. Missing runtime support metadata on $runtimeSupportMetadataMissingCount evidence file(s)."

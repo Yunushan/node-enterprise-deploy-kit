@@ -141,7 +141,7 @@ bash scripts/dev/test-linux-container-smoke.sh --platform ubuntu --real-nextjs
 
 Hosted CI also exercises both modes through temporary native services: systemd
 on Ubuntu, System V in an Ubuntu container, OpenRC in an Alpine container, WinSW
-on Windows Server 2022/2025, and launchd on macOS 15. Windows Server also runs
+and NSSM on Windows Server 2022/2025, and launchd on macOS 15. Windows Server also runs
 WinSW and NSSM behind an IIS URL Rewrite plus ARR reverse proxy. Each job
 installs the service, verifies direct and proxied HTTP responses with forwarded
 headers, then removes its service and IIS site. macOS also verifies a launchd
@@ -150,6 +150,13 @@ Each managed-runtime check also confirms that Next.js receives forwarded HTTPS
 protocol and port headers.
 The systemd test uses a service-visible `/srv` temporary root because the
 production unit enables `PrivateTmp=true`.
+Native Unix CI uses `scripts/dev/run-real-nextjs-integration.sh` on disposable
+hosts: package import and service installation need root-owned recovery and
+control paths, including in direct-runtime checks. The entrypoint preserves
+the selected Node runtime and result metadata across elevation; packaging and
+import also receive the exact Node executable so ABI checks stay enabled.
+Windows service fixtures use NetworkService; macOS launchd fixtures use the
+invoking runner account. These checks do not establish full platform support.
 Additional Ubuntu container jobs render the Apache vhost, Nginx site, HAProxy,
 and Traefik templates, start each proxy, and verify real Next.js responses
 through them, including `X-Forwarded-Proto` and `X-Forwarded-Port` values.
@@ -1087,7 +1094,7 @@ support claim.
 |---|---|---|---|
 | Windows 10 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
 | Windows 11 | WinSW / NSSM; PM2 fallback | IIS optional | Good for testing or workstation services; strict support claims use OS service evidence |
-| Windows Server 2012 / 2012 R2 | WinSW / NSSM | IIS | Legacy target; Node.js 20.x runtime support is Experimental, not production-recommended |
+| Windows Server 2012 / 2012 R2 | WinSW / NSSM | IIS optional | Legacy target; Node.js 22 support is Experimental; Node.js 24/26 require Server 2016 or newer |
 | Windows Server 2016 | WinSW / NSSM | IIS | Supported deployment target |
 | Windows Server 2019 | WinSW / NSSM | IIS | Recommended minimum for many production environments |
 | Windows Server 2022 | WinSW / NSSM | IIS | Recommended production target |
@@ -1105,7 +1112,7 @@ support claim.
 | macOS | Apple macOS | launchd | Nginx / Apache / HAProxy / Traefik |
 
 For production Next.js targets, prefer Windows Server 2016 or newer, GNU/Linux
-hosts that meet Node.js 20.x kernel/glibc floors, or supported macOS versions.
+hosts that meet the maintained Node.js 22/24/26 kernel/glibc floors, or supported macOS versions.
 Alpine/musl, FreeBSD, OpenBSD, and NetBSD remain real-host evidence targets, but
 the example matrix marks them experimental or community-package Node runtime
 targets instead of production-recommended rows.

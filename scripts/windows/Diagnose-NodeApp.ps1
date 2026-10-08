@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
-    [string] $OutputDirectory = ""
+    [string] $OutputDirectory = "",
+    [switch] $IncludeRawDetails
 )
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -15,10 +16,67 @@ if (-not (Test-Path $ConfigPath)) {
     throw "Config not found: $ConfigPath"
 }
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $config.LogDirectory "diagnostics" }
-New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$out = Join-Path $OutputDirectory "diagnostics-$stamp.txt"
+. (Join-Path $repoRoot 'scripts/windows/WindowsServiceSecurity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
+function Get-WindowsDiagnosticDirectory {
+    param([string]$AppName, [string]$OutputDirectory = '', [string]$ProgramDataRoot = '')
+    Assert-WindowsDeploymentAppName -AppName $AppName
+    if (-not [string]::IsNullOrWhiteSpace($OutputDirectory)) { return Get-WindowsServiceSecurityFullPath -Path ([IO.Path]::GetFullPath($OutputDirectory)) }
+    if (-not $ProgramDataRoot) { $ProgramDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData) }
+    return Get-WindowsServiceSecurityFullPath -Path (Join-Path $ProgramDataRoot "node-enterprise-deploy-kit\healthchecks\$AppName\diagnostics")
+}
+function Assert-WindowsDiagnosticControlDirectory {
+    param([string]$Path)
+    Assert-WindowsServiceSecurityNoReparse -Path $Path
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "Diagnostic control directory is missing: $Path" }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $trusted = @('S-1-5-18', 'S-1-5-32-544')
+    if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { throw 'Default diagnostic parents must be protected and owned by SYSTEM or Administrators; register monitoring or use a private explicit OutputDirectory.' }
+    $unsafe = [Security.AccessControl.FileSystemRights]::CreateDirectories -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if ($rule.IdentityReference.Value -notin $trusted -and ($rule.FileSystemRights -band $unsafe) -ne 0) { throw 'Default diagnostic parents allow untrusted control-directory changes; repair their ACLs before collecting diagnostics.' }
+    }
+}
+function Initialize-WindowsDiagnosticOutput {
+    param($Config, [string]$OutputDirectory = '', [string]$ProgramDataRoot = '')
+    $managed = [string]::IsNullOrWhiteSpace($OutputDirectory)
+    $directory = Get-WindowsDiagnosticDirectory -AppName ([string]$Config.AppName) -OutputDirectory $OutputDirectory -ProgramDataRoot $ProgramDataRoot
+    Assert-WindowsServiceSecurityNoReparse -Path $directory
+    $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if ($managed) {
+        $appRoot = Split-Path -Parent $directory; $healthRoot = Split-Path -Parent $appRoot; $kitRoot = Split-Path -Parent $healthRoot
+        # Preserve the existing PM2 owner's narrow monitor data-file rights.
+        # New parents are private; existing managed parents must already prevent
+        # runtime identities from replacing a diagnostic directory with a link.
+        foreach ($parent in @($kitRoot, $healthRoot, $appRoot)) {
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Path $parent -ErrorAction Stop | Out-Null
+                Set-WindowsProtectedPathSecurity -Path $parent
+            }
+            Assert-WindowsDiagnosticControlDirectory -Path $parent
+        }
+    }
+    if (-not (Test-Path -LiteralPath $directory)) { New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null }
+    Assert-WindowsServiceSecurityNoReparse -Path $directory
+    if ($managed) { Set-WindowsProtectedPathSecurity -Path $directory }
+    else { Set-WindowsProtectedPathSecurity -Path $directory -Account $account -RuntimeRights ([Security.AccessControl.FileSystemRights]::FullControl) -OwnerAccount $account }
+    $name = 'diagnostics-{0}.{1}.{2}' -f [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'), $PID, [guid]::NewGuid().ToString('N')
+    $temporary = Join-Path $directory ($name + '.tmp')
+    $final = Join-Path $directory ($name + '.txt')
+    Assert-WindowsServiceSecurityNoReparse -Path $temporary
+    # CreateNew never follows or overwrites a pre-existing output filename.
+    $empty = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $empty.Dispose()
+    if ($managed) { Set-WindowsProtectedFileSecurity -Path $temporary }
+    else { Set-WindowsProtectedPathSecurity -Path $temporary -Account $account -RuntimeRights ([Security.AccessControl.FileSystemRights]::FullControl) -OwnerAccount $account }
+    return [pscustomobject]@{ Directory=$directory; TemporaryPath=$temporary; FinalPath=$final; ManagedDefault=$managed }
+}
+$diagnosticOutput = Initialize-WindowsDiagnosticOutput -Config $config -OutputDirectory $OutputDirectory
+$OutputDirectory = $diagnosticOutput.Directory
+$out = $diagnosticOutput.TemporaryPath
+$diagnosticCompleted = $false
+try {
 $serviceName = [string]$config.AppName
 $escapedServiceName = $serviceName.Replace("'", "''")
 $configuredPort = [int]$config.Port
@@ -34,7 +92,7 @@ function Format-Uptime($StartTime) {
 }
 function Format-OptionalUtc($Value) {
     if (-not $Value) { return "" }
-    try { return ([DateTime]::Parse([string]$Value).ToLocalTime()).ToString("yyyy-MM-dd HH:mm:ss") } catch { return [string]$Value }
+    try { return ([DateTime]::Parse([string]$Value).ToLocalTime()).ToString("yyyy-MM-dd HH:mm:ss") } catch { return '[invalid timestamp]' }
 }
 function Get-ChildProcessTree {
     param([int] $ParentProcessId)
@@ -217,12 +275,12 @@ function Add-NextJsRuntimeLayout {
         Mode = $mode
         AppDirectoryExists = (Test-Path -LiteralPath $appDirectory -PathType Container)
         RuntimeRoot = $runtimeRoot
-        StartCommand = $startCommand
+        StartCommand = if ($IncludeRawDetails) { $startCommand } elseif ($startHasArguments) { '[omitted: command contains arguments]' } else { $startCommand }
         StartCommandHasArguments = $startHasArguments
         NextStartCommandPath = $nextStartCommandPath
         NextStartCommandUnderNextPackage = $nextStartCommandUnderNextPackage
         NextStartCommandIsExpectedCli = $nextStartCommandIsExpectedCli
-        NodeArguments = $nodeArguments
+        NodeArguments = if ($IncludeRawDetails) { $nodeArguments } else { '[omitted: use -IncludeRawDetails for sensitive arguments]' }
         BindAddress = $bindAddress
         NextStartCommandStartsWithStart = ($mode -ne "next-start" -or ($argumentTokens.Count -gt 0 -and $argumentTokens[0] -eq "start"))
         NextStartHostnameArgument = $hostnameArgument
@@ -240,10 +298,17 @@ function Add-NextJsRuntimeLayout {
     } | Format-List | Out-File $out -Append -Encoding UTF8
 }
 "Diagnostics generated $(Get-Date -Format o)" | Out-File $out -Encoding UTF8
+"RawDetailsIncluded=$([bool]$IncludeRawDetails)" | Out-File $out -Append -Encoding UTF8
 "AppName=$($config.AppName)" | Out-File $out -Append -Encoding UTF8
 "AppDirectory=$($config.AppDirectory)" | Out-File $out -Append -Encoding UTF8
 "Port=$($config.Port)" | Out-File $out -Append -Encoding UTF8
-"HealthUrl=$($config.HealthUrl)" | Out-File $out -Append -Encoding UTF8
+$displayHealthUrl = '[invalid URL]'
+try {
+    $displayUri = [UriBuilder]::new([string]$config.HealthUrl)
+    $displayUri.UserName = ''; $displayUri.Password = ''; $displayUri.Query = ''; $displayUri.Fragment = ''
+    $displayHealthUrl = $displayUri.Uri.AbsoluteUri
+} catch {}
+"HealthUrl=$(if ($IncludeRawDetails) { $config.HealthUrl } else { $displayHealthUrl })" | Out-File $out -Append -Encoding UTF8
 Add-Section "Host Uptime"
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 if ($os -and $os.LastBootUpTime) {
@@ -258,7 +323,9 @@ $serviceProcessIds = @()
 Get-Service -Name $serviceName -ErrorAction SilentlyContinue | Format-List * | Out-File $out -Append -Encoding UTF8
 $serviceProcess = Get-CimInstance Win32_Service -Filter "Name='$escapedServiceName'" -ErrorAction SilentlyContinue
 if ($serviceProcess) {
-    $serviceProcess | Select-Object Name, State, StartMode, ProcessId, PathName | Format-List | Out-File $out -Append -Encoding UTF8
+    $serviceFields = @('Name', 'State', 'StartMode', 'ProcessId')
+    if ($IncludeRawDetails) { $serviceFields += 'PathName' }
+    $serviceProcess | Select-Object $serviceFields | Format-List | Out-File $out -Append -Encoding UTF8
     if ($serviceProcess.ProcessId -and $serviceProcess.ProcessId -gt 0) {
         $serviceProcessIds += [int]$serviceProcess.ProcessId
         $children = Get-ChildProcessTree -ParentProcessId ([int]$serviceProcess.ProcessId)
@@ -290,14 +357,21 @@ try {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     $response = Invoke-WebRequest -Uri $config.HealthUrl -UseBasicParsing -TimeoutSec 10
     $timer.Stop()
-    $response | Select-Object StatusCode, StatusDescription, @{Name="ResponseMs";Expression={ [Math]::Round($timer.Elapsed.TotalMilliseconds, 0) }} | Format-List | Out-File $out -Append -Encoding UTF8
-} catch { "HTTP probe failed: $($_.Exception.Message)" | Out-File $out -Append -Encoding UTF8 }
+    [pscustomobject]@{
+        StatusCode = [int]$response.StatusCode
+        ResponseMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 0)
+    } | Format-List | Out-File $out -Append -Encoding UTF8
+} catch {
+    $failureDetail = if ($IncludeRawDetails) { $_.Exception.Message } else { $_.Exception.GetType().FullName }
+    "HTTP probe failed: $failureDetail" | Out-File $out -Append -Encoding UTF8
+}
 Add-Section "Health Check History"
 $taskName = "$($config.AppName)-HealthCheck"
 Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue |
 Select-Object TaskName, LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns |
 Format-List | Out-File $out -Append -Encoding UTF8
-$statePath = Join-Path $config.LogDirectory "healthcheck.state.json"
+$healthStateDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "node-enterprise-deploy-kit\healthchecks\$($config.AppName)"
+$statePath = Join-Path $healthStateDirectory "healthcheck.state.json"
 if (Test-Path $statePath) {
     try {
         $state = Get-Content $statePath -Raw | ConvertFrom-Json
@@ -314,14 +388,16 @@ if (Test-Path $statePath) {
 } else {
     "No health state file found." | Out-File $out -Append -Encoding UTF8
 }
-Add-HealthLogSummary (Join-Path $config.LogDirectory "healthcheck.log")
+Add-HealthLogSummary (Join-Path $healthStateDirectory "healthcheck.log")
 Add-Section "Recent Application Events"
+$eventFields = @('TimeCreated', 'ProviderName', 'Id', 'LevelDisplayName')
+if ($IncludeRawDetails) { $eventFields += 'Message' }
 Get-WinEvent -LogName Application -MaxEvents 80 -ErrorAction SilentlyContinue |
 Where-Object { $_.Message -like "*node*" -or $_.Message -like "*$($config.AppName)*" -or $_.Message -like "*iis*" -or $_.Message -like "*w3wp*" } |
-Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message | Format-List | Out-File $out -Append -Encoding UTF8
+Select-Object $eventFields | Format-List | Out-File $out -Append -Encoding UTF8
 Add-Section "Recent Reboot Events"
 Get-WinEvent -FilterHashtable @{LogName='System'; Id=6005,6006,6008,1074} -MaxEvents 30 -ErrorAction SilentlyContinue |
-Select-Object TimeCreated, Id, ProviderName, Message | Format-List | Out-File $out -Append -Encoding UTF8
+Select-Object $eventFields | Format-List | Out-File $out -Append -Encoding UTF8
 Add-Section "Logs Tail"
 Get-ChildItem $config.LogDirectory -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 10 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-File $out -Append -Encoding UTF8
 Add-Section "Retention And Backups"
@@ -338,4 +414,14 @@ if ($backupDirectory -and (Test-Path $backupDirectory)) {
         Select-Object -First 10 FullName, Length, LastWriteTime |
         Format-Table -AutoSize | Out-File $out -Append -Encoding UTF8
 }
-Write-Host "Diagnostics written to: $out" -ForegroundColor Green
+Assert-WindowsServiceSecurityNoReparse -Path $out
+Assert-WindowsServiceSecurityNoReparse -Path $diagnosticOutput.FinalPath
+Move-Item -LiteralPath $out -Destination $diagnosticOutput.FinalPath -ErrorAction Stop
+$diagnosticCompleted = $true
+Write-Host "Diagnostics written to: $($diagnosticOutput.FinalPath)" -ForegroundColor Green
+} finally {
+    if (-not $diagnosticCompleted -and (Test-Path -LiteralPath $out)) {
+        Assert-WindowsServiceSecurityNoReparse -Path $out
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    }
+}

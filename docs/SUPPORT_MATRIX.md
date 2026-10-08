@@ -11,6 +11,19 @@ This repository separates three different support levels:
 Do not call a platform fully supported for a release until it reaches
 `real-host-verified` for that release artifact.
 
+The runtime policy lives in `config/node-runtime-policy.json`. The framework
+compatibility floor of Node.js 20.9.0 is separate from maintained release lines:
+strict release readiness accepts only reviewed, released, non-EOL Node majors.
+Node.js 24 LTS is the default recommendation. macOS floors depend on the actual
+runtime: Node.js 22 requires 11.0; Node.js 24 and 26 require 13.5. Node.js 26 on
+macOS x64 is Tier 2, whereas ARM64 is Tier 1. The OS must also remain supported
+by its vendor.
+
+Real-host JSON is trusted operator evidence. The validators check its content
+and reported provenance consistently, but do not authenticate GitHub runs or
+sign collector output. Verify authorized collection and artifact origin during
+release review; hashes and anti-synthetic flags alone cannot establish origin.
+
 The machine-readable matrix lives at
 [`config/support-matrix.example.json`](../config/support-matrix.example.json).
 It is validated by:
@@ -506,9 +519,9 @@ filters, only matching evidence files are copied into the archived bundle.
 
 | Target group | Matrix IDs | Service manager | Reverse proxy options | Node.js runtime support |
 |---|---|---|---|---|
-| Windows clients | `windows-10`, `windows-11` | WinSW, NSSM; PM2 fallback outside strict real-host service claims | IIS or none | Tier 1 for Node.js 20.x |
-| Windows Server | `windows-server-2016`, `windows-server-2019`, `windows-server-2022`, `windows-server-2025` | WinSW, NSSM | IIS or none | Tier 1 for Node.js 20.x |
-| Legacy Windows Server | `windows-server-2012`, `windows-server-2012-r2` | WinSW, NSSM | IIS or none | Experimental for Node.js 20.x; not production-recommended |
+| Windows clients | `windows-10`, `windows-11` | WinSW, NSSM; PM2 fallback outside strict real-host service claims | IIS or none | Tier 1 for maintained Node.js 22/24/26 |
+| Windows Server | `windows-server-2016`, `windows-server-2019`, `windows-server-2022`, `windows-server-2025` | WinSW, NSSM | IIS or none | Tier 1 for maintained Node.js 22/24/26 |
+| Legacy Windows Server | `windows-server-2012`, `windows-server-2012-r2` | WinSW, NSSM | IIS or none | Experimental for Node.js 22; Node.js 24/26 require Server 2016 or newer; not production-recommended |
 | Debian family | `ubuntu`, `debian`, `linux-mint` | systemd or System V | Nginx, Apache, HAProxy, Traefik, or none | Tier 1 when kernel/glibc floors are met |
 | RHEL family | `rhel`, `oracle-linux`, `centos`, `centos-stream`, `rocky`, `almalinux`, `fedora` | systemd or System V where applicable | Nginx, Apache, HAProxy, Traefik, or none | Tier 1 when kernel/glibc floors are met |
 | Alpine | `alpine` | OpenRC | Nginx, Apache, HAProxy, Traefik, or none | Experimental musl runtime; not production-recommended |

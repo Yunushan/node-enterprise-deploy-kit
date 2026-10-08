@@ -65,9 +65,13 @@ Important controls:
 | `node_deploy_windows_iis_proxy_timeout_seconds` | IIS ARR proxy timeout in seconds |
 | `node_deploy_windows_backup_dir` | Remote Windows directory for service/proxy/task backups |
 | `node_deploy_linux_deploy_dir` | Remote Linux directory for copied deployment scripts/templates |
-| `node_deploy_linux_config_path` | Remote Linux rendered deployment env file |
+| `node_deploy_linux_config_path` | Remote incoming deployment env file; defaults under `/etc/node-enterprise-deploy-kit/incoming/` |
+| `node_deploy_linux_deployment_transaction_root` | Persistent root-owned deployment recovery journal directory; defaults to `/var/lib/node-enterprise-deploy-kit/deployment-transactions` |
 | `node_deploy_linux_backup_dir` | Remote Linux directory for service/proxy/health-check backups |
 | `node_deploy_linux_healthcheck_state_dir` | Root-owned Linux health-check state directory |
+| `node_deploy_linux_healthcheck_log_dir` | Protected Unix monitor log directory; defaults to health-check state directory plus `/logs` |
+| `node_deploy_healthcheck_log_max_bytes` / `node_deploy_healthcheck_log_generations` | Unix monitor rotation threshold and generation count; defaults to 10 MiB / 7 |
+| `node_deploy_app_log_max_bytes` / `node_deploy_app_log_generations` | Unix application rotation threshold and generation count; defaults to 10 MiB / 7 |
 | `node_deploy_linux_service_manager` | `systemd`, `systemv`, `openrc`, `launchd`, or `bsdrc` |
 | `node_deploy_linux_reverse_proxy` | `nginx`, `apache`, `haproxy`, `traefik`, or `none` |
 | `node_deploy_linux_proxy_listen_port` | Local Nginx/Apache template listener port |
@@ -104,20 +108,27 @@ copy a trusted WinSW executable when `node_deploy_windows_winsw_source` is set,
 or let the target download the pinned WinSW release when auto-download is
 enabled, optionally import a remote `.zip` package, and run `deploy.ps1`.
 
-Unix-like targets render the deployment env file, copy `deploy.sh`, scripts,
+Unix-like targets render an incoming deployment env file, copy `deploy.sh`, scripts,
 and templates, optionally install OS dependencies, optionally import a remote
 archive package, then run `deploy.sh`. The
 same role can target mainstream Linux, BSD, and macOS hosts when the selected
 service manager and package tooling are available on the remote system.
 
+The incoming env file is separate from the installed monitor configuration at
+`/etc/node-enterprise-deploy-kit/<app>.env`. This preserves the previous monitor
+configuration until the orchestrator snapshots it for rollback. A configured
+path that resolves to that installed monitor path is redirected under
+`/etc/node-enterprise-deploy-kit/incoming/`; other custom paths are preserved.
+
 When `node_deploy_package_expected_files` is empty or omitted, the roles render
 `server.js`, `.next/BUILD_ID`, and `.next/static` for Next.js `standalone`,
 `package.json`, `.next/BUILD_ID`, `.next`, plus
 `node_modules/next/dist/bin/next` for Next.js `next-start`, and `server.js` plus
-`<node_deploy_react_document_root>/index.html` for React. Set the variable only
-when your artifact has additional project-specific paths that must be present.
+`<node_deploy_react_document_root>/index.html` for React. Generic Node apps require
+only `node_deploy_start_script` (default `server.js`). Set the variable only when
+your artifact has additional project-specific paths that must be present.
 
-When `node_deploy_nextjs_deployment_mode: next-start` and
+When a Next.js framework uses `node_deploy_nextjs_deployment_mode: next-start` and
 `node_deploy_node_arguments` is empty, the roles render `start -H
 <node_deploy_bind_address>` so `next start` runs in production mode and binds
 to the same local address targeted by the reverse proxy.
@@ -140,6 +151,7 @@ allowed to modify OS packages. Node.js itself should still come from your
 company-approved package source or artifact process.
 
 For Traefik, the static Traefik config must already watch
-`node_deploy_linux_traefik_dynamic_dir`. For HAProxy, use a dedicated
+`node_deploy_linux_traefik_dynamic_dir`. Traefik route validation also requires
+the approved `node_deploy_linux_node_bin`, including Tomcat targets. For HAProxy, use a dedicated
 `node_deploy_linux_haproxy_config_file` unless this host is intentionally
 managed as a single-app HAProxy instance.

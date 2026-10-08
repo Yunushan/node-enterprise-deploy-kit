@@ -56,6 +56,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
+# shellcheck source=scripts/linux/runtime-hardening.sh
+source "$REPO_ROOT/scripts/linux/runtime-hardening.sh"
 CONFIG_FILE="${CONFIG_FILE:-config/linux/app.env}"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
@@ -64,15 +66,19 @@ SERVICE_MANAGER="${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME}}"
 HEALTHCHECK_STATE_FILE="$HEALTHCHECK_STATE_DIR/healthcheck.state"
-OUT_DIR="${OUT_DIR:-$LOG_DIR/diagnostics}"
+HEALTHCHECK_LOG_DIR="${HEALTHCHECK_LOG_DIR:-$HEALTHCHECK_STATE_DIR/logs}"
+OUT_DIR="${OUT_DIR:-$HEALTHCHECK_STATE_DIR/diagnostics}"
 APP_RUNTIME_NORMALIZED="$(echo "${APP_RUNTIME:-node}" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
 SERVICE_NAME="${SERVICE_NAME:-$APP_NAME}"
 if [[ "$APP_RUNTIME_NORMALIZED" == "tomcat" || "$APP_RUNTIME_NORMALIZED" == "apache-tomcat" ]]; then
   SERVICE_NAME="${TOMCAT_SERVICE:-$SERVICE_NAME}"
 fi
 
-mkdir -p "$OUT_DIR"
-OUT="$OUT_DIR/diagnostics-$(date +%Y%m%d-%H%M%S).txt"
+hardening_prepare_control_directory "$OUT_DIR"
+OUT="$(mktemp "$OUT_DIR/diagnostics-$(date +%Y%m%d-%H%M%S).XXXXXX")"
+chmod 0600 "$OUT"
+mv "$OUT" "$OUT.txt"
+OUT="$OUT.txt"
 
 section() { printf '\n===== %s =====\n' "$*" >> "$OUT"; }
 
@@ -457,13 +463,13 @@ if [[ -f "$HEALTHCHECK_STATE_FILE" ]]; then
 else
   echo "No healthcheck.state file found at $HEALTHCHECK_STATE_FILE." >> "$OUT"
 fi
-if [[ -f "$LOG_DIR/healthcheck.log" ]]; then
+if [[ -f "$HEALTHCHECK_LOG_DIR/healthcheck.log" ]]; then
   {
-    echo "healthcheck.log lastWrite=$(file_mtime_iso_utc "$LOG_DIR/healthcheck.log") sizeBytes=$(wc -c < "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
-    echo "OK count=$(grep -c ' OK ' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
-    echo "FAILED count=$(grep -Ec ' FAILED|FAILED_THRESHOLD|HTTP_FAILED|SERVICE_NOT_RUNNING' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
-    echo "RESTART count=$(grep -Ec 'RESTARTING_SERVICE|SERVICE_NOT_RUNNING' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
-    echo "RESTART_SUPPRESSED count=$(grep -c 'RESTART_SUPPRESSED_COOLDOWN' "$LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "healthcheck.log lastWrite=$(file_mtime_iso_utc "$HEALTHCHECK_LOG_DIR/healthcheck.log") sizeBytes=$(wc -c < "$HEALTHCHECK_LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "OK count=$(grep -c ' OK ' "$HEALTHCHECK_LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "FAILED count=$(grep -Ec ' FAILED|FAILED_THRESHOLD|HTTP_FAILED|SERVICE_NOT_RUNNING' "$HEALTHCHECK_LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "RESTART count=$(grep -Ec 'RESTARTING_SERVICE|SERVICE_NOT_RUNNING' "$HEALTHCHECK_LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
+    echo "RESTART_SUPPRESSED count=$(grep -c 'RESTART_SUPPRESSED_COOLDOWN' "$HEALTHCHECK_LOG_DIR/healthcheck.log" 2>/dev/null || echo 0)"
   } >> "$OUT"
 else
   echo "No healthcheck.log file found." >> "$OUT"

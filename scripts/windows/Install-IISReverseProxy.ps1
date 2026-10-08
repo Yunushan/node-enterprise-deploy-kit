@@ -5,7 +5,9 @@
   Requires IIS URL Rewrite and ARR if using IIS as a reverse proxy.
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
-param([Parameter(Mandatory=$true)] [string] $ConfigPath)
+param([Parameter(Mandatory=$true)] [string] $ConfigPath,
+    [string]$IisDeploymentLockLeasePath = '', [string]$IisDeploymentLockToken = '',
+    [object]$ExistingDeploymentLock)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -140,7 +142,7 @@ function Ensure-UrlRewriteServerVariable([string]$Name) {
             Write-Host "Allowed URL Rewrite server variable: $Name"
         }
     } catch {
-        Write-Warning "Could not allow URL Rewrite server variable '$Name'. Forwarded headers in web.config may fail until this is configured. $($_.Exception.Message)"
+        throw "Could not allow required URL Rewrite server variable '$Name'. $($_.Exception.Message)"
     }
 }
 function Ensure-UrlRewriteServerVariables([string[]]$Names) {
@@ -153,13 +155,12 @@ function Set-IisProxyProperty([string]$Name, $Value) {
         Set-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -Name $Name -Value $Value -ErrorAction Stop
         Write-Host "Set IIS ARR proxy $Name=$Value"
     } catch {
-        Write-Warning "Could not set IIS ARR proxy property '$Name'. $($_.Exception.Message)"
+        throw "Could not set required IIS ARR proxy property '$Name'. $($_.Exception.Message)"
     }
 }
 function Ensure-ArrProxySettings([int]$TimeoutSeconds) {
     if (-not (Test-WebGlobalModule "ApplicationRequestRouting")) {
-        Write-Warning "IIS ARR module was not detected. Install Application Request Routing before relying on IIS reverse proxy."
-        return
+        throw "IIS ARR module was not detected. Install Application Request Routing before enabling IIS reverse proxy settings."
     }
 
     Set-IisProxyProperty "enabled" "True"
@@ -185,7 +186,14 @@ function Ensure-WebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [st
             ($HostHeader -eq "" -and $_.bindingInformation -eq "*:${Port}:")
         }
     if (-not $binding) {
-        New-WebBinding -Name $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader | Out-Null
+        $bindingArgs = @{ Name = $SiteName; Protocol = $Protocol; Port = $Port; HostHeader = $HostHeader }
+        if ($Protocol -eq "https") { $bindingArgs.SslFlags = if ($HostHeader) { 1 } else { 0 } }
+        New-WebBinding @bindingArgs | Out-Null
+    } elseif ($Protocol -eq "https") {
+        $expectedSslFlags = ([int]$binding.sslFlags -band (-bnot 1)) -bor $(if ($HostHeader) { 1 } else { 0 })
+        if ([int]$binding.sslFlags -ne $expectedSslFlags) {
+            Set-WebBinding -Name $SiteName -BindingInformation ([string]$binding.bindingInformation) -PropertyName sslFlags -Value $expectedSslFlags -ErrorAction Stop
+        }
     }
 }
 function Ensure-SslBinding([int]$Port, [string]$HostHeader, [string]$Thumbprint) {
@@ -228,30 +236,62 @@ function Ensure-WebsiteStarted([string]$SiteName) {
     }
 }
 
+function Get-IisNativePowerShellArguments {
+    param([string]$ScriptPath, [string]$ConfigPath, [switch]$WhatIf,
+        [string]$IisDeploymentLockLeasePath = '', [string]$IisDeploymentLockToken = '')
+
+    $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath, "-ConfigPath", $ConfigPath)
+    if ($WhatIf) { $arguments += "-WhatIf" }
+    if ($IisDeploymentLockLeasePath -or $IisDeploymentLockToken) { $arguments += @('-IisDeploymentLockLeasePath', $IisDeploymentLockLeasePath, '-IisDeploymentLockToken', $IisDeploymentLockToken) }
+    return $arguments
+}
+
 Assert-Admin
+$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
+. (Join-Path $PSScriptRoot 'IisDeploymentState.ps1')
 $nativeWindowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
 if ($PSVersionTable.PSEdition -eq "Core") {
+    $coreTransaction = $null
+    $coreFailed = $true
+    try {
+    if (-not $WhatIfPreference) {
+        $coreTransaction = Start-IisInstallerTransaction -Config $config -LeasePath $IisDeploymentLockLeasePath -Token $IisDeploymentLockToken -ExistingDeploymentLock $ExistingDeploymentLock
+        if ($coreTransaction.OwnsLock) { $IisDeploymentLockLeasePath = $coreTransaction.IisLockLeasePath; $IisDeploymentLockToken = $coreTransaction.IisLockToken }
+    }
     if (-not (Test-Path -LiteralPath $nativeWindowsPowerShell -PathType Leaf)) {
         throw "IIS reverse-proxy configuration requires Windows PowerShell, but powershell.exe was not found: $nativeWindowsPowerShell"
     }
-    & $nativeWindowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -ConfigPath $ConfigPath
+    $nativeArguments = @(Get-IisNativePowerShellArguments -ScriptPath $PSCommandPath -ConfigPath $ConfigPath -WhatIf:$WhatIfPreference -IisDeploymentLockLeasePath $IisDeploymentLockLeasePath -IisDeploymentLockToken $IisDeploymentLockToken)
+    if ($PSBoundParameters.ContainsKey("Confirm")) {
+        $nativeArguments += "-Confirm:$([bool]$PSBoundParameters['Confirm'])"
+    }
+    & $nativeWindowsPowerShell @nativeArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Native Windows PowerShell failed while configuring the IIS reverse proxy."
     }
+    $coreFailed = $false
+    } finally { Complete-IisInstallerTransaction -Transaction $coreTransaction -Failed:$coreFailed }
     return
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+Assert-WindowsDeploymentConfigIdentity -Config $config
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $templatePath = Join-Path $repoRoot "templates\windows\iis-web.config.tpl"
+. (Join-Path $PSScriptRoot 'IisDeploymentState.ps1')
+$iisInstallerTransaction = $null
+$iisInstallerFailed = $true
+try {
+if (-not $WhatIfPreference) { $iisInstallerTransaction = Start-IisInstallerTransaction -Config $config -LeasePath $IisDeploymentLockLeasePath -Token $IisDeploymentLockToken -ExistingDeploymentLock $ExistingDeploymentLock }
 
 Import-Module WebAdministration -ErrorAction Stop
 
 $siteName = [string](Get-ConfigValue $config "IisSiteName" $config.AppName)
 $appPoolName = [string](Get-ConfigValue $config "IisAppPoolName" "$($config.AppName)-AppPool")
 $publicHostName = [string](Get-ConfigValue $config "PublicHostName" "")
-$tlsEnabled = $false
-if ($config.PSObject.Properties["TlsEnabled"]) { $tlsEnabled = [bool]$config.TlsEnabled }
+$tlsEnabled = Get-ConfigBool $config "TlsEnabled" $false
 $publicPort = if ($config.PSObject.Properties["PublicPort"] -and $config.PublicPort) { [int]$config.PublicPort } elseif ($tlsEnabled) { 443 } else { 80 }
 $protocol = if ($tlsEnabled) { "https" } else { "http" }
 $thumbprint = [string](Get-ConfigValue $config "IisCertificateThumbprint" "")
@@ -293,7 +333,7 @@ if ($setForwardedHeaders -and $PSCmdlet.ShouldProcess("IIS URL Rewrite allowed s
     )
 }
 
-New-Item -ItemType Directory -Force -Path $config.IisSitePath | Out-Null
+if ($PSCmdlet.ShouldProcess($config.IisSitePath, 'Create IIS physical directory')) { New-Item -ItemType Directory -Force -Path $config.IisSitePath | Out-Null }
 $template = Get-Content $templatePath -Raw
 $webConfig = Replace-Token $template @{
     "APP_PORT" = ConvertTo-XmlAttributeValue ([string]$config.Port)
@@ -332,3 +372,5 @@ Write-Host "IIS web.config created: $out" -ForegroundColor Green
 Write-Host "IIS site: $siteName"
 Write-Host "IIS app pool: $appPoolName"
 Write-Host "IIS health proxy: /$healthProxyPath -> $healthUrl"
+$iisInstallerFailed = $false
+} finally { Complete-IisInstallerTransaction -Transaction $iisInstallerTransaction -Failed:$iisInstallerFailed }

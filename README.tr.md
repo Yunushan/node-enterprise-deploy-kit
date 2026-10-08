@@ -529,9 +529,9 @@ satirlar degildir.
 
 | Platform | Durum | Önerilen servis yöneticisi | Not |
 | --- | --- | --- | --- |
-| Windows 10 / 11 | Desteklenir | WinSW / Windows Service | Geliştirme veya küçük servis senaryoları. |
-| Windows Server 2012 / 2012 R2 | Deneysel Node runtime hedefi | WinSW / Windows Service | Node.js 20.x icin uretim onerisi degildir; Windows Server 2016+ tercih edilmelidir. |
-| Windows Server 2016-2025 | Birinci sınıf destek | WinSW / Windows Service | IIS ve diğer proxy seçenekleriyle üretim kullanımı. |
+| Windows 10 / 11 | Desteklenir | WinSW / NSSM; PM2 fallback | IIS istege baglidir; strict servis iddialari OS servis kaniti gerektirir. |
+| Windows Server 2012 / 2012 R2 | Deneysel Node runtime hedefi | WinSW / NSSM | Node.js 22 deneyseldir; Node.js 24/26 Windows Server 2016+ gerektirir. |
+| Windows Server 2016-2025 | Birinci sınıf destek | WinSW / NSSM | IIS istege baglidir; gercek host kaniti gereklidir. |
 | Ubuntu / Debian | Birinci sınıf destek | systemd | En yaygın Linux hedefleri. |
 | RHEL / Rocky / AlmaLinux | Birinci sınıf destek | systemd | Kurumsal Linux dağıtımları. |
 | Oracle Linux | Desteklenir | systemd | RHEL ailesi davranışı temel alınır. |

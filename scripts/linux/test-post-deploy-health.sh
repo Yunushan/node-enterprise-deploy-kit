@@ -66,7 +66,7 @@ last_result="no response"
 attempt=1
 while [[ "$attempt" -le "$POST_DEPLOY_HEALTH_ATTEMPTS" ]]; do
   http_code=""
-  if http_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time "$HEALTHCHECK_TIMEOUT" "$HEALTH_URL")"; then
+  if http_code="$(curl --no-location --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time "$HEALTHCHECK_TIMEOUT" "$HEALTH_URL")"; then
     if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
       echo "Post-deploy health check passed with HTTP $http_code on attempt $attempt/$POST_DEPLOY_HEALTH_ATTEMPTS."
       exit 0

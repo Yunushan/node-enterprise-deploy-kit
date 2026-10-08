@@ -6,8 +6,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/.tmp/unix-nextjs-support-$$}"
 UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS="${UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS:-45}"
 UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS="${UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS:-5000}"
+RUNTIME_SMOKE_PID=""
 
 cleanup() {
+  if [[ -n "$RUNTIME_SMOKE_PID" ]]; then
+    kill "$RUNTIME_SMOKE_PID" 2>/dev/null || true
+    wait "$RUNTIME_SMOKE_PID" 2>/dev/null || true
+    RUNTIME_SMOKE_PID=""
+  fi
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -63,13 +69,14 @@ write_fake_node() {
   local node_bin="$1"
   write_file "$node_bin" '#!/bin/sh
 if [ "${1:-}" = "--version" ]; then
-  echo "v20.11.1"
+  echo "v24.11.1"
   exit 0
 fi
 if [ "${1:-}" = "-p" ] && [ "${2:-}" = "process.versions.modules" ]; then
   echo "115"
   exit 0
 fi
+case "${1:-}" in */validate-node-runtime-policy.mjs) exec node "$@" ;; esac
 exit 0'
   chmod 0755 "$node_bin"
 }
@@ -121,6 +128,8 @@ SERVICE_USER="$(id -un)"
 SERVICE_GROUP="$(id -gn)"
 ENV_FILE="$root/etc/example-next-smoke.env"
 HEALTHCHECK_STATE_DIR="$root/state"
+DEPLOYMENT_LOCK_ROOT="$root/locks"
+DEPLOYMENT_TRANSACTION_ROOT="$root/transactions"
 EOF
 }
 
@@ -322,7 +331,7 @@ test_deployment_lock() {
   deployment_lock_acquire "example-next-smoke"
   deployment_lock_release
 
-  assert_contains "$REPO_ROOT/deploy.sh" 'PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_LOCK_PATH}.package-transaction.$$.state"'
+  assert_contains "$REPO_ROOT/deploy.sh" 'PACKAGE_TRANSACTION_STATE_PATH="${DEPLOYMENT_TRANSACTION_PREFIX}.package-transaction.$$.state"'
   assert_contains "$REPO_ROOT/deploy.sh" 'Recovery state preserved at: $PACKAGE_TRANSACTION_STATE_PATH'
   assert_contains "$REPO_ROOT/scripts/linux/import-app-package.sh" 'node-enterprise-deploy-kit/package-transaction/v2'
   assert_contains "$REPO_ROOT/scripts/linux/rollback-app-package-transaction.sh" 'Package transaction state contains an unsafe APP_DIR.'
@@ -335,7 +344,9 @@ copy_command_to_fake_path() {
     echo "Could not find required test command: $command_name" >&2
     exit 1
   fi
-  cp "$source_path" "$fake_bin/$command_name"
+  # MSYS executables need their DLLs next to the original executable. Delegate
+  # to the original binary instead of copying it out of that directory.
+  printf '#!%s\nexec %s "$@"\n' "$BASH" "$(shell_single_quote "$source_path")" > "$fake_bin/$command_name"
   chmod 0755 "$fake_bin/$command_name"
 }
 
@@ -450,6 +461,8 @@ APP_PORT="$port"
 HEALTH_URL="http://127.0.0.1:$port/health"
 LOG_DIR="$root/logs"
 HEALTHCHECK_STATE_DIR="$root/state"
+DEPLOYMENT_LOCK_ROOT="$root/locks"
+DEPLOYMENT_TRANSACTION_ROOT="$root/transactions"
 REVERSE_PROXY="none"
 EOF
 }
@@ -471,6 +484,7 @@ new_fake_host_path() {
   write_fake_host_command "$fake_bin" "curl" \
     '#!/usr/bin/env bash' \
     'printf "%s\n" "curl $*" >> "$NODE_EDK_TRACE_FILE"' \
+    'printf "200"' \
     'exit 0'
   write_fake_host_command "$fake_bin" "systemctl" \
     '#!/usr/bin/env bash' \
@@ -877,7 +891,7 @@ run_node_runtime_smoke_case() {
 
   (
     cd "$app_dir"
-    NODE_ENV="production" \
+    exec env NODE_ENV="production" \
       PORT="$port" \
       APP_PORT="$port" \
       APP_NAME="$app_name" \
@@ -888,6 +902,7 @@ run_node_runtime_smoke_case() {
       "$node_cmd" "${command_args[@]}" > "$runtime_root/stdout.log" 2> "$runtime_root/stderr.log"
   ) &
   pid="$!"
+  RUNTIME_SMOKE_PID="$pid"
 
   local timeout_seconds="$UNIX_RUNTIME_SMOKE_TIMEOUT_SECONDS"
   local probe_timeout_ms="$UNIX_RUNTIME_SMOKE_PROBE_TIMEOUT_MS"
@@ -919,6 +934,11 @@ run_node_runtime_smoke_case() {
 
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+  RUNTIME_SMOKE_PID=""
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Unix runtime smoke left its launched Node.js process running." >&2
+    exit 1
+  fi
 
   if [[ -z "$body" ]]; then
     echo "Unix $mode runtime smoke health check did not return a response within ${timeout_seconds}s." >&2
@@ -973,6 +993,12 @@ mkdir -p "$OK_ROOT"
 new_standalone_layout "$OK_ROOT/app"
 write_env "$OK_ROOT/app.env" "$OK_ROOT" 39200 "standalone" "server.js" "launchd"
 expect_success "standalone preflight" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$OK_ROOT/app.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+for blocked_version in v20.11.1 v27.0.0; do
+  sed "s/v24.11.1/$blocked_version/" "$OK_ROOT/fake-node" > "$OK_ROOT/node.policy-blocked"
+  chmod 0755 "$OK_ROOT/node.policy-blocked"
+  sed "s#NODE_BIN=.*#NODE_BIN=\"$OK_ROOT/node.policy-blocked\"#" "$OK_ROOT/app.env" > "$OK_ROOT/policy.env"
+  expect_failure "$blocked_version production runtime policy" "Node.js production runtime policy" bash "$REPO_ROOT/scripts/linux/test-deployment-preflight.sh" "$OK_ROOT/policy.env" --skip-reverse-proxy --skip-health-check --skip-service-manager-check
+done
 expect_success "standalone runtime layout" bash "$REPO_ROOT/scripts/linux/test-nextjs-runtime-layout.sh" "$OK_ROOT/app.env"
 STATUS_JSON="$OK_ROOT/status.json"
 expect_success "standalone safe status" bash "$REPO_ROOT/scripts/linux/status-node-app.sh" "$OK_ROOT/app.env" --skip-service-manager-check --skip-port-check --skip-health-check --json-output "$STATUS_JSON" --fail-on-critical
@@ -999,7 +1025,7 @@ assert_contains "$STATUS_JSON" '"applicable": true'
 assert_contains "$STATUS_JSON" '"status": "ok"'
 assert_contains "$STATUS_JSON" '"appFramework": "nextjs"'
 assert_contains "$STATUS_JSON" '"mode": "standalone"'
-assert_contains "$STATUS_JSON" '"nodeVersion": "v20.11.1"'
+assert_contains "$STATUS_JSON" '"nodeVersion": "v24.11.1"'
 assert_contains "$STATUS_JSON" '"minimumNodeVersion": "20.9.0"'
 assert_contains "$STATUS_JSON" '"nodeVersionSatisfied": true'
 assert_contains "$STATUS_JSON" '"configFileName": "app.env"'
@@ -1391,19 +1417,20 @@ fi
 
 NEXT_START_PACKAGE="$TEST_ROOT/package/next-start.tar.gz"
 expect_success "next-start package helper" bash "$REPO_ROOT/scripts/linux/package-nextjs-standalone.sh" --project-path "$NEXT_START_ROOT/app" --output-path "$NEXT_START_PACKAGE" --mode next-start --node-bin "$PACKAGE_NODE_BIN"
-if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)package[.]json$'; then
+tar -tzf "$NEXT_START_PACKAGE" > "$TEST_ROOT/next-start-package-entries.txt"
+if ! grep -Eq '(^|[.]/)package[.]json$' "$TEST_ROOT/next-start-package-entries.txt"; then
   echo "Next-start package helper output is missing package.json." >&2
   exit 1
 fi
-if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)[.]next/BUILD_ID$'; then
+if ! grep -Eq '(^|[.]/)[.]next/BUILD_ID$' "$TEST_ROOT/next-start-package-entries.txt"; then
   echo "Next-start package helper output is missing .next/BUILD_ID." >&2
   exit 1
 fi
-if ! tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)node_modules/next/dist/bin/next$'; then
+if ! grep -Eq '(^|[.]/)node_modules/next/dist/bin/next$' "$TEST_ROOT/next-start-package-entries.txt"; then
   echo "Next-start package helper output is missing node_modules/next/dist/bin/next." >&2
   exit 1
 fi
-if tar -tzf "$NEXT_START_PACKAGE" | grep -Eq '(^|[.]/)node_modules/[.]bin/'; then
+if grep -Eq '(^|[.]/)node_modules/[.]bin/' "$TEST_ROOT/next-start-package-entries.txt"; then
   echo "Next-start package helper output should not include node_modules/.bin symlink entries." >&2
   exit 1
 fi

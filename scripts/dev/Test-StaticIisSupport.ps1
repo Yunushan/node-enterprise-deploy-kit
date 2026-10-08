@@ -144,6 +144,7 @@ function New-WindowsStaticIisConfig {
     StaticOutputDirectory = "dist/client"
     SpaShellFile = "_shell.html"
     AppDirectory = $AppDirectory
+    DeploymentLockDirectory = (Join-Path (Split-Path -Parent $AppDirectory) 'locks')
     PackagePath = $PackagePath
     RequirePackageSha256 = $true
     PackageExpectedSha256 = $packageExpectedSha256

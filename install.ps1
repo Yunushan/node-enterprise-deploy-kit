@@ -24,7 +24,9 @@ param(
     [switch] $SkipWinSWDownload,
     [switch] $SkipAppPreparation,
     [switch] $SkipInstall,
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [object] $ExistingDeploymentLock,
+    [object] $ExistingManagedDeploymentTransaction
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +46,8 @@ if (-not (Test-Path $ConfigPath)) {
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $repoRoot 'scripts/windows/WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
 Write-Host "Installing Windows deployment for: $($config.AppName)" -ForegroundColor Cyan
 Write-Host "Using local config: $ConfigPath"
 Write-Host "Private config values stay local and are not exported by this wrapper."
@@ -65,6 +69,8 @@ if ($SkipWinSWDownload) { $deployArgs.SkipWinSWDownload = $true }
 if ($SkipAppPreparation) { $deployArgs.SkipAppPreparation = $true }
 if ($SkipInstall) { $deployArgs.SkipInstall = $true }
 if ($SkipBuild) { $deployArgs.SkipBuild = $true }
+if ($ExistingDeploymentLock) { $deployArgs.ExistingDeploymentLock = $ExistingDeploymentLock }
+if ($ExistingManagedDeploymentTransaction) { $deployArgs.ExistingManagedDeploymentTransaction = $ExistingManagedDeploymentTransaction }
 
 if ($WhatIfPreference) {
     & $deployScript @deployArgs -WhatIf

@@ -10,6 +10,7 @@ if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi
 
 APACHE_SITE_NAME="${APACHE_SITE_NAME:-$APP_NAME}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
+PROXY_LOG_DIR="${PROXY_LOG_DIR:-/var/log/node-enterprise-deploy-kit/proxy/$APP_NAME}"
 PROXY_LISTEN_PORT="$(proxy_listen_port)"
 FORWARDED_PROTO="$(proxy_forwarded_proto)"
 FORWARDED_PORT="$(proxy_forwarded_port)"
@@ -52,9 +53,15 @@ else
   exit 1
 fi
 
-mkdir -p "$LOG_DIR" "$(dirname "$OUT")"
+managed_mutation_begin
+hardening_prepare_control_directory "$PROXY_LOG_DIR"
+mkdir -p "$(dirname "$OUT")"
 
 if command -v a2enmod >/dev/null 2>&1; then
+  for apache_module in proxy proxy_http proxy_wstunnel headers rewrite; do
+    transaction_record_symlink "/etc/apache2/mods-enabled/$apache_module.load"
+    transaction_record_symlink "/etc/apache2/mods-enabled/$apache_module.conf"
+  done
   a2enmod proxy proxy_http proxy_wstunnel headers rewrite >/dev/null
 fi
 
@@ -64,12 +71,13 @@ render_template_file "$TEMPLATE" "$OUT" \
   PROXY_LISTEN_PORT "$PROXY_LISTEN_PORT" \
   APP_PORT "$APP_PORT" \
   HEALTH_URL "$HEALTH_URL" \
-  LOG_DIR "$LOG_DIR" \
+  LOG_DIR "$PROXY_LOG_DIR" \
   FORWARDED_PROTO "$FORWARDED_PROTO" \
   FORWARDED_PORT "$FORWARDED_PORT"
 backup_path="$(get_last_backup_path)"
 
 if [[ "$ENABLE_WITH_A2ENSITE" == "true" ]] && command -v a2ensite >/dev/null 2>&1; then
+  transaction_record_symlink "/etc/apache2/sites-enabled/$APACHE_SITE_NAME.conf"
   a2ensite "$APACHE_SITE_NAME" >/dev/null
 fi
 

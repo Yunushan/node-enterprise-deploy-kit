@@ -286,6 +286,14 @@ and `HOSTNAME` defaults to all three managers. The PM2 fallback writes a local
 ecosystem file under `ServiceDirectory` so the Node interpreter, app directory,
 arguments, logs, and runtime environment are kept together.
 
+Windows WinSW/NSSM keep code read-only to the runtime identity and allow writes
+to logs plus `.next/cache` by default. Applications using ISR with filesystem
+route storage need a dedicated cache handler/storage directory listed in
+`RuntimeWritableDirectories`; verify that behavior on the deployed host.
+Granting a whole compiled server directory write access weakens code protection.
+See the Windows deployment guide for private configuration ACLs and the PM2
+shared-owner limitation.
+
 For full-app `next-start`, use the Next CLI path and pass the production
 subcommand plus hostname:
 

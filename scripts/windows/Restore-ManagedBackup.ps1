@@ -34,6 +34,8 @@ if (-not (Test-Path $ConfigPath)) {
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
 
 function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())

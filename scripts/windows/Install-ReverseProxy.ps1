@@ -9,7 +9,9 @@
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
     [Parameter(Mandatory=$true)] [string] $ConfigPath,
-    [switch] $DryRun
+    [switch] $DryRun,
+    [string]$IisDeploymentLockLeasePath = '', [string]$IisDeploymentLockToken = '',
+    [object]$ExistingDeploymentLock
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +35,18 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $deploymentMode = Normalize-Name (Get-ConfigString $config "DeploymentMode" "")
+$installerArguments = @{ ConfigPath = $ConfigPath }
+if ($ExistingDeploymentLock) { $installerArguments.ExistingDeploymentLock = $ExistingDeploymentLock }
+if ($IisDeploymentLockLeasePath -or $IisDeploymentLockToken) {
+    $installerArguments.IisDeploymentLockLeasePath = $IisDeploymentLockLeasePath
+    $installerArguments.IisDeploymentLockToken = $IisDeploymentLockToken
+}
+if ($WhatIfPreference) { $installerArguments.WhatIf = $true }
+if ($PSBoundParameters.ContainsKey('Confirm')) { $installerArguments.Confirm = [bool]$PSBoundParameters['Confirm'] }
 if ($deploymentMode -eq "static-iis") {
     $installer = Join-Path $repoRoot "scripts\windows\Install-IISStaticSite.ps1"
     if ($DryRun) {
@@ -42,7 +54,7 @@ if ($deploymentMode -eq "static-iis") {
         return
     }
     if ($PSCmdlet.ShouldProcess("IIS static site", "Run Install-IISStaticSite.ps1")) {
-        & $installer -ConfigPath $ConfigPath
+        & $installer @installerArguments
     }
     return
 }
@@ -56,7 +68,7 @@ switch ($reverseProxy) {
             return
         }
         if ($PSCmdlet.ShouldProcess("IIS reverse proxy", "Run Install-IISReverseProxy.ps1")) {
-            & $installer -ConfigPath $ConfigPath
+            & $installer @installerArguments
         }
     }
     "none" {

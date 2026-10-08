@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir "NodeRuntimePolicy.ps1")
 
 if ([string]::IsNullOrWhiteSpace($MatrixPath)) {
   $MatrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
@@ -114,6 +115,18 @@ if (-not (Test-Path -LiteralPath $MatrixPath -PathType Leaf)) {
 
 $matrix = Get-Content -LiteralPath $MatrixPath -Raw | ConvertFrom-Json
 $issues = New-Object System.Collections.Generic.List[string]
+
+$policyPath = [string](Get-OptionalPropertyValue -Object $matrix -Name "nodeRuntimePolicyPath")
+if ($policyPath -ne "config/node-runtime-policy.json") {
+  Add-Issue $issues "Support matrix must reference the reviewed config/node-runtime-policy.json runtime policy."
+}
+$declaredNodeMajors = @(Get-ArrayValue (Get-OptionalPropertyValue -Object $matrix -Name "supportedNodeMajors"))
+if ($declaredNodeMajors.Count -eq 0) { Add-Issue $issues "Support matrix must declare supportedNodeMajors independently of the framework compatibility floor." }
+foreach ($major in $declaredNodeMajors) {
+  if (-not (Test-SupportedNodeRuntimeVersion -Version "${major}.0.0")) {
+    Add-Issue $issues "Support matrix Node major '$major' is unknown, not released, or end-of-life; update the reviewed runtime policy and matrix."
+  }
+}
 
 if ($matrix.schemaVersion -ne 1) {
   Add-Issue $issues "schemaVersion must be 1."
@@ -263,7 +276,7 @@ foreach ($target in $targets) {
     $productionRecommendedProperty = $nodeRuntimeSupport.PSObject.Properties["productionRecommended"]
     $requirements = [string](Get-OptionalPropertyValue -Object $nodeRuntimeSupport -Name "requirements")
 
-    if ($minimumNodeVersion -ne "20.9.0") {
+    if ($minimumNodeVersion -ne [string]$script:NodeRuntimePolicy.frameworkMinimumNodeVersion) {
       Add-Issue $issues "$id nodeRuntimeSupport.minimumNodeVersion must be 20.9.0 for current Next.js support."
     }
     if ($allowedNodeRuntimeSupportTiers -notcontains $supportTier) {
@@ -279,19 +292,19 @@ foreach ($target in $targets) {
     $productionRecommended = if ($productionRecommendedProperty -and $productionRecommendedProperty.Value -is [bool]) { [bool]$productionRecommendedProperty.Value } else { $null }
     if ($id -in @("windows-server-2012", "windows-server-2012-r2")) {
       if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
-        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x only lists Windows Server 2012-family hosts in an Experimental row."
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended; legacy Windows Server 2012-family support is not a production runtime guarantee."
       }
     } elseif ($id -eq "alpine") {
       if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
-        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x musl targets are Experimental."
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because official Node.js musl targets are Experimental."
       }
     } elseif ($id -eq "freebsd") {
       if ($supportTier -ne "experimental" -or $productionRecommended -ne $false) {
-        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because Node.js 20.x FreeBSD support is Experimental."
+        Add-Issue $issues "$id must be marked as experimental and not productionRecommended because official Node.js FreeBSD support is Experimental."
       }
     } elseif ($id -in @("openbsd", "netbsd")) {
       if ($supportTier -ne "community-package" -or $productionRecommended -ne $false) {
-        Add-Issue $issues "$id must be marked as community-package and not productionRecommended because it is not an official Node.js 20.x release-platform row."
+        Add-Issue $issues "$id must be marked as community-package and not productionRecommended because it is not an official Node.js release-platform row."
       }
     } elseif ([string]$target.category -in @("windows-client", "windows-server", "linux", "macos")) {
       if ($supportTier -ne "tier-1" -or $productionRecommended -ne $true) {

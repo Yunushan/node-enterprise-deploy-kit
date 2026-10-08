@@ -7,6 +7,21 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $PinnedWinSWSha256 = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
 
+# All preflight configs below describe a synthetic, absent service. Their
+# runtime-shape/command checks must not depend on workstation WMI availability.
+function Get-CimInstance {
+  [CmdletBinding()]
+  param([Parameter(Position=0)] [string]$ClassName, [string]$Filter)
+  if ($ClassName -eq 'Win32_Service' -and $Filter -eq "Name='ExampleNextSmoke'") { return $null }
+  throw "Unexpected CIM query outside the synthetic preflight service: $ClassName"
+}
+function Get-NetTCPConnection {
+  [CmdletBinding()]
+  param([int]$LocalPort, [string]$State)
+  if ($LocalPort -eq 39171 -and $State -eq 'Listen') { return $null }
+  throw 'Unexpected live network query outside the synthetic preflight port.'
+}
+
 function Write-Step {
   param([string]$Message)
   Write-Host ""
@@ -118,7 +133,7 @@ function New-FakeNodeExe {
   Write-TestTextFile -Path $Path -Content @"
 @echo off
 if "%~1"=="--version" (
-  echo v20.11.1
+  echo v22.11.1
   exit /b 0
 )
 exit /b 0
@@ -207,8 +222,8 @@ function Assert-DeployRouting {
       'switch ($config.ServiceManager)',
       '"winsw" {',
       'scripts\windows\Install-NodeService.ps1',
-      '"nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath }',
-      '"pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath }',
+      '"nssm"  { & (Join-Path $repoRoot "scripts\windows\Install-NSSMService.ps1") -ConfigPath $ConfigPath -ExistingDeploymentLock $deploymentLock -ExistingManagedDeploymentTransaction $managedTransaction }',
+      '"pm2"   { & (Join-Path $repoRoot "scripts\windows\Install-PM2Fallback.ps1") -ConfigPath $ConfigPath -ExistingDeploymentLock $deploymentLock -ExistingManagedDeploymentTransaction $managedTransaction }',
       'Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2.',
       'scripts\windows\Install-ReverseProxy.ps1'
     )) {
@@ -357,7 +372,7 @@ function Assert-WindowsStaticIisRouting {
       '$isStaticIis = ($deploymentMode -eq "static-iis")',
       'DeploymentMode=static_iis; skipping Node service installation.',
       'scripts\windows\Install-IISStaticSite.ps1',
-      'DeploymentMode=static_iis; skipping Node health-check task.'
+      'if (-not $SkipHealthCheck) {'
     )) {
     Assert-FileContainsText -Path "deploy.ps1" -ExpectedText $expected
   }
@@ -471,7 +486,11 @@ function Assert-WindowsServiceEnvironmentContract {
       'Invoke-CheckedNativeCommand $nssm @("install", $config.AppName, [string]$config.NodeExe) "NSSM install"',
       'Invoke-CheckedNativeCommand $nssm @("set", $config.AppName, "AppDirectory", [string]$config.AppDirectory) "NSSM AppDirectory"',
       'Invoke-CheckedNativeCommand $nssm @("set", $config.AppName, "AppParameters", "$($config.StartCommand) $($config.NodeArguments)") "NSSM AppParameters"',
-      'Invoke-CheckedNativeCommand $nssm (@("set", $config.AppName, "AppEnvironmentExtra") + $environmentEntries) "NSSM environment"',
+      'Set-NssmServiceEnvironment -Config $config -EnvironmentEntries $environmentEntries',
+      '[Microsoft.Win32.RegistryValueKind]::MultiString',
+      'Copy-ManagedNssmBinary -Config $config -SourcePath $sourceNssm -RuntimePath $nssm -Account $accountSettings.Account',
+      'Set-NssmServiceAccount -Config $config -Nssm $nssm -Settings $accountSettings',
+      'Invoke-CheckedNativeCommand $nssm @("set", $config.AppName, "Application", [string]$config.NodeExe) "NSSM Application"',
       'Invoke-CheckedNativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set NSSM startup mode"',
       'Invoke-CheckedNativeCommand "sc.exe" @("failure", $config.AppName, "reset=", "86400", "actions=", "restart/60000/restart/60000/restart/300000") "Set NSSM recovery actions"'
     )) {
@@ -500,10 +519,19 @@ function Assert-WindowsUninstallRouting {
       '"nssm"  { Uninstall-NssmService $config $resolvedNssmPath }',
       '"pm2"   { Uninstall-Pm2Process $config }',
       'Unsupported ServiceManager: $($config.ServiceManager). Use winsw, nssm, or pm2.',
-      'Invoke-NativeCommand $ResolvedNssmPath @("remove", $Config.AppName, "confirm") "NSSM remove" -IgnoreExitCode',
-      'Falling back to sc.exe stop/delete',
-      'Invoke-NativeCommand "pm2" @("delete", $Config.AppName) "pm2 delete" -IgnoreExitCode',
-      'Remove-Item -LiteralPath $ecosystemPath -Force -ErrorAction SilentlyContinue',
+      '[Environment]::GetFolderPath([Environment+SpecialFolder]::System)',
+      '$scPath = Get-UninstallScExecutablePath',
+      "Invoke-NativeCommand `$scPath @('delete', [string]`$Config.AppName) 'Delete managed service'",
+      'Assert-ManagedServiceOwnership -Config $Config -Service $definition',
+      "Set-ManagedNativeServiceStartMode -Service `$definition -StartMode 'Disabled'",
+      "Invoke-NativeCommand `$pm2Context.CommandName @('delete', ([long]`$entry.pm_id).ToString([Globalization.CultureInfo]::InvariantCulture)) 'pm2 delete'",
+      'Assert-WindowsPm2DeploymentAppName -AppName ([string]$Config.AppName)',
+      'Invoke-NativeCommand $pm2Context.CommandName @("save", "--force") "pm2 save"',
+      'Get-ManagedPm2Entries $pm2Context.CommandName $Config.AppName $pm2Context.Home',
+      'Remove-Item -LiteralPath $ecosystemPath -Force -ErrorAction Stop',
+      '$uninstallLock = Enter-DeploymentLock -Config $config',
+      'Suspend-UninstallHealthTask -TaskName $taskName -Task $previousTask',
+      'Health task survived uninstall removal; private task files retained.',
       'Unregister-ScheduledTask -TaskName $taskName'
     )) {
     Assert-FileContainsText -Path "scripts/windows/Uninstall-NodeService.ps1" -ExpectedText $expected
@@ -652,14 +680,17 @@ function Assert-WindowsHealthCheckTaskContract {
       Environment = @{ API_TOKEN = $privateSentinel }
       PreparationEnvironment = @{ NPM_TOKEN = $privateSentinel }
       ServiceAccountPassword = $privateSentinel
+      PreviousServiceAccountPassword = $privateSentinel
+      HealthCheckTaskPassword = $privateSentinel
+      PreviousHealthCheckTaskPassword = $privateSentinel
     }
     $renderConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
     $renderedText = (& (Resolve-RepoFile "scripts/windows/Register-HealthCheckTask.ps1") -ConfigPath $configPath -RenderMonitorConfigOnly | Out-String)
     $rendered = $renderedText | ConvertFrom-Json
     $expectedProperties = @(
-      "AppName", "BackupDirectory", "BackupRetentionDays", "DiagnosticRetentionDays",
+      "AppName", "BackupDirectory", "BackupRetentionDays", "DeploymentLockPath", "DiagnosticRetentionDays",
       "HealthCheckFailureThreshold", "HealthCheckRestartCooldownMinutes", "HealthCheckTimeoutSeconds",
-      "HealthUrl", "LogDirectory", "LogRetentionDays", "Schema"
+      "HealthUrl", "LogDirectory", "LogRetentionDays", "Schema", "ServiceManager"
     ) | Sort-Object
     $actualProperties = @($rendered.PSObject.Properties.Name | Sort-Object)
     if (@(Compare-Object -ReferenceObject $expectedProperties -DifferenceObject $actualProperties).Count -ne 0) {
@@ -669,7 +700,13 @@ function Assert-WindowsHealthCheckTaskContract {
       throw "Managed health monitor config leaked a private deployment value."
     }
     if ([string]$rendered.Schema -ne "node-enterprise-deploy-kit/windows-health-monitor/v1") {
-      throw "Managed health monitor config schema is incorrect."
+        throw "Managed health monitor config schema is incorrect."
+    }
+    . (Join-Path $RepoRoot 'scripts/windows/DeploymentLock.ps1')
+    $expectedLockConfig = $renderConfig | ConvertTo-Json -Depth 5 | ConvertFrom-Json
+    $expectedLockPath = Join-Path (Get-DeploymentLockDirectory $expectedLockConfig) "HealthTaskContract.lock"
+    if ([System.IO.Path]::GetFullPath([string]$rendered.DeploymentLockPath) -ine [System.IO.Path]::GetFullPath($expectedLockPath)) {
+        throw "Managed health monitor config must point at the same per-app deployment lock."
     }
   } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -722,7 +759,8 @@ function Assert-WindowsLatestReleaseHelperContract {
       'function Get-DefaultGeneratedConfigPath',
       'if (Get-ConfigBool $Config "TlsEnabled" $false) { return "https" }',
       '$defaultPort = if ($tlsEnabled) { 443 } else { 80 }',
-      'Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.$nonce.json"',
+      'Join-Path (Get-DeploymentLockDirectory $Config) "$safeName.latest-release.$nonce.json"',
+      'Set-WindowsProtectedFileSecurity -Path $Path',
       'GeneratedConfigPath must not be the source deployment config path.',
       'Refusing to overwrite an existing generated config path:',
       'Generated config is temporary unless -KeepGeneratedConfig is specified.',
@@ -730,8 +768,15 @@ function Assert-WindowsLatestReleaseHelperContract {
       'Removed temporary generated config:',
       '$protocol = Get-IisPublicProtocol $Config',
       '$publicPort = Get-IisPublicPort $Config',
-      'Where-Object { $_.protocol -eq $protocol -and $_.bindingInformation -like "*:${publicPort}:*" }',
-      'State = [string]$site.State',
+      '$expectedBinding = "*:${publicPort}:$hostHeader"',
+      '[string]$binding.bindingInformation -ine $expectedBinding',
+      'Restore-RemovedPublicPortBindings -RemovedBindings $removedPublicBindings',
+      '$installArgs.ExistingDeploymentLock = $latestReleaseLock',
+      '$installArgs.ExistingManagedDeploymentTransaction = $managedTransaction',
+      'Restore-ManagedDeploymentTransaction -Config $runtimeConfig -Transaction $managedTransaction',
+      'Resume-ManagedDeploymentServiceState -Config $runtimeConfig -Transaction $managedTransaction',
+      'Release-ManagedIisDeploymentLock -Transaction $managedTransaction',
+      'State = if ($site) { [string]$site.State } else { "" }',
       'Start-Website -Name $State.Name',
       'Stop-Website -Name $State.Name'
     )) {
@@ -820,7 +865,7 @@ function Assert-WindowsPackageLifecycleRecovery {
         "jlist" {
           $global:LASTEXITCODE = 0
           if ($global:NodeDeployMockPm2Exists) {
-            return ('[{"name":"ExamplePm2","pm2_env":{"status":"' + $global:NodeDeployMockPm2Status + '"}}]')
+            return ('[{"name":"ExamplePm2","pm_id":7,"pm2_env":{"name":"ExamplePm2","status":"' + $global:NodeDeployMockPm2Status + '"}}]')
           }
           return '[]'
         }
@@ -844,6 +889,9 @@ function Assert-WindowsPackageLifecycleRecovery {
     }
 
     . (Join-Path $RepoRoot "scripts\windows\AppPackageLifecycle.ps1")
+    # This lifecycle test uses an in-process fake PM2 command on every CI OS.
+    # Native caller/daemon tokens are verified by Test-WindowsPm2ExecutionPolicy.
+    function Assert-WindowsPm2ExecutionAllowed { param($Pm2HomePath, $ExpectedOwnerSid) }
 
     $serviceConfig = [pscustomobject]@{
       AppName = "ExampleService"
@@ -966,7 +1014,10 @@ function Assert-WindowsPackageLifecycleRecovery {
     foreach ($expected in @(
         'TransactionStatePath = $packageTransactionStatePath',
         'Invoke-AppPackageDeploymentRollback -Config $config -TransactionState $transactionState',
-        'Package rollback also failed',
+        'Rollback also failed:',
+        'Restore-ManagedDeploymentTransaction -Config $config -Transaction $managedTransaction',
+        'Resume-ManagedDeploymentServiceState -Config $config -Transaction $managedTransaction',
+        '$preserveManagedTransaction = $true',
         '$preservePackageTransactionState = $true',
         'Recovery state preserved at: $packageTransactionStatePath'
       )) {

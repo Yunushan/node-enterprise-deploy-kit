@@ -25,6 +25,8 @@ $DefaultWinSWDownloadUrl = "https://github.com/winsw/winsw/releases/download/v2.
 $DefaultNextJsMinimumNodeVersion = "20.9.0"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 . (Join-Path $PSScriptRoot "AppPackageSafety.ps1")
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
+. (Join-Path $repoRoot "scripts/dev/NodeRuntimePolicy.ps1")
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot $ConfigPath
@@ -34,6 +36,7 @@ if (-not (Test-Path $ConfigPath)) {
 }
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+Assert-WindowsDeploymentConfigIdentity -Config $config
 $effectivePackagePath = $PackagePath
 if ([string]::IsNullOrWhiteSpace($effectivePackagePath) -and $config.PSObject.Properties["PackagePath"]) {
     $effectivePackagePath = [string]$config.PackagePath
@@ -266,6 +269,13 @@ function Test-NextJsNodeVersion($Config) {
         Add-Error "Next.js requires Node.js >= $minimum, but NodeExe returned an unrecognized version: $nodeVersion"
     } elseif (-not $satisfied) {
         Add-Error "Next.js requires Node.js >= $minimum; configured NodeExe reports $nodeVersion."
+    }
+}
+function Test-MaintainedNodeRuntime($Config) {
+    $nodeExe = Get-ConfigString $Config "NodeExe" "node"
+    $version = Get-NodeRuntimeVersion $nodeExe
+    if (-not (Test-SupportedNodeRuntimeVersion -Version $version)) {
+        Add-Error "Configured NodeExe must use a maintained Node.js release line; version '$version' is end-of-life, unknown, or unavailable. See config/node-runtime-policy.json for the reviewed runtime policy."
     }
 }
 function Test-HttpsUri([string]$Url) {
@@ -769,6 +779,7 @@ if (-not $isStaticIis -and $config.NodeExe -and -not (Test-Path $config.NodeExe)
 if (-not $isStaticIis -and $config.NodeExe -and -not [System.IO.Path]::IsPathRooted([string]$config.NodeExe)) {
     Add-Warning "NodeExe is not an absolute path. Use an explicit trusted Node.js path in production."
 }
+if (-not $isStaticIis) { Test-MaintainedNodeRuntime $config }
 
 if ($config.AppDirectory -and -not (Test-Path $config.AppDirectory)) {
     if (-not [string]::IsNullOrWhiteSpace($effectivePackagePath)) {

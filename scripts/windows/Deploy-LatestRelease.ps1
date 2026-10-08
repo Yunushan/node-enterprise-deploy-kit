@@ -40,6 +40,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
 
 function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -153,22 +154,35 @@ function Get-NormalizedHealthPath([string]$Path) {
 }
 
 function Write-GeneratedConfig($Config, [string]$Path) {
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
+    Assert-WindowsServiceSecurityNoReparse -Path $Path
     $directory = Split-Path -Parent $Path
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
-    $Config | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $Path -Encoding UTF8
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $stream.Dispose()
+    try {
+        # Protect the empty file before writing service-account and environment secrets.
+        Set-WindowsProtectedFileSecurity -Path $Path
+        [IO.File]::WriteAllText($Path, ($Config | ConvertTo-Json -Depth 40), [Text.UTF8Encoding]::new($false))
+    } catch {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        throw
+    }
 }
 
 function Get-DefaultGeneratedConfigPath($Config) {
-    $safeName = ([string]$Config.AppName) -replace '[^A-Za-z0-9_.-]', '_'
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
+    $safeName = ([string]$Config.AppName) -creplace '[^A-Za-z0-9_.-]', '_'
     $serviceDirectory = [string](Get-ConfigValue $Config "ServiceDirectory" "")
     $nonce = [Guid]::NewGuid().ToString("N")
     if (-not [string]::IsNullOrWhiteSpace($serviceDirectory)) {
-        return (Join-Path (Join-Path $serviceDirectory "config") "$safeName.latest-release.$nonce.json")
+        return (Join-Path (Get-DeploymentLockDirectory $Config) "$safeName.latest-release.$nonce.json")
     }
     return (Join-Path $repoRoot ".tmp\windows-live-deploy\$safeName.latest-release.$nonce.json")
 }
 
 function Get-ServiceXmlPath($Config) {
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
     if (-not $Config.PSObject.Properties["ServiceDirectory"] -or [string]::IsNullOrWhiteSpace([string]$Config.ServiceDirectory)) {
         return ""
     }
@@ -178,27 +192,43 @@ function Get-ServiceXmlPath($Config) {
 function Get-CurrentIisSiteState($Config) {
     $siteName = [string](Get-ConfigValue $Config "IisSiteName" $Config.AppName)
     if ([string]::IsNullOrWhiteSpace($siteName)) { return $null }
-    try {
-        Import-Module WebAdministration -ErrorAction Stop
-        $site = Get-Item "IIS:\Sites\$siteName" -ErrorAction SilentlyContinue
-        if (-not $site) { return $null }
-        return [pscustomobject]@{
-            Name = $siteName
-            PhysicalPath = [string]$site.PhysicalPath
-            ApplicationPool = [string]$site.ApplicationPool
-            State = [string]$site.State
-        }
-    } catch {
-        Write-Warning "Could not snapshot IIS site state for rollback. $($_.Exception.Message)"
-        return $null
+    Import-Module WebAdministration -ErrorAction Stop
+    $site = Get-Item "IIS:\Sites\$siteName" -ErrorAction SilentlyContinue
+    $protocol = Get-IisPublicProtocol $Config
+    $port = Get-IisPublicPort $Config
+    $hostHeader = [string](Get-ConfigValue $Config "PublicHostName" "")
+    $bindings = @(Get-ExistingPublicPortBindings $Config | Where-Object { $_.IsConfiguredSite })
+    return [pscustomobject]@{
+        Name = $siteName
+        SiteExisted = ($null -ne $site)
+        PhysicalPath = if ($site) { [string]$site.PhysicalPath } else { "" }
+        ApplicationPool = if ($site) { [string]$site.ApplicationPool } else { "" }
+        State = if ($site) { [string]$site.State } else { "" }
+        BindingProtocol = $protocol
+        BindingInformation = "*:${port}:$hostHeader"
+        Bindings = $bindings
     }
 }
 
 function Restore-IisSiteState($State) {
     if (-not $State) { return }
-    try {
-        Import-Module WebAdministration -ErrorAction Stop
-        if (Test-Path "IIS:\Sites\$($State.Name)") {
+    Import-Module WebAdministration -ErrorAction Stop
+    if (Test-Path "IIS:\Sites\$($State.Name)") {
+        if (-not $State.SiteExisted) {
+            Remove-Website -Name $State.Name -ErrorAction Stop
+        } else {
+            if (@($State.Bindings).Count -eq 0) {
+                $createdBinding = @(Get-WebBinding -Name $State.Name -Protocol $State.BindingProtocol -ErrorAction Stop |
+                    Where-Object { [string]$_.bindingInformation -ieq $State.BindingInformation })
+                if ($createdBinding.Count -gt 0) {
+                    $parts = ConvertFrom-IisPublicBindingInformation $State.BindingInformation
+                    Remove-WebBinding -Name $State.Name -Protocol $State.BindingProtocol -IPAddress $parts.IPAddress -Port $parts.Port -HostHeader $parts.HostHeader -ErrorAction Stop
+                }
+            } else {
+                $bindingSnapshots = [System.Collections.Generic.List[object]]::new()
+                foreach ($binding in @($State.Bindings)) { $bindingSnapshots.Add($binding) }
+                Restore-RemovedPublicPortBindings -RemovedBindings $bindingSnapshots
+            }
             if (-not [string]::IsNullOrWhiteSpace($State.PhysicalPath)) {
                 Set-ItemProperty "IIS:\Sites\$($State.Name)" -Name physicalPath -Value $State.PhysicalPath
             }
@@ -206,14 +236,12 @@ function Restore-IisSiteState($State) {
                 Set-ItemProperty "IIS:\Sites\$($State.Name)" -Name applicationPool -Value $State.ApplicationPool
             }
             if ([string]$State.State -eq "Started") {
-                Start-Website -Name $State.Name -ErrorAction SilentlyContinue | Out-Null
+                Start-Website -Name $State.Name -ErrorAction Stop | Out-Null
             } elseif ([string]$State.State -eq "Stopped") {
-                Stop-Website -Name $State.Name -ErrorAction SilentlyContinue | Out-Null
+                Stop-Website -Name $State.Name -ErrorAction Stop | Out-Null
             }
             Write-Warning "Restored IIS site '$($State.Name)' to previous physical path."
         }
-    } catch {
-        Write-Warning "Could not restore IIS site state. $($_.Exception.Message)"
     }
 }
 
@@ -221,37 +249,89 @@ function Get-ExistingPublicPortBindings($Config) {
     $siteName = [string](Get-ConfigValue $Config "IisSiteName" $Config.AppName)
     $protocol = Get-IisPublicProtocol $Config
     $publicPort = Get-IisPublicPort $Config
-    try {
-        Import-Module WebAdministration -ErrorAction Stop
-        return @(Get-ChildItem IIS:\Sites | ForEach-Object {
-            $site = $_
-            $site.Bindings.Collection |
-                Where-Object { $_.protocol -eq $protocol -and $_.bindingInformation -like "*:${publicPort}:*" } |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        SiteName = $site.Name
-                        BindingInformation = $_.bindingInformation
-                        Protocol = $_.protocol
-                        IsConfiguredSite = ($site.Name -eq $siteName)
-                    }
-                }
-        })
-    } catch {
-        Write-Warning "Could not inspect IIS bindings. $($_.Exception.Message)"
-        return @()
+    $hostHeader = [string](Get-ConfigValue $Config "PublicHostName" "")
+    # The normal IIS installer creates wildcard-IP bindings. Other hosts or
+    # IP-specific bindings on the same port belong to independent IIS sites.
+    $expectedBinding = "*:${publicPort}:$hostHeader"
+    Import-Module WebAdministration -ErrorAction Stop
+    return @(Get-ChildItem IIS:\Sites -ErrorAction Stop | ForEach-Object {
+        $site = $_
+        foreach ($binding in @($site.Bindings.Collection)) {
+            if ([string]$binding.protocol -ne $protocol -or [string]$binding.bindingInformation -ine $expectedBinding) { continue }
+            $parts = ConvertFrom-IisPublicBindingInformation ([string]$binding.bindingInformation)
+            [pscustomobject]@{
+                SiteName = [string]$site.Name
+                BindingInformation = [string]$binding.bindingInformation
+                Protocol = [string]$binding.protocol
+                IPAddress = $parts.IPAddress
+                Port = $parts.Port
+                HostHeader = $parts.HostHeader
+                SslFlags = if ($binding.PSObject.Properties["sslFlags"]) { [int]$binding.sslFlags } else { 0 }
+                CertificateHash = if ($binding.PSObject.Properties["certificateHash"]) { ConvertTo-IisCertificateHash $binding.certificateHash } else { "" }
+                CertificateStoreName = if ($binding.PSObject.Properties["certificateStoreName"]) { [string]$binding.certificateStoreName } else { "" }
+                IsConfiguredSite = ([string]$site.Name -eq $siteName)
+            }
+        }
+    })
+}
+
+function ConvertFrom-IisPublicBindingInformation([string]$BindingInformation) {
+    if ($BindingInformation -notmatch '^(?<ip>.*):(?<port>[0-9]+):(?<host>[^:]*)$') {
+        throw "IIS binding information is invalid: $BindingInformation"
+    }
+    return [pscustomobject]@{ IPAddress = $Matches.ip; Port = [int]$Matches.port; HostHeader = $Matches.host }
+}
+
+function ConvertTo-IisCertificateHash($Hash) {
+    if ($Hash -is [byte[]]) { return [BitConverter]::ToString($Hash).Replace("-", "") }
+    return ([string]$Hash).Replace(" ", "").Replace("-", "").ToUpperInvariant()
+}
+
+function Remove-ConflictingPublicPortBindings {
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param($Config, [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$RemovedBindings)
+
+    $bindings = @(Get-ExistingPublicPortBindings $Config | Where-Object { -not $_.IsConfiguredSite })
+    foreach ($binding in $bindings) {
+        Write-Warning "Removing conflicting IIS binding $($binding.Protocol) $($binding.BindingInformation) from site $($binding.SiteName)."
+        if ($PSCmdlet.ShouldProcess($binding.SiteName, "Remove conflicting IIS binding $($binding.Protocol) $($binding.BindingInformation)")) {
+            # Record first: a cmdlet failure may follow a partially committed IIS write.
+            $RemovedBindings.Add($binding)
+            Remove-WebBinding -Name $binding.SiteName -Protocol $binding.Protocol -IPAddress $binding.IPAddress -Port $binding.Port -HostHeader $binding.HostHeader -ErrorAction Stop
+        }
     }
 }
 
-function Remove-ConflictingPublicPortBindings($Config) {
-    $bindings = @(Get-ExistingPublicPortBindings $Config | Where-Object { -not $_.IsConfiguredSite })
-    foreach ($binding in $bindings) {
-        $parts = $binding.BindingInformation.Split(":")
-        $port = [int]$parts[1]
-        $hostHeader = if ($parts.Count -ge 3) { $parts[2] } else { "" }
-        Write-Warning "Removing conflicting IIS binding $($binding.Protocol) $($binding.BindingInformation) from site $($binding.SiteName)."
-        if ($PSCmdlet.ShouldProcess($binding.SiteName, "Remove conflicting IIS binding $($binding.Protocol) $($binding.BindingInformation)")) {
-            Remove-WebBinding -Name $binding.SiteName -Protocol $binding.Protocol -Port $port -HostHeader $hostHeader -ErrorAction Stop
+function Restore-RemovedPublicPortBindings {
+    param([System.Collections.Generic.List[object]]$RemovedBindings)
+
+    if ($null -eq $RemovedBindings -or $RemovedBindings.Count -eq 0) { return }
+    Import-Module WebAdministration -ErrorAction Stop
+    foreach ($snapshot in $RemovedBindings) {
+        $current = @(Get-WebBinding -Name $snapshot.SiteName -Protocol $snapshot.Protocol -ErrorAction Stop |
+            Where-Object { [string]$_.bindingInformation -ieq $snapshot.BindingInformation })
+        if ($current.Count -eq 0) {
+            $bindingArgs = @{
+                Name = $snapshot.SiteName; Protocol = $snapshot.Protocol
+                IPAddress = $snapshot.IPAddress; Port = $snapshot.Port; HostHeader = $snapshot.HostHeader
+                ErrorAction = "Stop"
+            }
+            if ($snapshot.Protocol -eq "https") { $bindingArgs.SslFlags = $snapshot.SslFlags }
+            New-WebBinding @bindingArgs | Out-Null
+            $current = @(Get-WebBinding -Name $snapshot.SiteName -Protocol $snapshot.Protocol -ErrorAction Stop |
+                Where-Object { [string]$_.bindingInformation -ieq $snapshot.BindingInformation })
         }
+        if ($current.Count -ne 1) { throw "Could not restore removed IIS binding: $($snapshot.SiteName) [$($snapshot.BindingInformation)]" }
+        if ($snapshot.Protocol -eq "https") {
+            if ([int]$current[0].sslFlags -ne [int]$snapshot.SslFlags) {
+                Set-WebBinding -Name $snapshot.SiteName -BindingInformation $snapshot.BindingInformation -PropertyName sslFlags -Value $snapshot.SslFlags -ErrorAction Stop
+            }
+            if ($snapshot.CertificateHash) {
+                $store = if ($snapshot.CertificateStoreName) { $snapshot.CertificateStoreName } else { "My" }
+                $current[0].AddSslCertificate($snapshot.CertificateHash, $store)
+            }
+        }
+        Write-Warning "Restored removed IIS binding: $($snapshot.SiteName) [$($snapshot.BindingInformation)]"
     }
 }
 
@@ -262,6 +342,33 @@ function Assert-NoConflictingPublicPortBinding($Config) {
     throw "PublicPort is already bound by another IIS site: $summary. Re-run with -TakeOverPublicPortBinding only when this is intentional."
 }
 
+function Get-LatestReleaseNativePowerShellArguments {
+    param([string]$ScriptPath, [System.Collections.IDictionary]$BoundParameters, [switch]$WhatIf)
+
+    $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath)
+    foreach ($name in $BoundParameters.Keys) {
+        $value = $BoundParameters[$name]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            $arguments += "-${name}:$([bool]$value)"
+        } else {
+            $arguments += @("-$name", [string]$value)
+        }
+    }
+    if ($WhatIf -and -not $BoundParameters.ContainsKey("WhatIf")) { $arguments += "-WhatIf" }
+    return $arguments
+}
+
+if ($PSVersionTable.PSEdition -eq "Core") {
+    $nativeWindowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (-not (Test-Path -LiteralPath $nativeWindowsPowerShell -PathType Leaf)) {
+        throw "Latest-release IIS deployment requires Windows PowerShell, but powershell.exe was not found."
+    }
+    $nativeArguments = @(Get-LatestReleaseNativePowerShellArguments -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WhatIf:$WhatIfPreference)
+    & $nativeWindowsPowerShell @nativeArguments
+    if ($LASTEXITCODE -ne 0) { throw "Native Windows PowerShell failed while deploying the latest release." }
+    return
+}
+
 Assert-Admin
 $ConfigPath = Resolve-RepoPath $ConfigPath
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -269,16 +376,24 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 }
 
 $baseConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+Assert-WindowsDeploymentConfigIdentity -Config $baseConfig
 $selectedReleasePath = Resolve-LatestReleasePath -Root $ReleaseRoot -Pattern $ReleasePattern -ExplicitPath $ReleasePath
 Assert-ReleaseLooksDeployable -Config $baseConfig -Path $selectedReleasePath
 
-$serviceXmlPath = Get-ServiceXmlPath $baseConfig
-$serviceXmlSnapshot = if ($serviceXmlPath -and (Test-Path -LiteralPath $serviceXmlPath -PathType Leaf)) {
-    Get-Content -LiteralPath $serviceXmlPath -Raw
-} else {
-    $null
+. (Join-Path $repoRoot "scripts\windows\DeploymentLock.ps1")
+. (Join-Path $repoRoot "scripts\windows\DeploymentTransaction.ps1")
+. (Join-Path $repoRoot "scripts\windows\WindowsServiceSecurity.ps1")
+$latestReleaseLock = $null
+$generatedConfigCreated = $false
+$deploymentStarted = $false
+$removedPublicBindings = [System.Collections.Generic.List[object]]::new()
+$managedTransaction = $null
+try {
+if (-not $WhatIfPreference) {
+    Assert-ManagedDeploymentManagerTransition -Config $baseConfig
+    $latestReleaseLock = Enter-DeploymentLock -Config $baseConfig
 }
-$iisSnapshot = Get-CurrentIisSiteState $baseConfig
+$usesIis = ([string](Get-ConfigValue $baseConfig "ReverseProxy" "none") -eq "iis")
 
 $runtimeConfig = $baseConfig | ConvertTo-Json -Depth 40 | ConvertFrom-Json
 Set-ConfigValue -Config $runtimeConfig -Name "AppDirectory" -Value $selectedReleasePath
@@ -307,7 +422,10 @@ if ($GeneratedConfigPath -ieq [System.IO.Path]::GetFullPath($ConfigPath)) {
 if (Test-Path -LiteralPath $GeneratedConfigPath) {
     throw "Refusing to overwrite an existing generated config path: $GeneratedConfigPath"
 }
-Write-GeneratedConfig -Config $runtimeConfig -Path $GeneratedConfigPath
+if (-not $WhatIfPreference) {
+    Write-GeneratedConfig -Config $runtimeConfig -Path $GeneratedConfigPath
+    $generatedConfigCreated = $true
+}
 
 Write-Host "Selected release folder: $selectedReleasePath" -ForegroundColor Cyan
 Write-Host "Generated config: $GeneratedConfigPath"
@@ -318,12 +436,6 @@ Write-Host "IIS path: $($runtimeConfig.IisSitePath)"
 Write-Host "Public port: $($runtimeConfig.PublicPort)"
 Write-Host "Node port: $($runtimeConfig.Port)"
 
-if ($TakeOverPublicPortBinding) {
-    Remove-ConflictingPublicPortBindings $runtimeConfig
-} else {
-    Assert-NoConflictingPublicPortBinding $runtimeConfig
-}
-
 $installArgs = @{
     ConfigPath = $GeneratedConfigPath
     SkipPackageImport = $true
@@ -331,12 +443,22 @@ $installArgs = @{
     SkipBuild = $true
     AllowPortInUse = $true
 }
+if ($latestReleaseLock) { $installArgs.ExistingDeploymentLock = $latestReleaseLock }
 if ($SkipWinSWDownload) {
     $installArgs.SkipWinSWDownload = $true
 }
 
-try {
     if ($PSCmdlet.ShouldProcess($selectedReleasePath, "Deploy latest Windows release folder")) {
+        $managedTransaction = Start-ManagedDeploymentTransaction -Config $runtimeConfig -Lock $latestReleaseLock
+        $installArgs.ExistingManagedDeploymentTransaction = $managedTransaction
+        $deploymentStarted = $true
+        if ($usesIis) {
+            if ($TakeOverPublicPortBinding) {
+                Remove-ConflictingPublicPortBindings -Config $runtimeConfig -RemovedBindings $removedPublicBindings
+            } else {
+                Assert-NoConflictingPublicPortBinding $runtimeConfig
+            }
+        }
         & (Join-Path $repoRoot "install.ps1") @installArgs
         if (-not $SkipStatus) {
             $statusArgs = @{
@@ -348,25 +470,39 @@ try {
             }
             & (Join-Path $repoRoot "status.ps1") @statusArgs
         }
+        Complete-ManagedDeploymentTransaction -Config $runtimeConfig -Transaction $managedTransaction
+        $managedTransaction = $null
     }
 } catch {
-    Write-Error "Deployment failed. $($_.Exception.Message)" -ErrorAction Continue
-    Restore-IisSiteState $iisSnapshot
-    if ($serviceXmlSnapshot -and $serviceXmlPath) {
-        try {
-            [System.IO.File]::WriteAllText($serviceXmlPath, $serviceXmlSnapshot, [System.Text.UTF8Encoding]::new($false))
-            Restart-Service -Name $baseConfig.AppName -Force -ErrorAction SilentlyContinue
-            Write-Warning "Restored previous WinSW XML and attempted to restart service '$($baseConfig.AppName)'."
-        } catch {
-            Write-Warning "Could not restore previous WinSW XML/service state. $($_.Exception.Message)"
+    $deploymentFailure = $_
+    $rollbackFailures = [System.Collections.Generic.List[string]]::new()
+    if ($deploymentStarted) {
+        try { Restore-ManagedDeploymentTransaction -Config $runtimeConfig -Transaction $managedTransaction }
+        catch { $rollbackFailures.Add("managed service/control state: $($_.Exception.Message)") }
+        try { Restore-RemovedPublicPortBindings -RemovedBindings $removedPublicBindings }
+        catch { $rollbackFailures.Add("removed bindings: $($_.Exception.Message)") }
+        if ($rollbackFailures.Count -eq 0) {
+            try {
+                Resume-ManagedDeploymentServiceState -Config $runtimeConfig -Transaction $managedTransaction
+                Complete-ManagedDeploymentTransaction -Config $runtimeConfig -Transaction $managedTransaction
+                $managedTransaction = $null
+            } catch { $rollbackFailures.Add("previous service resume: $($_.Exception.Message)") }
         }
     }
-    throw
+    if ($rollbackFailures.Count -gt 0) {
+        throw "Deployment failed: $($deploymentFailure.Exception.Message) Rollback also failed: $($rollbackFailures -join '; ') Recovery journal retained: $($managedTransaction.Directory)"
+    }
+    throw $deploymentFailure
 } finally {
-    if (-not $KeepGeneratedConfig -and (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf)) {
-        Remove-Item -LiteralPath $GeneratedConfigPath -Force
-        Write-Host "Removed temporary generated config: $GeneratedConfigPath"
-    } elseif (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf) {
-        Write-Host "Generated config retained: $GeneratedConfigPath"
+    try {
+        if ($generatedConfigCreated -and -not $KeepGeneratedConfig -and (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $GeneratedConfigPath -Force
+            Write-Host "Removed temporary generated config: $GeneratedConfigPath"
+        } elseif ($generatedConfigCreated -and (Test-Path -LiteralPath $GeneratedConfigPath -PathType Leaf)) {
+            Write-Host "Generated config retained: $GeneratedConfigPath"
+        }
+    } finally {
+        Release-ManagedIisDeploymentLock -Transaction $managedTransaction
+        Exit-DeploymentLock -Lock $latestReleaseLock
     }
 }

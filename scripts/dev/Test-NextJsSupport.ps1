@@ -184,7 +184,7 @@ function Test-WindowsFallbackRuntimeEnvironmentDefaults {
       '$map["APP_PORT"] = [string]$Config.Port',
       '$map["BIND_ADDRESS"] = $bindAddress',
       '$map["HOSTNAME"] = $bindAddress',
-      'Invoke-CheckedNativeCommand $nssm (@("set", $config.AppName, "AppEnvironmentExtra") + $environmentEntries) "NSSM environment"',
+      'Set-NssmServiceEnvironment -Config $config -EnvironmentEntries $environmentEntries',
       'Invoke-CheckedNativeCommand "sc.exe" @("config", $config.AppName, "start=", "auto") "Set NSSM startup mode"'
     )) {
     Assert-FileContainsText -Path $nssmInstallerPath -ExpectedText $expected
@@ -265,7 +265,10 @@ function Test-WindowsPreparationEnvironmentIsolation {
       "-SkipInstall",
       "-SkipBuild"
     )
-    $invalidProcess = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList $invalidArguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $invalidStdoutPath -RedirectStandardError $invalidStderrPath
+    # Keep the negative subprocess on the same PowerShell edition as the test.
+    # PowerShell 7 does not ship powershell.exe inside PSHOME.
+    $powerShellExecutable = (Get-Process -Id $PID).Path
+    $invalidProcess = Start-Process -FilePath $powerShellExecutable -ArgumentList $invalidArguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $invalidStdoutPath -RedirectStandardError $invalidStderrPath
     $invalidError = ((Get-Content -LiteralPath $invalidStdoutPath -Raw -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $invalidStderrPath -Raw -ErrorAction SilentlyContinue))
     if ($invalidError -notmatch "invalid environment variable name") {
       throw "PreparationEnvironment should reject invalid variable names."
@@ -361,7 +364,7 @@ function New-WindowsConfig {
     $nodeExe = $nodeCommand.Source
   } else {
     $nodeExe = Join-Path (Split-Path -Parent $Path) "fake-node.cmd"
-    Write-Utf8NoBom -Path $nodeExe -Text "@echo off`r`nif ""%~1""==""--version"" (`r`n  echo v20.11.1`r`n  exit /b 0`r`n)`r`nexit /b 0`r`n"
+    Write-Utf8NoBom -Path $nodeExe -Text "@echo off`r`nif ""%~1""==""--version"" (`r`n  echo v22.11.1`r`n  exit /b 0`r`n)`r`nexit /b 0`r`n"
   }
   $config = [ordered]@{
     AppName = "ExampleNextSmoke"
@@ -392,6 +395,7 @@ function New-WindowsConfig {
     ServiceManager = $ServiceManager
     ReverseProxy = $ReverseProxy
     ServiceDirectory = $ServiceDirectory
+    DeploymentLockDirectory = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $Path) 'deployment-locks'))
     LogDirectory = $LogDirectory
     BackupDirectory = (Join-Path $ServiceDirectory "backups")
     IisSitePath = $AppDirectory
@@ -463,7 +467,7 @@ function New-UnixEnv {
   $relativeRoot = ConvertTo-ForwardSlashPath $RelativeRoot
   $nodeBinPath = Join-Path (Split-Path -Parent $Path) "fake-node.sh"
   $nodeBinRelative = "$relativeRoot/fake-node.sh"
-  Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v20.11.1`n  exit 0`nfi`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 0`n"
+  Write-Utf8NoBom -Path $nodeBinPath -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""--version"" ]; then`n  echo v22.11.1`n  exit 0`nfi`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 127`n  exit 0`nfi`ncase ""`${1:-}"" in */validate-node-runtime-policy.mjs) exec node ""`$@"" ;; esac`nexit 0`n"
   $bashForChmod = Resolve-BashPath
   if ($bashForChmod) {
     Invoke-BashCommand -BashPath $bashForChmod -Command "chmod +x '$nodeBinRelative'" | Out-Null
@@ -501,6 +505,7 @@ SERVICE_USER="nodeapp"
 SERVICE_GROUP="nodeapp"
 ENV_FILE="$relativeRoot/etc/example-next-smoke.env"
 HEALTHCHECK_STATE_DIR="$relativeRoot/state"
+DEPLOYMENT_TRANSACTION_ROOT="`${PWD}/$relativeRoot/transactions"
 PACKAGE_EXPECTED_FILES="$packageExpectedFiles"
 "@
 
@@ -1627,7 +1632,7 @@ try {
       New-NextProjectLayout -ProjectDirectory $unixPackageRoot -WithPublic
       $unixPackageNode = Join-Path $unixPackageRoot "package-node.sh"
       $unixPackageNodeRel = "$unixPackageRel/package-node.sh"
-      Write-Utf8NoBom -Path $unixPackageNode -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 115`n  exit 0`nfi`nexit 1`n"
+      Write-Utf8NoBom -Path $unixPackageNode -Text "#!/bin/sh`nif [ ""`${1:-}"" = ""-p"" ] && [ ""`${2:-}"" = ""process.versions.modules"" ]; then`n  echo 127`n  exit 0`nfi`nexit 1`n"
       Invoke-BashCommand -BashPath $bash.Source -Command "chmod +x '$unixPackageNodeRel'" | Out-Null
       $unixPackageOutput = Join-Path $testRoot "packages\example-next.tar.gz"
       $unixPackageOutputRel = Get-RepoRelativePath $unixPackageOutput

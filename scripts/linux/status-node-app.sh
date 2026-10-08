@@ -108,6 +108,7 @@ RUNNER_SCRIPT="${RUNNER_SCRIPT:-/usr/local/sbin/${APP_NAME}-runner.sh}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-${HEALTHCHECK_TIMEOUT:-10}}"
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME:-app}}"
 HEALTHCHECK_STATE_FILE="$HEALTHCHECK_STATE_DIR/healthcheck.state"
+HEALTHCHECK_LOG_DIR="${HEALTHCHECK_LOG_DIR:-$HEALTHCHECK_STATE_DIR/logs}"
 HEALTHCHECK_FAILURE_THRESHOLD="${HEALTHCHECK_FAILURE_THRESHOLD:-2}"
 HEALTHCHECK_INTERVAL="${HEALTHCHECK_INTERVAL:-60}"
 SERVICE_ACTIVE_STATUS="unknown"
@@ -353,10 +354,19 @@ default_proxy_health_url() {
       ;;
   esac
   proxy_port="$(proxy_listen_port)"
-  path="${HEALTHCHECK_PATH:-health}"
-  path="${path#/}"
-  [[ -n "$path" ]] || path="health"
-  printf 'http://127.0.0.1:%s/%s\n' "$proxy_port" "$path"
+  path="${HEALTHCHECK_PATH:-/health}"
+  [[ "$path" == /* ]] || path="/$path"
+  printf 'http://127.0.0.1:%s%s\n' "$proxy_port" "$path"
+}
+
+probe_reverse_proxy_health() {
+  local -a options=(--no-location -sS -o /dev/null --max-time "$HEALTH_TIMEOUT_SECONDS" -w 'http_code=%{http_code}\ntime_total=%{time_total}\n')
+  # A loopback connection still needs the configured virtual-host selector.
+  # An explicit URL retains its own hostname and operator-selected routing.
+  if [[ -z "${PROXY_HEALTH_URL:-}" && -n "${PUBLIC_HOSTNAME:-}" ]]; then
+    options+=(-H "Host: $PUBLIC_HOSTNAME")
+  fi
+  curl "${options[@]}" "$REVERSE_PROXY_PROBE_URL"
 }
 
 reverse_proxy_config_path() {
@@ -1020,14 +1030,17 @@ launchd_enabled_status() {
 }
 
 rc_conf_service_enabled() {
+  local rc_config_name
+  rc_config_name="$(printf '%s' "$SERVICE_NAME" | tr '.-' '__')"
+  case "$rc_config_name" in [A-Za-z_]*) ;; *) rc_config_name="node_$rc_config_name" ;; esac
   local file
   for file in /etc/rc.conf /etc/rc.conf.local "/etc/rc.conf.d/${SERVICE_NAME}" "/usr/local/etc/rc.conf.d/${SERVICE_NAME}"; do
     [[ -f "$file" ]] || continue
-    if grep -F "${SERVICE_NAME}_enable" "$file" 2>/dev/null | grep -Eiq 'yes|true|on'; then
+    if grep -F "${rc_config_name}_enable" "$file" 2>/dev/null | grep -Eiq 'yes|true|on'; then
       echo "enabled"
       return
     fi
-    if grep -F "${SERVICE_NAME}=YES" "$file" >/dev/null 2>&1; then
+    if grep -F "${rc_config_name}=YES" "$file" >/dev/null 2>&1; then
       echo "enabled"
       return
     fi
@@ -1055,11 +1068,16 @@ bsdrc_enabled_status() {
   rc_conf_service_enabled
 }
 
+systemd_status_value() {
+  local value
+  value="$(systemctl "$1" "$2" 2>/dev/null || true)"
+  printf '%s\n' "${value:-unknown}"
+}
 service_enabled_status() {
   case "$SERVICE_MANAGER_NORMALIZED" in
     systemd)
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || echo "unknown"
+        systemd_status_value is-enabled "$SERVICE_NAME"
       else
         echo "unknown"
       fi
@@ -1171,8 +1189,8 @@ health_scheduler_summary() {
       fi
       echo "HealthTimerExists=$HEALTH_MONITOR_SCHEDULER_EXISTS"
 
-      active_status="$(systemctl is-active "$timer_unit" 2>/dev/null || echo "unknown")"
-      enabled_status="$(systemctl is-enabled "$timer_unit" 2>/dev/null || echo "unknown")"
+      active_status="$(systemd_status_value is-active "$timer_unit")"
+      enabled_status="$(systemd_status_value is-enabled "$timer_unit")"
       HEALTH_MONITOR_SCHEDULER_ACTIVE_STATUS="$active_status"
       HEALTH_MONITOR_SCHEDULER_ENABLED_STATUS="$enabled_status"
       if [[ "$active_status" == "active" ]]; then
@@ -1309,7 +1327,7 @@ health_state_summary() {
 }
 
 health_log_summary() {
-  local path="${LOG_DIR:-}/healthcheck.log"
+  local path="$HEALTHCHECK_LOG_DIR/healthcheck.log"
   local ok_count failure_count restart_count
   if [[ ! -f "$path" ]]; then
     HEALTH_MONITOR_LOG_EXISTS="false"
@@ -1866,7 +1884,7 @@ elif [[ -z "${HEALTH_URL:-}" ]]; then
 else
   HEALTH_CHECKED="true"
   set +e
-  health_summary="$(curl -sS -o /dev/null --max-time "$HEALTH_TIMEOUT_SECONDS" -w 'http_code=%{http_code}\ntime_total=%{time_total}\n' "$HEALTH_URL" 2>/dev/null)"
+  health_summary="$(curl --no-location -sS -o /dev/null --max-time "$HEALTH_TIMEOUT_SECONDS" -w 'http_code=%{http_code}\ntime_total=%{time_total}\n' "$HEALTH_URL" 2>/dev/null)"
   health_exit=$?
   set -e
   printf '%s\n' "$health_summary"
@@ -1880,7 +1898,7 @@ else
   elif ! is_integer "$health_code"; then
     HEALTH_STATUS="failed"
     add_critical "HTTP health probe did not return a numeric status code."
-  elif [[ "$health_code" -lt 200 || "$health_code" -ge 400 ]]; then
+  elif [[ "$health_code" -lt 200 || "$health_code" -ge 300 ]]; then
     HEALTH_STATUS="failed"
     add_critical "HTTP health probe returned HTTP $health_code."
   else
@@ -1912,7 +1930,7 @@ case "$REVERSE_PROXY_NORMALIZED" in
       echo "ReverseProxyStatus=not-configured"
     else
       set +e
-      proxy_summary="$(curl -sS -o /dev/null --max-time "$HEALTH_TIMEOUT_SECONDS" -w 'http_code=%{http_code}\ntime_total=%{time_total}\n' "$REVERSE_PROXY_PROBE_URL" 2>/dev/null)"
+      proxy_summary="$(probe_reverse_proxy_health 2>/dev/null)"
       proxy_exit=$?
       set -e
       printf '%s\n' "$proxy_summary"
@@ -1926,7 +1944,7 @@ case "$REVERSE_PROXY_NORMALIZED" in
       elif ! is_integer "$REVERSE_PROXY_STATUS_CODE"; then
         REVERSE_PROXY_STATUS="failed"
         add_warning "Reverse proxy health probe did not return a numeric status code."
-      elif [[ "$REVERSE_PROXY_STATUS_CODE" -lt 200 || "$REVERSE_PROXY_STATUS_CODE" -ge 400 ]]; then
+      elif [[ "$REVERSE_PROXY_STATUS_CODE" -lt 200 || "$REVERSE_PROXY_STATUS_CODE" -ge 300 ]]; then
         REVERSE_PROXY_STATUS="failed"
         add_warning "Reverse proxy health probe returned HTTP $REVERSE_PROXY_STATUS_CODE."
       else

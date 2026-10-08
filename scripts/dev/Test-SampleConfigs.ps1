@@ -19,6 +19,20 @@ function Get-RelativePath {
   param([string]$Path)
   return $Path.Substring($RepoRoot.Length + 1).Replace("\", "/")
 }
+function Resolve-SampleValidationShell {
+  param([ValidateSet('bash', 'sh')][string]$Name)
+  if ($env:OS -eq 'Windows_NT' -and $env:ProgramFiles) {
+    foreach ($candidate in @(
+      (Join-Path $env:ProgramFiles "Git/usr/bin/$Name.exe"),
+      (Join-Path $env:ProgramFiles "Git/bin/$Name.exe")
+    )) {
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+  }
+  $command = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($command) { return $command.Source }
+  return $null
+}
 
 function Assert-RequiredValue {
   param(
@@ -999,18 +1013,18 @@ function Test-RenderedTemplates {
 
           Push-Location $RepoRoot
           try {
-            $bash = Get-Command bash -ErrorAction SilentlyContinue
+            $bash = Resolve-SampleValidationShell bash
             if ($bash) {
-              & $bash.Source -n (Get-RelativePath $renderedPath)
+              & $bash -n (Get-RelativePath $renderedPath)
               if ($LASTEXITCODE -ne 0) {
                 throw "$source rendered bash syntax check failed."
               }
             }
 
             if ($source -match 'sysv-node-app\.init\.tpl$|openrc-node-app\.init\.tpl$|bsdrc-node-app\.init\.tpl$') {
-              $sh = Get-Command sh -ErrorAction SilentlyContinue
+              $sh = Resolve-SampleValidationShell sh
               if ($sh) {
-                & $sh.Source -n (Get-RelativePath $renderedPath)
+                & $sh -n (Get-RelativePath $renderedPath)
                 if ($LASTEXITCODE -ne 0) {
                   throw "$source rendered POSIX sh syntax check failed."
                 }

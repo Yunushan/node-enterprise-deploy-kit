@@ -115,6 +115,8 @@ $requiredFiles = @(
   "scripts/windows/Install-IISStaticSite.ps1",
   "scripts/windows/Import-AppPackage.ps1",
   "scripts/windows/AppPackageLifecycle.ps1",
+  "scripts/windows/WindowsPm2ExecutionPolicy.ps1",
+  "scripts/windows/WindowsDeploymentIdentity.ps1",
   "scripts/windows/AppPackageSafety.ps1",
   "scripts/windows/PostDeployHealth.ps1",
   "scripts/windows/DeploymentLock.ps1",

@@ -10,9 +10,12 @@
 - Windows Server 2022
 - Windows Server 2025
 
-Current Next.js requires Node.js `20.9.0` or newer. For Node.js 20.x, Windows
-10 and Windows Server 2016 or newer are the production-recommended Windows
-runtime targets in this kit. Windows Server 2012 / 2012 R2 remains in the
+Production preflight requires a maintained Node.js release in the 22, 24 or 26
+line; Node.js 24 LTS is recommended. End-of-life and unknown release lines are
+rejected. Next.js's historical `20.9.0` framework floor does not establish
+maintained production support for Node.js 20. Windows 10 and Windows Server
+2016 or newer are the production runtime targets in this kit, subject to the
+chosen maintained Node release's OS support. Windows Server 2012 / 2012 R2 remains in the
 matrix for legacy migration evidence, but it is marked as an Experimental
 Node.js runtime target and is not production-recommended for current Next.js
 deployments.
@@ -396,17 +399,23 @@ This creates a generated runtime config that points `AppDirectory` and
 deployment flow with package import/install/build disabled, registers health
 checks, and runs `status.ps1`. The previous live folder is left in place. If
 another IIS site already owns the configured public binding, the helper fails by
-default; `-TakeOverPublicPortBinding` removes the conflicting binding only when
-you intentionally want the configured site to take over that port. The helper
+default; `-TakeOverPublicPortBinding` removes only a binding with the configured
+protocol, wildcard IP address, public port, and host header. Other host headers,
+IP-specific bindings, and protocols on that port remain available. The helper
 uses `TlsEnabled` to inspect `http` or `https`, defaults the public port to `80`
 or `443` when `PublicPort` is unset, and rollback restores the previous IIS
-physical path, app pool, and started/stopped site state. The generated runtime
+physical path, app pool, and started/stopped site state, plus removed bindings
+with their SNI flags and certificate associations. Takeover and deployment run
+under the same per-app deployment lock, and partial takeover failures also
+restore bindings already removed. The generated runtime
 config is removed after the deployment/status transaction by default. Pass
 `-KeepGeneratedConfig` only when an operator needs that file for an audited
 follow-up; protect a retained file as private deployment configuration. The
 scheduled health task uses its own allowlisted config under `%ProgramData%`, so
-it never needs the full generated runtime config. Default temporary names are
-unique per invocation, and an explicit `-GeneratedConfigPath` is rejected when
+it never needs the full generated runtime config. The default generated file is
+under the protected deployment-lock directory; an administrator/SYSTEM-only ACL
+is applied to the empty file before secrets are written. Default temporary names
+are unique per invocation, and an explicit `-GeneratedConfigPath` is rejected when
 it already exists or aliases the source deployment config.
 
 The Windows service installers write safe runtime environment defaults when
@@ -423,9 +432,16 @@ The Windows service-manager contract is checked locally by:
 
 ```powershell
 .\scripts\dev\Test-WindowsServiceManagers.ps1
+.\scripts\dev\Test-WindowsProductionSafety.ps1
 ```
 
-This is a static verifier. Release support still requires real-host evidence
+The service-manager verifier checks the repository contract. The production
+safety verifier executes deployment and rollback behavior with temporary files
+and mocked IIS/service commands, including failed backups, partial binding
+takeovers, scoped IIS/ARR restoration, SCM recovery settings, PM2 definitions,
+privilege-preserving NSSM updates, private configuration writes, and required
+proxy configuration failures. Both run under Windows PowerShell 5.1 and
+PowerShell 7. Release support still requires real-host evidence
 from `status.ps1` on each claimed Windows and Windows Server target.
 
 `ServiceAccount` controls the Windows service logon account. Supported
@@ -434,12 +450,77 @@ local/domain account, or a group managed service account such as
 `DOMAIN\ExampleNodeApp$`. Prefer `NetworkService` or a gMSA over `LocalSystem`
 for production. Ordinary domain/local users require `ServiceAccountPassword`,
 but a gMSA is preferred so no password has to be stored in deployment config.
+NSSM applies this account explicitly on new installations and updates existing
+compatible NSSM services in place. A new NSSM service defaults to
+`NetworkService`; an existing account is preserved when `ServiceAccount` is
+omitted. An unchanged dedicated account can keep its stored SCM credential
+without supplying its password again. A new or changed ordinary account still
+requires a password. The installer refuses to repurpose a same-name service
+that points to another executable.
+
+The NSSM executable is copied to the protected
+`ServiceDirectory\<AppName>.nssm.exe` before it becomes the service's runtime
+wrapper. Compatible legacy services using `tools\nssm\nssm.exe` migrate in
+place, preserving their identity and stored credential. The transaction
+snapshots the prior executable and SCM path so failure recovery can restore
+both; the runtime no longer depends on traversal through the repository's
+download location.
+
+NSSM protects its `Parameters` registry key, including `AppEnvironmentExtra`,
+with SYSTEM/Administrators full control and the actual runtime identity read
+access. Password changes use the SCM API so credentials do not appear in NSSM
+command-line arguments. Environment values are written directly through the
+registry API, keeping environment secrets out of process arguments as well.
+New or changed custom identities receive the service
+logon right through the Windows LSA API.
+
+WinSW follows the same identity rules: a new service defaults to
+`NetworkService`, updates preserve an existing identity when `ServiceAccount`
+is omitted, and an unchanged custom account keeps its stored SCM credential
+when no replacement password is supplied. Explicit password changes use the
+Windows service management API rather than native command-line arguments.
+
+WinSW and NSSM apply protected filesystem ACLs before writing generated
+configuration. SYSTEM and Administrators retain full access; the actual service
+identity receives read/execute access to application code and service files.
+Only `LogDirectory` and dedicated runtime cache directories grant that identity
+Modify access. XML containing environment values is readable only by those
+administrative identities and the service identity. Backups and deployment
+control directories remain administrative. ACL failures stop deployment.
+
+For Next.js, the default writable directory is `.next/cache`. Override
+`RuntimeWritableDirectories` with an array of paths relative to `AppDirectory`
+when the application uses a dedicated filesystem cache handler, for example
+`["runtime-cache"]`. Paths cannot refer to the app root, escape the app,
+overlap service/control directories, or traverse reparse points. Next.js ISR
+can write generated route data outside `.next/cache`; configure a dedicated
+cache handler/storage location and list its directory explicitly. Granting
+Modify access to `.next/server` also makes compiled server code writable, so
+it does not provide the same code protection. Exercise ISR/image-cache behavior
+on the real host before claiming those features supported.
+
+PM2 uses the identity invoking deployment and its own writable daemon state.
+Its ecosystem file, backups and PM2 home exclude other ordinary users through
+protected ACLs, while retaining SYSTEM, Administrators and the deployment
+owner. Because its application and control process share that owner, PM2 cannot
+enforce the separate immutable control/code boundary provided by WinSW/NSSM.
+`PM2Home` overrides `PM2_HOME` and the owner's default `.pm2` directory;
+`PM2Command` can pin the external executable or `.cmd` path. The installer and
+health task resolve the same owner, command and home.
+The PM2 health task uses the Limited run level so a writable PM2 command or
+module cannot become an elevation path through the scheduled task. Use a
+dedicated owner and an unelevated PM2 daemon. If an existing elevated
+daemon rejects the limited task's IPC connection, migrate that daemon/owner
+before registering monitoring; granting the task Highest is not a recovery
+option. WinSW/NSSM health tasks continue to use SYSTEM at Highest.
 
 Static IIS deployment backs up the existing live folder, stops an existing site
 before replacing its files, configures the app pool/site/binding, and verifies
 the final IIS state. A failure at any point restores both the prior content and
 the prior IIS physical path, app-pool association, binding, and started/stopped
-state. `StaticOutputDirectory`, `IisSitePath`, and `BackupDirectory` are checked
+state. If a backup fails before replacement starts, the original live content
+is preserved; a missing recorded backup also fails before rollback deletes
+replacement content. `StaticOutputDirectory`, `IisSitePath`, and `BackupDirectory` are checked
 for destructive overlap before deployment.
 
 When `ReverseProxy` is `iis`, `scripts\windows\Install-ReverseProxy.ps1`
@@ -450,6 +531,11 @@ true, `IisCertificateThumbprint` must identify an available certificate in
 `Cert:\LocalMachine\My`; preflight and installation fail closed when it is
 missing or conflicts with an existing SSL binding. Use `TlsEnabled=false` when
 TLS terminates at a documented upstream load balancer.
+Required ARR property and forwarded-header permission failures stop deployment
+instead of leaving an apparently successful but unusable proxy. HTTPS host
+bindings explicitly enable SNI. Direct PowerShell 7 invocation relaunches the
+IIS reverse-proxy installer in Windows PowerShell while retaining `-WhatIf` and
+confirmation preferences.
 
 Windows automation in this kit supports `ReverseProxy` values `iis` and `none`.
 Apache, HAProxy, and Traefik helper installers are Linux/Unix scripts here. If
@@ -515,7 +601,8 @@ node processes, configured port listeners, whether the configured service owns
 the listener, HTTP health latency, scheduled health-check freshness, health
 history, service-definition alignment, and recent log file metadata without
 printing environment variables or log contents. Scheduled-task evidence also
-proves the `SYSTEM`/highest principal, explicit System32 PowerShell action,
+proves the manager's required principal and run level (`SYSTEM`/Highest for
+WinSW/NSSM, the PM2 owner/Limited for PM2), explicit System32 PowerShell action,
 protected working directory, script hash, minimal config alignment, and ACL
 trust boundary. `-MinimumUptimeHours` is useful after a reboot or several days of
 runtime because it warns when the service has restarted more recently than the
@@ -560,12 +647,25 @@ update fails.
 .\uninstall.ps1 -ConfigPath .\config\windows\app.config.json -RemoveHealthCheckTask
 ```
 
-The Windows uninstaller routes by `ServiceManager`: WinSW uses the service
-wrapper executable, NSSM uses `nssm remove` when available and falls back to
-`sc.exe stop/delete`, and PM2 removes the named process plus the generated PM2
-ecosystem file. `-RemoveHealthCheckTask` also removes that app's protected
-managed task directory. It does not delete app files, application logs,
-backups, or private deployment config files.
+The Windows uninstaller takes the same app deployment lock and refuses retained
+recovery journals. It disables and drains the managed health task before
+removing the runtime. WinSW and NSSM registrations must reference the configured
+managed wrapper (or the known legacy NSSM repository path); removal disables
+SCM startup/recovery, stops the service, checks `sc.exe delete`, and verifies
+registration absence. PM2 removal uses the configured unelevated owner, PM2
+home, and executable. It selects exact case-sensitive app entries from the
+daemon's process list, deletes their verified numeric IDs (including cluster
+workers), and verifies those entries are gone before deleting
+its generated ecosystem file. An administrator must disable/remove a protected
+PM2 health task separately before running the owner's PM2 uninstall.
+
+Caught failures before runtime removal restore the prior service startup mode
+and previously enabled task. A successful runtime removal leaves a retained
+task disabled. `-RemoveHealthCheckTask` deletes private managed task files only
+after task removal succeeds and absence is verified; it requires administrator
+execution for native managers. Uninstall does not restore a deleted runtime on
+later cleanup failure and does not delete app files, application logs, backups,
+or private deployment config files.
 
 For managed config rollback, list available backups first, then restore a
 specific target:
@@ -590,9 +690,103 @@ The scheduled health check uses `HealthCheckFailureThreshold` and
 It records health state and its capped monitor log in the protected task
 directory under `%ProgramData%`. It prunes old application logs, diagnostics,
 and backups using `LogRetentionDays`, `DiagnosticRetentionDays`, and
-`BackupRetentionDays`. Cleanup examines direct files only and refuses a cleanup
-directory that is a reparse point; the `SYSTEM` monitor never recursively walks
-an application-controlled directory tree.
+`BackupRetentionDays`. Log and diagnostic cleanup examines direct files only and refuses a cleanup
+directory that is a reparse point. It also prunes expired kit-named `app` and
+`static-site` backup directories using their timestamped names, after checking
+containment and rejecting reparse points anywhere in the backup tree. Pending
+recovery journals suppress backup pruning. The `static_iis` scheduled task runs
+retention only; it does not probe HTTP or operate a Node service.
+
+The normal deploy and latest-release wrappers hold a per-app lock and snapshot
+control files, service registration, NSSM parameters and their ACL, SCM failure
+actions/flags/delayed startup/description, PM2 process configuration, and the
+health task before host mutation. Existing services are temporarily disabled
+before stopping, which prevents an already queued SCM recovery restart during
+package preparation. Existing health tasks are disabled and any active action
+is stopped. PM2 definitions are removed during preparation so watches and
+automatic restarts cannot launch against changing files. Failure recovery
+restores the control state while the application stays stopped, then restores
+its previous running/stopped state after directory and proxy recovery.
+
+After resuming a previously running runtime, recovery verifies HTTP health
+before deleting its protected journal. It uses the prior monitor's loopback
+`HealthUrl` and timeout policy, so a changed port or endpoint cannot accidentally
+validate the replacement runtime. If no prior monitor exists, the deployment's
+health policy is used. Set `PreviousHealthUrl` when the prior endpoint cannot be
+inferred or needs an explicit override. Previously stopped services and static
+IIS deployments skip runtime HTTP verification. Failed recovery health keeps
+the journal for diagnosis and retry.
+
+IIS snapshot, update and restore share a global configuration lock, including
+native Windows PowerShell child processes. Rollback restores the configured
+site, bindings/certificates, managed app-pool properties, the ARR properties and
+forwarded-variable entries changed by the installer. Unrelated global settings
+are preserved. Direct IIS installers use the same lock and a private recovery
+journal. Core relaunches preserve `WhatIf`, `Confirm`, and the parent lock lease.
+Direct static and reverse-proxy IIS installers acquire the app mutex before the
+global IIS mutex. The app mutex protects static source copying and app
+`web.config` changes against package imports and preparation. A Core parent
+holds both leases through native Windows PowerShell execution; the child
+validates the protected lease's app path, nonce, parent process start time,
+and live exclusive streams before borrowing them.
+Any retained direct IIS installer journal blocks subsequent IIS installers,
+including a journal interrupted before its snapshot completed. Inspect and
+recover that protected journal using the runbook before archiving it; deleting
+the mutex file does not clear the recovery guard.
+
+Changing an existing ordinary service account or its password requires
+`PreviousServiceAccountPassword` before deployment can proceed. An existing
+Password-logon health task similarly needs `PreviousHealthCheckTaskPassword`,
+or `HealthCheckTaskPassword` when its old principal is the current deployment
+owner. These credentials are excluded from the minimal monitor config. If
+control-state recovery fails, the protected journal is retained and the previous
+service is not resumed. A failure of the final HTTP verification also retains
+the journal after resume; resolve the reported recovery error before deploying
+again.
+The PM2 transaction supports one existing managed process definition and
+rejects multiple definitions before mutation.
+PM2 commands refuse differently cased aliases and malformed/duplicate process
+IDs. They also refuse numeric IDs shadowed by another process name, namespace,
+or executable path, because PM2 resolves those selectors before numeric IDs.
+Resolve the reported identity collision explicitly before retrying.
+
+Runtime installers invoked directly (`Install-NodeService.ps1`,
+`Install-NSSMService.ps1`, and `Install-PM2Fallback.ps1`) acquire the same app
+lock and managed recovery journal as deployment. When deployment calls an
+installer, it borrows those objects so the previous runtime resumes only after
+the parent restores package content. A successful direct installer restores the
+previous health task's enabled state. Automatic transitions between PM2,
+native service managers, and static hosting are rejected before stopping a
+runtime. Complete the explicit migration described in the error, including
+removing the previous health task, or use a distinct `AppName`.
+The default app-name lock uses the common ProgramData deployment-lock directory
+for every manager. If you override `DeploymentLockDirectory`, keep the same
+absolute path for that `AppName` across imports, installers, deployment, and
+monitoring, including an explicit manager migration.
+
+Before a runtime installer changes permissions, its journal records the exact
+DACL, owner, group, and inheritance protection of existing application, cache,
+log, service, and backup objects. A caught failure restores these permissions
+before resuming the old identity, including deployments with package import
+skipped. Reparse points are rejected. New application and log objects inherit
+the restored parent permissions; newly introduced private control files and
+backups retain their administrative protection.
+
+Automatic rollback handles caught errors. Killing PowerShell or losing the
+host interrupts recovery; the persistent journal requires the manual recovery
+procedure in [the runbook](RUNBOOK.md). An unresolved journal prevents further
+deployment and suppresses health-monitor actions until that recovery is
+completed. It does not automatically replay interrupted host mutations.
+
+Standalone `Import-AppPackage.ps1` holds the same app lock and records a
+persistent package marker before replacing content. It supports fresh or
+file-only imports; if a native service or PM2 runtime already exists, use the
+full deploy wrapper so its managed transaction disables recovery and watchers
+first. A borrowed importer leaves journal cleanup and runtime recovery to that
+wrapper. Failed standalone recovery retains its marker and backup. Static
+`AppDirectory` and live `IisSitePath` must be separate, nonoverlapping trees.
+An unprivileged file-only import can use a caller-owned explicit lock directory;
+its ACL grants only the current owner, SYSTEM, and Administrators access.
 
 ## Service Recovery
 

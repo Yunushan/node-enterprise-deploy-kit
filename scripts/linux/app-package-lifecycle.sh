@@ -6,6 +6,7 @@ PACKAGE_APP_SERVICE_WAS_RUNNING=false
 PACKAGE_APP_SERVICE_EXISTED=false
 PACKAGE_APP_BACKUP_PATH=""
 PACKAGE_APP_DIRECTORY_RECOVERY_SUCCEEDED=true
+PACKAGE_APP_PREVIOUS_EXISTED=false
 
 package_app_service_exists() {
   local manager="$1" name="$2"
@@ -59,7 +60,7 @@ package_app_service_is_running() {
 }
 
 package_stop_app_service() {
-  local manager="$1" name="$2" state_result
+  local manager="$1" name="$2" state_result unit
   PACKAGE_APP_SERVICE_WAS_RUNNING=false
   PACKAGE_APP_SERVICE_EXISTED=false
   if package_app_service_exists "$manager" "$name"; then
@@ -75,7 +76,9 @@ package_stop_app_service() {
     if [[ "$state_result" -eq 2 ]]; then
       return "$state_result"
     fi
-    return 0
+    # An inactive/activating systemd unit can have a queued restart. An explicit
+    # synchronous stop cancels it before any preparation or package replacement.
+    if [[ "$manager" != systemd || "$PACKAGE_APP_SERVICE_EXISTED" != true ]]; then return 0; fi
   fi
 
   echo "Stopping service before package import: $name"
@@ -87,7 +90,7 @@ package_stop_app_service() {
     openrc) rc-service "$name" stop ;;
     launchd) launchctl bootout "system/$name" ;;
     bsdrc|bsd-rc|rcd|rc.d)
-      if command -v rcctl >/dev/null 2>&1; then rcctl stop "$name"; else service "$name" stop; fi
+      if command -v rcctl >/dev/null 2>&1; then rcctl -f stop "$name"; else service "$name" onestop; fi
       ;;
   esac || {
     echo "Failed to stop service before package import: $name" >&2
@@ -106,7 +109,9 @@ package_remove_new_service_after_failure() {
   case "$manager" in
     systemd)
       systemctl disable --now "$name" >/dev/null 2>&1 || true
-      rm -f -- "/etc/systemd/system/${name}.service"
+      unit="$name"
+      case "$unit" in *.service|*.timer|*.socket|*.target|*.path|*.mount) ;; *) unit="$unit.service" ;; esac
+      rm -f -- "/etc/systemd/system/$unit"
       systemctl daemon-reload
       ;;
     systemv|sysv|sysvinit|initd|init-d)
@@ -123,7 +128,7 @@ package_remove_new_service_after_failure() {
       rm -f -- "/Library/LaunchDaemons/${name}.plist" "/usr/local/libexec/${name}-runner.sh"
       ;;
     bsdrc|bsd-rc|rcd|rc.d)
-      if command -v rcctl >/dev/null 2>&1; then rcctl disable "$name"; fi
+      if command -v rcctl >/dev/null 2>&1 && [[ -x "/etc/rc.d/$name" ]]; then rcctl disable "$name"; fi
       rm -f -- "/usr/local/etc/rc.d/$name" "/etc/rc.d/$name"
       ;;
     none) ;;
@@ -152,7 +157,7 @@ package_remove_new_service_after_failure() {
 package_rollback_deployment_transaction() {
   local app_dir="$1" backup_path="$2" previous_app_existed="$3"
   local manager="$4" name="$5" service_existed="$6" service_was_running="$7"
-  local current_running=false
+  local current_running=false phase="${8:-replacement-ready}"
 
   if package_app_service_is_running "$manager" "$name"; then
     current_running=true
@@ -160,18 +165,29 @@ package_rollback_deployment_transaction() {
     local state_result=$?
     [[ "$state_result" -ne 2 ]] || return "$state_result"
   fi
-  if [[ "$current_running" == "true" ]]; then
+  if [[ "$current_running" == "true" || "$manager" == systemd ]]; then
     PACKAGE_APP_SERVICE_WAS_RUNNING=true
     package_stop_app_service "$manager" "$name"
   fi
 
-  if [[ "$previous_app_existed" == "true" ]]; then
+  if [[ "$previous_app_existed" == "true" && "$phase" == prepared && ! -e "$backup_path" ]]; then
+    [[ -d "$app_dir" ]] || { echo 'Prepared package recovery has neither the original app nor its backup; service stays stopped.' >&2; return 1; }
+    # The atomic move never happened, or the importer already restored it.
+    # Do not delete that untouched/restored previous application directory.
+  elif [[ "$previous_app_existed" == "true" ]]; then
     [[ -n "$backup_path" && -e "$backup_path" ]] || {
       echo "Previous APP_DIR backup is missing; the failed deployment was left stopped." >&2
       return 1
     }
+    package_restore_previous_app_directory "$app_dir" "$backup_path" || return 1
+  else
+    package_restore_previous_app_directory "$app_dir" "$backup_path" || return 1
   fi
-  package_restore_previous_app_directory "$app_dir" "$backup_path"
+
+  if declare -F transaction_restore_files >/dev/null; then
+    transaction_restore_files || return 1
+    if [[ "$manager" == systemd && -n "${NODE_DEPLOY_TRANSACTION_DIR:-}" ]]; then systemctl daemon-reload; fi
+  fi
 
   if [[ "$service_existed" == "true" ]]; then
     if [[ "$service_was_running" == "true" ]]; then
@@ -198,7 +214,7 @@ package_restart_app_service_after_failure() {
     openrc) rc-service "$name" start ;;
     launchd) launchctl bootstrap system "/Library/LaunchDaemons/${name}.plist" ;;
     bsdrc|bsd-rc|rcd|rc.d)
-      if command -v rcctl >/dev/null 2>&1; then rcctl start "$name"; else service "$name" start; fi
+      if command -v rcctl >/dev/null 2>&1; then rcctl -f start "$name"; else service "$name" onestart; fi
       ;;
   esac || return 1
 
@@ -226,10 +242,11 @@ package_restore_previous_app_directory() {
 }
 
 package_replace_app_directory() {
-  local source_root="$1" app_dir="$2" backup_dir="$3" manifest_callback="$4"
-  local backup_path="" had_previous=false
+  local source_root="$1" app_dir="$2" backup_dir="$3" manifest_callback="$4" prepared_callback="${5:-}"
+  local backup_path="" reserved_path="" had_previous=false
   PACKAGE_APP_BACKUP_PATH=""
   PACKAGE_APP_DIRECTORY_RECOVERY_SUCCEEDED=true
+  PACKAGE_APP_PREVIOUS_EXISTED=false
 
   if [[ -z "$app_dir" || "$app_dir" != /* || "$app_dir" == "/" ]]; then
     echo "APP_DIR must be a non-root absolute path before package import." >&2
@@ -246,12 +263,22 @@ package_replace_app_directory() {
 
   if [[ -e "$app_dir" ]]; then
     had_previous=true
-    backup_path="$backup_dir/app.$(timestamp_utc).$$.bak"
+    PACKAGE_APP_PREVIOUS_EXISTED=true
+    reserved_path="$(mktemp -d "$backup_dir/app.$(timestamp_utc).$$.XXXXXX")" || return 1
+    rmdir -- "$reserved_path" || return 1
+    backup_path="$reserved_path.bak"
+    PACKAGE_APP_BACKUP_PATH="$backup_path"
+  fi
+  if [[ -n "$prepared_callback" ]] && ! "$prepared_callback"; then
+    echo 'Could not persist package recovery state before replacement; APP_DIR is untouched.' >&2
+    return 1
+  fi
+  if [[ "$had_previous" == true ]]; then
+    [[ ! -e "$backup_path" && ! -L "$backup_path" ]] || { echo 'Package backup destination already exists.' >&2; return 1; }
     if ! mv "$app_dir" "$backup_path"; then
       echo "Could not back up the existing APP_DIR before package replacement." >&2
       return 1
     fi
-    PACKAGE_APP_BACKUP_PATH="$backup_path"
     echo "Backed up existing APP_DIR to: $backup_path"
   fi
 

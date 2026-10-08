@@ -1,0 +1,4 @@
+# Review upstream releases and regenerate requirements.txt with pip-compile.
+ansible-core==2.21.5
+pip-audit==2.10.1
+detect-secrets==1.5.0

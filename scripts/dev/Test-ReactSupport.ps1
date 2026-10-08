@@ -203,10 +203,8 @@ function New-WindowsReactConfig {
     [string]$PackagePath = ""
   )
 
-  $nodeCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
-  if (-not $nodeCommand) { $nodeCommand = Get-Command pwsh -ErrorAction SilentlyContinue }
-  if (-not $nodeCommand) { $nodeCommand = Get-Command sh -ErrorAction SilentlyContinue }
-  if (-not $nodeCommand) { throw "No verifier-safe NodeExe placeholder command was found." }
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCommand) { throw "React deployment verification requires a maintained Node.js executable." }
   $packageExpectedSha256 = ""
   if (-not [string]::IsNullOrWhiteSpace($PackagePath) -and (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
     $packageExpectedSha256 = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
@@ -243,6 +241,7 @@ function New-WindowsReactConfig {
     ServiceManager = "nssm"
     ReverseProxy = "none"
     ServiceDirectory = $ServiceDirectory
+    DeploymentLockDirectory = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $Path) 'deployment-locks'))
     LogDirectory = $LogDirectory
     BackupDirectory = (Join-Path $ServiceDirectory "backups")
     IisSitePath = $AppDirectory
@@ -287,6 +286,7 @@ function New-UnixReactEnv {
   param(
     [string]$Path,
     [string]$RelativeRoot,
+    [string]$NodeBin,
     [int]$Port
   )
 
@@ -299,7 +299,7 @@ APP_FRAMEWORK="reactjs"
 NEXTJS_DEPLOYMENT_MODE="standalone"
 REACT_DOCUMENT_ROOT="build"
 APP_DIR="$relativeRoot/app"
-NODE_BIN="/usr/bin/bash"
+NODE_BIN="$NodeBin"
 START_SCRIPT="server.js"
 NODE_ARGUMENTS=""
 APP_PORT="$Port"
@@ -312,6 +312,7 @@ SERVICE_USER="nodeapp"
 SERVICE_GROUP="nodeapp"
 ENV_FILE="$relativeRoot/etc/example-react-smoke.env"
 HEALTHCHECK_STATE_DIR="$relativeRoot/state"
+DEPLOYMENT_TRANSACTION_ROOT="`${PWD}/$relativeRoot/transactions"
 REQUIRE_PACKAGE_SHA256="true"
 PACKAGE_EXPECTED_SHA256=""
 PACKAGE_EXPECTED_FILES="server.js build/index.html"
@@ -386,7 +387,8 @@ try {
     New-ReactLayout -AppDirectory $unixApp
     $unixEnv = Join-Path $unixRoot "app.env"
     $unixRootBash = Resolve-BashVisiblePath -Bash $bash -Path $unixRoot
-    New-UnixReactEnv -Path $unixEnv -RelativeRoot $unixRootBash -Port 39204
+    $nodeBinBash = Resolve-BashVisiblePath -Bash $bash -Path (Get-Command node -ErrorAction Stop).Source
+    New-UnixReactEnv -Path $unixEnv -RelativeRoot $unixRootBash -NodeBin $nodeBinBash -Port 39204
     $unixEnvBash = Resolve-BashVisiblePath -Bash $bash -Path $unixEnv
     Push-Location $RepoRoot
     try {
@@ -404,7 +406,7 @@ try {
     New-ReactLayout -AppDirectory $unixBadApp -WithoutIndex
     $unixBadEnv = Join-Path $unixBadRoot "app.env"
     $unixBadRootBash = Resolve-BashVisiblePath -Bash $bash -Path $unixBadRoot
-    New-UnixReactEnv -Path $unixBadEnv -RelativeRoot $unixBadRootBash -Port 39205
+    New-UnixReactEnv -Path $unixBadEnv -RelativeRoot $unixBadRootBash -NodeBin $nodeBinBash -Port 39205
     $unixBadEnvBash = Resolve-BashVisiblePath -Bash $bash -Path $unixBadEnv
     Push-Location $RepoRoot
     try {

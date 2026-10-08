@@ -19,6 +19,7 @@ SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
 SKIP_SERVICE_MANAGER_CHECK="${SKIP_SERVICE_MANAGER_CHECK:-false}"
 DEPLOYMENT_LOCK_TIMEOUT_SECONDS="${DEPLOYMENT_LOCK_TIMEOUT_SECONDS:-0}"
 DEPLOYMENT_LOCK_ROOT="${DEPLOYMENT_LOCK_ROOT:-/var/run/node-enterprise-deploy-kit}"
+DEPLOYMENT_TRANSACTION_ROOT="${DEPLOYMENT_TRANSACTION_ROOT:-/var/lib/node-enterprise-deploy-kit/deployment-transactions}"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -193,6 +194,16 @@ node_runtime_version() {
   output="$("$node_bin" --version 2>/dev/null | head -n 1 || true)"
   printf '%s\n' "$output"
 }
+validate_node_runtime_policy() {
+  local node_bin="${NODE_BIN:-node}" reported_version policy_error platform macos_version=""
+  command -v "$node_bin" >/dev/null 2>&1 || return 0
+  reported_version="$(node_runtime_version)"
+  platform="$(uname -s)"
+  if [[ "$platform" == Darwin ]]; then macos_version="$(sw_vers -productVersion 2>/dev/null || true)"; fi
+  if ! policy_error="$("$node_bin" "$SCRIPT_DIR/validate-node-runtime-policy.mjs" "$REPO_ROOT/config/node-runtime-policy.json" "$reported_version" "$platform" "$macos_version" "$(uname -m)" 2>&1)"; then
+    add_error "Node.js production runtime policy: $policy_error"
+  fi
+}
 validate_nextjs_node_version() {
   local minimum="$NEXTJS_MINIMUM_NODE_VERSION_EFFECTIVE" node_version rc
   if ! semver_components "$minimum" >/dev/null; then
@@ -364,6 +375,9 @@ esac
 if [[ -n "${APP_NAME:-}" && ! "$APP_NAME" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   add_error "APP_NAME should contain only letters, numbers, dot, underscore, or dash."
 fi
+if [[ "${SERVICE_MANAGER:-}" == bsdrc && "$(uname -s)" == OpenBSD && ! "${APP_NAME:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  add_error "OpenBSD rcctl requires APP_NAME to start with a letter or underscore and contain only letters, numbers, or underscores."
+fi
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME:-app}}"
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && ! -x "$NODE_BIN" ]]; then
@@ -371,6 +385,9 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && ! -x "$NODE_B
 fi
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${NODE_BIN:-}" && "$NODE_BIN" != /* ]]; then
   add_warning "NODE_BIN is not an absolute path. Use an explicit trusted Node.js path in production."
+fi
+if [[ "$APP_RUNTIME_NORMALIZED" == node || ( ! "$SKIP_REVERSE_PROXY" =~ ^(true|TRUE|True|1|yes|YES|Yes)$ && "$(normalize_name "${REVERSE_PROXY:-none}")" == traefik ) ]]; then
+  validate_node_runtime_policy
 fi
 
 if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && ! -d "$APP_DIR" ]]; then
@@ -380,7 +397,7 @@ if [[ "$APP_RUNTIME_NORMALIZED" == "node" && -n "${APP_DIR:-}" && ! -d "$APP_DIR
     add_error "APP_DIR not found: $APP_DIR"
   fi
 fi
-for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR HEALTHCHECK_STATE_DIR; do
+for path_name in APP_DIR LOG_DIR ENV_FILE BACKUP_DIR HEALTHCHECK_STATE_DIR DEPLOYMENT_TRANSACTION_ROOT; do
   if is_user_runtime_path "${!path_name:-}"; then
     add_warning "$path_name is under a user desktop/downloads/documents path. Use a service-owned production directory."
   fi
@@ -518,6 +535,16 @@ fi
 if [[ "$DEPLOYMENT_LOCK_ROOT" != /* || "$DEPLOYMENT_LOCK_ROOT" == "/" ]]; then
   add_error "DEPLOYMENT_LOCK_ROOT must be a non-root absolute path."
 fi
+if ! hardening_path_is_absolute "$DEPLOYMENT_TRANSACTION_ROOT"; then
+  add_error "DEPLOYMENT_TRANSACTION_ROOT must be a non-root absolute path without traversal or newlines."
+fi
+for runtime_path in "${APP_DIR:-}" "${LOG_DIR:-}"; do
+  [[ -n "$runtime_path" ]] || continue
+  runtime_path="${runtime_path%/}"
+  if [[ "${DEPLOYMENT_TRANSACTION_ROOT%/}" == "$runtime_path" || "$DEPLOYMENT_TRANSACTION_ROOT" == "$runtime_path"/* ]]; then
+    add_error "DEPLOYMENT_TRANSACTION_ROOT must be outside runtime-owned APP_DIR and LOG_DIR."
+  fi
+done
 
 if [[ -n "${HEALTH_URL:-}" ]]; then
   case "$HEALTH_URL" in
@@ -579,6 +606,9 @@ if [[ "${#secret_like_runtime_keys[@]}" -gt 0 ]]; then
 fi
 
 SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_service_manager "$PLATFORM_FAMILY")}")"
+if [[ "$SERVICE_MANAGER_NORMALIZED" == systemd && "${APP_NAME:-}" =~ \.(service|timer|socket|target|path|mount)$ ]]; then
+  add_error "APP_NAME must not end in a native systemd unit extension; the installer adds .service to the application name."
+fi
 case "$SERVICE_MANAGER_NORMALIZED" in
   systemd)
     if ! is_true "$SKIP_SERVICE_MANAGER_CHECK"; then
@@ -656,6 +686,7 @@ if ! is_true "$SKIP_REVERSE_PROXY"; then
       ;;
     traefik)
       command -v traefik >/dev/null 2>&1 || add_error "REVERSE_PROXY=traefik but traefik was not found. Install traefik or run scripts/linux/install-dependencies.sh before deployment."
+      command -v "${NODE_BIN:-node}" >/dev/null 2>&1 || add_error "Traefik route validation requires the approved NODE_BIN, including APP_RUNTIME=tomcat."
       [[ -n "${TRAEFIK_DYNAMIC_DIR:-}" || -n "${TRAEFIK_DYNAMIC_FILE:-}" ]] || add_warning "TRAEFIK_DYNAMIC_DIR/TRAEFIK_DYNAMIC_FILE is empty; using /etc/traefik/dynamic."
       ;;
     none|"") ;;

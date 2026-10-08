@@ -1,5 +1,7 @@
 {
   "schemaVersion": 1,
+  "nodeRuntimePolicyPath": "config/node-runtime-policy.json",
+  "supportedNodeMajors": [22, 24, 26],
   "claimLevels": [
     "template-ready",
     "ci-static-verified",
@@ -26,7 +28,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows 10 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows 10 or newer."
       }
     },
     {
@@ -44,7 +46,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows 10 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows 10 or newer."
       }
     },
     {
@@ -61,7 +63,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "experimental",
         "productionRecommended": false,
-        "requirements": "Node.js 20.x lists Windows Server 2012 in the Windows 8.1/Server 2012 Experimental row; prefer Windows Server 2016 or newer for production Next.js support."
+        "requirements": "Node.js 22 lists Windows Server 2012 in an Experimental row; Node.js 24/26 require Windows Server 2016 or newer. A custom legacy runtime is not a production recommendation."
       }
     },
     {
@@ -78,7 +80,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "experimental",
         "productionRecommended": false,
-        "requirements": "Node.js 20.x lists Windows Server 2012 R2 in the Windows 8.1/Server 2012 Experimental row; prefer Windows Server 2016 or newer for production Next.js support."
+        "requirements": "Node.js 22 lists Windows Server 2012 R2 in an Experimental row; Node.js 24/26 require Windows Server 2016 or newer. A custom legacy runtime is not a production recommendation."
       }
     },
     {
@@ -95,7 +97,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows Server 2016 or newer."
       }
     },
     {
@@ -112,7 +114,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows Server 2016 or newer."
       }
     },
     {
@@ -129,7 +131,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows Server 2016 or newer."
       }
     },
     {
@@ -146,7 +148,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: Windows Server 2016 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1: Windows Server 2016 or newer."
       }
     },
     {
@@ -164,7 +166,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Ubuntu 20.04 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Ubuntu 20.04 or newer."
       }
     },
     {
@@ -182,7 +184,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Debian 10 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Debian 10 or newer."
       }
     },
     {
@@ -200,7 +202,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a Linux Mint release based on Ubuntu 20.04 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a Linux Mint release based on Ubuntu 20.04 or newer."
       }
     },
     {
@@ -218,7 +220,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as RHEL 8 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as RHEL 8 or newer."
       }
     },
     {
@@ -236,7 +238,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Oracle Linux 8 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Oracle Linux 8 or newer."
       }
     },
     {
@@ -254,7 +256,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; legacy CentOS 7-era hosts are outside the production Next.js runtime floor."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; legacy CentOS 7-era hosts are outside the production Next.js runtime floor."
       }
     },
     {
@@ -272,7 +274,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as CentOS Stream 8 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as CentOS Stream 8 or newer."
       }
     },
     {
@@ -290,7 +292,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Rocky Linux 8 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as Rocky Linux 8 or newer."
       }
     },
     {
@@ -308,7 +310,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as AlmaLinux 8 or newer."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28, such as AlmaLinux 8 or newer."
       }
     },
     {
@@ -326,7 +328,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a currently maintained Fedora release."
+        "requirements": "Maintained Node.js 22/24/26 Tier 1 on GNU/Linux requires a supported architecture plus kernel >= 4.18 and glibc >= 2.28; use a currently maintained Fedora release."
       }
     },
     {
@@ -344,7 +346,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "experimental",
         "productionRecommended": false,
-        "requirements": "Node.js 20.x lists GNU/Linux musl targets such as Alpine as Experimental; require explicit real-host evidence for the installed Node runtime."
+        "requirements": "Maintained Node.js 22/24/26 lists GNU/Linux musl targets such as Alpine as Experimental; require explicit real-host evidence for the installed Node runtime."
       }
     },
     {
@@ -362,7 +364,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "tier-1",
         "productionRecommended": true,
-        "requirements": "Node.js 20.x Tier 1: macOS x64 >= 10.15 or macOS arm64 >= 11."
+        "requirements": "Maintained Node.js 22: macOS >= 11; Node.js 24/26: macOS >= 13.5. Node.js 26 macOS x64 is Tier 2; arm64 is Tier 1. The OS version must also remain vendor-supported."
       }
     },
     {
@@ -381,7 +383,7 @@
         "minimumNodeVersion": "20.9.0",
         "supportTier": "experimental",
         "productionRecommended": false,
-        "requirements": "Node.js 20.x lists FreeBSD x64 >= 12.4 as Experimental; require explicit local real-host evidence for the installed Node runtime."
+        "requirements": "Maintained Node.js 22/24/26 lists FreeBSD x64 >= 12.4 as Experimental; require explicit local real-host evidence for the installed Node runtime."
       }
     },
     {

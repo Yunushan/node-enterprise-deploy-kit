@@ -102,8 +102,9 @@ default_service_manager() {
 
 service_exists_systemd() {
   local service_name="$1" load_state
+  case "$service_name" in *.service|*.timer|*.socket|*.target|*.path|*.mount) ;; *) service_name="$service_name.service" ;; esac
   command -v systemctl >/dev/null 2>&1 || return 1
-  load_state="$(systemctl show "${service_name}.service" --property=LoadState --value 2>/dev/null)" || return 1
+  load_state="$(systemctl show "$service_name" --property=LoadState --value 2>/dev/null)" || return 1
   [[ -n "$load_state" && "$load_state" != "not-found" ]]
 }
 
@@ -111,6 +112,7 @@ reload_or_restart_service() {
   local service_name="$1" label="${2:-$1}"
   if [[ -z "$service_name" ]]; then
     echo "$label config installed, but no service name was configured. Reload it manually." >&2
+    return 1
   elif service_exists_systemd "$service_name"; then
     systemctl reload "$service_name" || systemctl restart "$service_name"
   elif command -v rc-service >/dev/null 2>&1; then
@@ -120,11 +122,12 @@ reload_or_restart_service() {
   elif [[ -x "/etc/init.d/$service_name" ]]; then
     "/etc/init.d/$service_name" reload || "/etc/init.d/$service_name" restart
   elif command -v launchctl >/dev/null 2>&1; then
-    launchctl kickstart -k "system/$service_name" 2>/dev/null || echo "$label config installed; reload $service_name manually." >&2
+    launchctl kickstart -k "system/$service_name"
   elif command -v rcctl >/dev/null 2>&1; then
-    rcctl reload "$service_name" 2>/dev/null || rcctl restart "$service_name" 2>/dev/null || echo "$label config installed; reload $service_name manually." >&2
+    rcctl reload "$service_name" || rcctl restart "$service_name"
   else
     echo "$label config installed, but no service control command was found. Reload it manually." >&2
+    return 1
   fi
 }
 
@@ -175,7 +178,7 @@ semver_at_least() {
 }
 
 runtime_env_key_list() {
-  printf '%s' "${1:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
+  printf '%s\n' "${1:-}" | tr ',;' '  ' | tr -s ' ' '\n' | sed '/^$/d'
 }
 
 shell_single_quote() {
@@ -269,18 +272,25 @@ backup_file_if_exists() {
     backup_dir="$(dirname "$file_path")/backups"
   fi
 
-  mkdir -p "$backup_dir"
-  chmod 0750 "$backup_dir"
-  local backup_name backup_timestamp backup_path
+  hardening_prepare_control_directory "$backup_dir"
+  local backup_name backup_timestamp backup_path backup_temporary
   backup_name="$(basename "$file_path")"
   backup_timestamp="$(timestamp_utc)"
-  backup_path="$backup_dir/${backup_name}.${backup_timestamp}.$$.bak"
-  cp -p "$file_path" "$backup_path"
+  backup_temporary="$(mktemp "$backup_dir/${backup_name}.${backup_timestamp}.$$.XXXXXX")" || return 1
+  backup_path="$backup_temporary.bak"
+  if ! cp -p "$file_path" "$backup_temporary" || ! ln "$backup_temporary" "$backup_path"; then
+    rm -f "$backup_temporary"
+    return 1
+  fi
+  rm -f "$backup_temporary"
+  # Retention measures backup creation, rather than the previous source's age.
+  touch "$backup_path"
   LAST_BACKUP_PATH="$backup_path"
   echo "Backed up $file_path to $backup_path"
 }
 
 replace_file_with_backup() {
+  transaction_record_file "$2"
   local source_path="$1" target_path="$2" backup_dir="${3:-${BACKUP_DIR:-}}"
   LAST_BACKUP_PATH=""
   if [[ -f "$target_path" ]] && cmp -s "$source_path" "$target_path"; then
@@ -295,21 +305,30 @@ replace_file_with_backup() {
 }
 
 copy_file_with_backup() {
-  local source_path="$1" target_path="$2" backup_dir="${3:-${BACKUP_DIR:-}}"
+  transaction_record_file "$2"
+  local source_path="$1" target_path="$2" backup_dir="${3:-${BACKUP_DIR:-}}" temporary
   if [[ -f "$target_path" ]] && cmp -s "$source_path" "$target_path"; then
     echo "Unchanged: $target_path"
     return 0
   fi
 
   backup_file_if_exists "$target_path" "$backup_dir"
-  cp -p "$source_path" "$target_path"
+  temporary="$(mktemp "$target_path.install.XXXXXX")" || return 1
+  if ! cp -p "$source_path" "$temporary" || ! mv -f "$temporary" "$target_path"; then
+    rm -f "$temporary"
+    return 1
+  fi
   echo "Updated: $target_path"
 }
 
 restore_file_from_backup() {
-  local backup_path="$1" target_path="$2"
+  local backup_path="$1" target_path="$2" temporary
   if [[ -n "$backup_path" && -f "$backup_path" ]]; then
-    cp -p "$backup_path" "$target_path"
+    temporary="$(mktemp "$target_path.restore.XXXXXX")" || return 1
+    if ! cp -p "$backup_path" "$temporary" || ! mv -f "$temporary" "$target_path"; then
+      rm -f "$temporary"
+      return 1
+    fi
     echo "Restored $target_path from $backup_path"
   elif [[ -f "$target_path" ]]; then
     rm -f "$target_path"
@@ -350,3 +369,14 @@ resolve_config_path() {
   fi
   printf '%s\n' "$config_file"
 }
+
+# shellcheck source=scripts/linux/runtime-hardening.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-hardening.sh"
+# shellcheck source=scripts/linux/deployment-transaction.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment-transaction.sh"
+# shellcheck source=scripts/linux/deployment-lock.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment-lock.sh"
+# shellcheck source=scripts/linux/shared-control-lock.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared-control-lock.sh"
+# shellcheck source=scripts/linux/managed-mutation.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/managed-mutation.sh"

@@ -29,6 +29,7 @@ if [[ "$HAPROXY_CONFIG_FILE" == "/etc/haproxy/haproxy.cfg" && -f "$HAPROXY_CONFI
   exit 1
 fi
 
+managed_mutation_begin
 mkdir -p "$LOG_DIR" "$(dirname "$HAPROXY_CONFIG_FILE")"
 render_template_file "$TEMPLATE" "$HAPROXY_CONFIG_FILE" \
   APP_NAME "$APP_NAME" \

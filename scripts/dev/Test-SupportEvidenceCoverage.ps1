@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir "NodeRuntimePolicy.ps1")
 
 if ([string]::IsNullOrWhiteSpace($MatrixPath)) {
   $MatrixPath = Join-Path $RepoRoot "config\support-matrix.example.json"
@@ -519,7 +520,11 @@ function Test-NextJsPlatformRuntimeFloor {
     "windows-server-2025" = 26100
   }
   if ($minimumWindowsBuilds.ContainsKey($target)) {
-    return ($null -ne $osBuild -and $osBuild -ge [int]$minimumWindowsBuilds[$target])
+    $minimumBuild = [int]$minimumWindowsBuilds[$target]
+    $windowsRuntime = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $windowsNodeMajor = Get-NodeRuntimeMajor -Version (Get-StringValue -Object $windowsRuntime -Names @("NodeVersion", "nodeVersion"))
+    if ($windowsNodeMajor -ge 24 -and $target -in @("windows-server-2012", "windows-server-2012-r2")) { $minimumBuild = 14393 }
+    return ($null -ne $osBuild -and $osBuild -ge $minimumBuild)
   }
 
   $glibcLinuxTargets = @("ubuntu", "debian", "linux-mint", "rhel", "oracle-linux", "centos", "centos-stream", "rocky", "almalinux", "fedora")
@@ -531,7 +536,10 @@ function Test-NextJsPlatformRuntimeFloor {
 
   if ($target -eq "macos") {
     if ([string]::IsNullOrWhiteSpace($machine)) { return $false }
-    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    $runtimeEvidence = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $reportedNodeVersion = Get-StringValue -Object $runtimeEvidence -Names @("NodeVersion", "nodeVersion")
+    $minimumMacosVersion = Get-NodeRuntimeMacosMinimumVersion -Version $reportedNodeVersion -Architecture $machine
+    if (-not $minimumMacosVersion) { return $false }
     return ((Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2) -eq $true)
   }
 
@@ -683,7 +691,7 @@ function Test-ServiceEvidence {
   if ($ServiceManager -in @("winsw", "nssm", "pm2", "systemd", "systemv", "openrc", "launchd", "bsdrc")) {
     if ($Evidence.definitionChecked -ne $true) { return $false }
     if ($Evidence.definitionExists -ne $true) { return $false }
-    if ($ServiceManager -eq "winsw" -and $Evidence.serviceWrapperMatchesConfig -ne $true) { return $false }
+    if ($ServiceManager -in @("winsw", "nssm") -and $Evidence.serviceWrapperMatchesConfig -ne $true) { return $false }
     if ($Evidence.nodeExeMatchesConfig -ne $true) { return $false }
     if ($Evidence.workingDirectoryMatchesConfig -ne $true) { return $false }
     if ($Evidence.argumentsMatchConfig -ne $true) { return $false }
@@ -734,7 +742,7 @@ function Test-HealthEvidence {
 
   if ($Evidence.checked -ne $true) { return $false }
   if ($Evidence.status -ne "ok") { return $false }
-  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 400) { return $false }
+  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 300) { return $false }
   return $true
 }
 
@@ -743,13 +751,16 @@ function Get-HealthMonitorEvidence {
 
   $monitor = Get-PropertyValue -Object $Evidence -Names @("HealthMonitor", "healthMonitor")
   [pscustomobject]@{
+    serviceManager = Get-ServiceManager -Evidence $Evidence
     status = Get-StringValue -Object $monitor -Names @("Status", "status")
     scheduled = Get-BooleanValue -Object $monitor -Names @("Scheduled", "scheduled") -Default $false
     scheduleType = Normalize-Token (Get-StringValue -Object $monitor -Names @("ScheduleType", "scheduleType"))
     taskExists = Get-BooleanValue -Object $monitor -Names @("TaskExists", "taskExists") -Default $false
     taskPrincipalChecked = Get-BooleanValue -Object $monitor -Names @("TaskPrincipalChecked", "taskPrincipalChecked") -Default $false
     taskRunsAsSystem = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsSystem", "taskRunsAsSystem") -Default $false
+    taskRunsAsPm2Owner = Get-BooleanValue -Object $monitor -Names @("TaskRunsAsPm2Owner", "taskRunsAsPm2Owner") -Default $false
     taskRunLevelHighest = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelHighest", "taskRunLevelHighest") -Default $false
+    taskRunLevelLimited = Get-BooleanValue -Object $monitor -Names @("TaskRunLevelLimited", "taskRunLevelLimited") -Default $false
     taskActionChecked = Get-BooleanValue -Object $monitor -Names @("TaskActionChecked", "taskActionChecked") -Default $false
     taskActionUsesSystemPowerShell = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesSystemPowerShell", "taskActionUsesSystemPowerShell") -Default $false
     taskActionUsesWorkingDirectory = Get-BooleanValue -Object $monitor -Names @("TaskActionUsesWorkingDirectory", "taskActionUsesWorkingDirectory") -Default $false
@@ -789,8 +800,12 @@ function Test-HealthMonitorEvidence {
   if ($Evidence.scheduleType -eq "windows-task") {
     if ($Evidence.taskExists -ne $true) { return $false }
     if ($Evidence.taskPrincipalChecked -ne $true) { return $false }
-    if ($Evidence.taskRunsAsSystem -ne $true) { return $false }
-    if ($Evidence.taskRunLevelHighest -ne $true) { return $false }
+    if ($Evidence.serviceManager -eq 'pm2') {
+      if ($Evidence.taskRunsAsPm2Owner -ne $true) { return $false }
+    } elseif ($Evidence.taskRunsAsSystem -ne $true) { return $false }
+    if ($Evidence.serviceManager -eq 'pm2') {
+      if ($Evidence.taskRunLevelLimited -ne $true -or $Evidence.taskRunLevelHighest -ne $false) { return $false }
+    } elseif ($Evidence.taskRunLevelHighest -ne $true) { return $false }
     if ($Evidence.taskActionChecked -ne $true) { return $false }
     if ($Evidence.taskActionUsesSystemPowerShell -ne $true) { return $false }
     if ($Evidence.taskActionUsesWorkingDirectory -ne $true) { return $false }
@@ -859,7 +874,7 @@ function Test-ReverseProxyEvidence {
   if ($Evidence.applicable -ne $true) { return $false }
   if ($Evidence.mode -in @("", "none", "unknown")) { return $false }
   if ($Evidence.status -ne "ok") { return $false }
-  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 400) { return $false }
+  if ($null -eq $Evidence.statusCode -or [int]$Evidence.statusCode -lt 200 -or [int]$Evidence.statusCode -ge 300) { return $false }
 
   if ($Evidence.mode -eq "iis") {
     if ($Evidence.iisModuleAvailable -ne $true) { return $false }
@@ -1666,8 +1681,10 @@ function New-SelfTestEvidence {
     if ($scheduleType -eq "windows-task") {
       $monitor["taskExists"] = $true
       $monitor["taskPrincipalChecked"] = $true
-      $monitor["taskRunsAsSystem"] = $true
-      $monitor["taskRunLevelHighest"] = $true
+      $monitor["taskRunsAsSystem"] = ($serviceManager -ne 'pm2')
+      $monitor["taskRunsAsPm2Owner"] = ($serviceManager -eq 'pm2')
+      $monitor["taskRunLevelHighest"] = $ServiceManager -ne 'pm2'
+      $monitor["taskRunLevelLimited"] = $ServiceManager -eq 'pm2'
       $monitor["taskActionChecked"] = $true
       $monitor["taskActionUsesSystemPowerShell"] = $true
       $monitor["taskActionUsesWorkingDirectory"] = $true
@@ -1822,7 +1839,7 @@ function New-SelfTestEvidence {
             default { "winsw-xml" }
           }
           definitionExists = $true
-          serviceWrapperMatchesConfig = if ($serviceManager -eq "winsw") { $true } else { $null }
+          serviceWrapperMatchesConfig = if ($serviceManager -in @("winsw", "nssm")) { $true } else { $null }
           nodeExeMatchesConfig = $true
           workingDirectoryMatchesConfig = $true
           argumentsMatchConfig = $true
@@ -1896,7 +1913,7 @@ function New-SelfTestEvidence {
         status = "ok"
         appFramework = "nextjs"
         mode = $nextJsMode
-        nodeVersion = "v20.11.1"
+        nodeVersion = "v22.0.0"
         minimumNodeVersion = "20.9.0"
         nodeVersionSatisfied = $true
         nextVersion = "14.2.3"
@@ -2198,6 +2215,24 @@ if ($SelfTest -and -not $SkipExtendedSelfTestChecks) {
 
   $mismatchedTargetEvidencePath = Join-Path $RepoRoot ".tmp\support-evidence-coverage-target-mismatch-$([Guid]::NewGuid().ToString('N'))"
   $ubuntuSystemdNginxEntry = Select-SelfTestExpectedEntry -Kind "strict" -TargetId "ubuntu" -NextJsMode "standalone" -ServiceManager "systemd" -ReverseProxy "nginx"
+  # Coverage cannot count a redirect as healthy even when all other claims pass.
+  foreach ($redirectStatusCode in @(301, 302, 307, 399)) {
+    foreach ($probeName in @('health', 'reverseProxy')) {
+      $redirectEvidencePath = Join-Path $RepoRoot (".tmp\support-evidence-coverage-redirect-$probeName-$redirectStatusCode-$([Guid]::NewGuid().ToString('N'))")
+      New-SelfTestEvidence -Path $redirectEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
+      $redirectFile = Join-Path $redirectEvidencePath 'strict-ubuntu-standalone-systemd-nginx.json'
+      $redirectEvidence = Get-Content -LiteralPath $redirectFile -Raw | ConvertFrom-Json
+      $redirectEvidence.$probeName.statusCode = $redirectStatusCode
+      $redirectEvidence | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $redirectFile -Encoding UTF8
+      $redirectReportPath = Join-Path $redirectEvidencePath 'coverage-result.json'
+      & $PSCommandPath @ubuntuCoverageArgs -EvidencePath $redirectEvidencePath -Format Json -OutputPath $redirectReportPath | Out-Null
+      $redirectReport = Get-Content -LiteralPath $redirectReportPath -Raw | ConvertFrom-Json
+      if ([int]$redirectReport.summary.parsedEvidenceFiles -ne 1 -or [int]$redirectReport.summary.healthyEvidenceFiles -ne 0 -or [int]$redirectReport.summary.coveredCount -ne 0) {
+        throw "Support evidence coverage self-test failed: HTTP$redirectStatusCode $probeName redirect was accepted as healthy coverage."
+      }
+    }
+  }
+
   New-SelfTestEvidence -Path $mismatchedTargetEvidencePath -ExpectedEntries $ubuntuSystemdNginxEntry -RequiredMinimumUptimeHours $requiredMinimumUptimeHours
   $mismatchedTargetFile = Join-Path $mismatchedTargetEvidencePath "strict-ubuntu-standalone-systemd-nginx.json"
   $mismatchedTargetEvidence = Get-Content -LiteralPath $mismatchedTargetFile -Raw | ConvertFrom-Json

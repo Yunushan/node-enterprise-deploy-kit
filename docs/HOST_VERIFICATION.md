@@ -597,7 +597,7 @@ Evidence is acceptable when:
   manager, such as Windows SCM, systemd, OpenRC, launchd, or BSD rc.
 - The configured app port was checked, is listening, has readable owner
   process evidence, and is owned by the configured service process.
-- The HTTP health probe was checked and returned a successful 2xx/3xx status.
+- The HTTP health probe was checked and returned HTTP 2xx without following redirects. A redirect is not readiness evidence.
 - Recurring health monitor evidence is present: the monitor has run recently,
   the state file exists, consecutive failures are `0`, the recent log summary
   exists, and the recent log summary has `0` failures and `0` service restarts.
@@ -627,12 +627,13 @@ Evidence is acceptable when:
   target-local deployment ID, the Next.js `.next/BUILD_ID`, or the package
   SHA256 from `.node-enterprise-deploy.json`, so the evidence identifies the
   release/build that is actually running.
-- `-RequireCollectorSha256` proves which status collector produced the
-  evidence.
-- `-RequireCiCollection` proves the status output includes safe CI collection
+- `-RequireCollectorSha256` requires a well-formed collector digest in the
+  evidence; it does not authenticate the collector by itself.
+- `-RequireCiCollection` verifies the status output includes consistent CI collection
   provenance.
-- `-RequireHostEvidenceWorkflowCollection` proves workflow-capable evidence was
-  collected through the controlled `host-evidence` / `workflow_dispatch` path.
+- `-RequireHostEvidenceWorkflowCollection` verifies the reported
+  `host-evidence` / `workflow_dispatch` origin and exact collection dimensions.
+  It does not independently authenticate a GitHub run or artifact.
 - The evidence is recent enough for the release or support decision.
 
 Evidence is not enough when:

@@ -32,6 +32,8 @@
     state: directory
   loop:
     - scripts\\windows
+    - scripts\\dev
+    - config
     - templates\\windows
     - tools\\winsw
 
@@ -39,11 +41,22 @@
   ansible.windows.win_template:
     src: app.config.json.j2
     dest: "{{ node_deploy_windows_service_dir }}\\app.config.json"
+  no_log: true
 
 - name: Copy deployment scripts
   ansible.windows.win_copy:
     src: "../../../../scripts/windows/"
     dest: "{{ node_deploy_windows_service_dir }}\\scripts\\windows\\"
+
+- name: Copy reviewed Node runtime policy helper
+  ansible.windows.win_copy:
+    src: "../../../../scripts/dev/NodeRuntimePolicy.ps1"
+    dest: "{{ node_deploy_windows_service_dir }}\\scripts\\dev\\NodeRuntimePolicy.ps1"
+
+- name: Copy reviewed Node runtime policy
+  ansible.windows.win_copy:
+    src: "../../../../config/node-runtime-policy.json"
+    dest: "{{ node_deploy_windows_service_dir }}\\config\\node-runtime-policy.json"
 
 - name: Copy Windows templates
   ansible.windows.win_copy:

@@ -4,11 +4,11 @@
 {% set react_index_path = 'index.html' if react_document_root in ['', '.'] else react_document_root ~ '/index.html' %}
 {% set nextjs_package_expected_files = ['package.json', '.next/BUILD_ID', '.next', 'node_modules/next/dist/bin/next'] if nextjs_mode == 'next-start' else ['server.js', '.next/BUILD_ID', '.next/static'] %}
 {% set react_package_expected_files = [node_deploy_start_script | default('server.js'), react_index_path] %}
-{% set default_package_expected_files = react_package_expected_files if app_framework in ['react', 'reactjs', 'react-js'] else nextjs_package_expected_files %}
+{% set default_package_expected_files = react_package_expected_files if app_framework in ['react', 'reactjs', 'react-js'] else (nextjs_package_expected_files if app_framework in ['next', 'nextjs', 'next-js'] else [node_deploy_start_script | default('server.js')]) %}
 {% set configured_package_expected_files = node_deploy_package_expected_files | default([]) %}
 {% set package_expected_files = configured_package_expected_files if configured_package_expected_files | length > 0 else default_package_expected_files %}
 {% set configured_node_arguments = node_deploy_node_arguments | default('') %}
-{% set default_node_arguments = 'start -H ' ~ node_deploy_bind_address if nextjs_mode == 'next-start' else '' %}
+{% set default_node_arguments = 'start -H ' ~ node_deploy_bind_address if app_framework in ['next', 'nextjs', 'next-js'] and nextjs_mode == 'next-start' else '' %}
 {% set node_arguments = configured_node_arguments if configured_node_arguments | length > 0 else default_node_arguments %}
 {
   "AppName": {{ node_deploy_project_name | to_json }},

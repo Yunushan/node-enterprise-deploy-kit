@@ -48,6 +48,14 @@
     - node_deploy_app_framework_normalized in ['react', 'reactjs', 'react-js']
     - node_deploy_app_runtime_normalized != 'node'
 
+- name: Resolve incoming Linux deployment config path
+  ansible.builtin.set_fact:
+    node_deploy_linux_incoming_config_path: >-
+      {{ '/etc/node-enterprise-deploy-kit/incoming/' ~ node_deploy_project_name ~ '.env'
+         if (node_deploy_linux_config_path | default('/etc/node-enterprise-deploy-kit/incoming/' ~ node_deploy_project_name ~ '.env', true) | normpath)
+            == (('/etc/node-enterprise-deploy-kit/' ~ node_deploy_project_name ~ '.env') | normpath)
+         else (node_deploy_linux_config_path | default('/etc/node-enterprise-deploy-kit/incoming/' ~ node_deploy_project_name ~ '.env', true)) }}
+
 - name: Ensure Linux deployment support directories exist
   ansible.builtin.file:
     path: "{{ item }}"
@@ -57,7 +65,15 @@
     - "{{ node_deploy_linux_deploy_dir }}"
     - "{{ node_deploy_linux_deploy_dir }}/scripts/linux"
     - "{{ node_deploy_linux_deploy_dir }}/templates/linux"
-    - "{{ node_deploy_linux_config_path | dirname }}"
+    - "{{ node_deploy_linux_deploy_dir }}/config"
+    - "{{ node_deploy_linux_incoming_config_path | dirname }}"
+
+- name: Resolve native root group
+  ansible.builtin.command:
+    argv: [id, -gn, root]
+  register: node_deploy_native_root_group
+  changed_when: false
+  check_mode: false
 
 - name: Copy Linux deployment entrypoint
   ansible.builtin.copy:
@@ -79,21 +95,52 @@
     mode: "0644"
     directory_mode: "0755"
 
+- name: Copy reviewed Node runtime policy
+  ansible.builtin.copy:
+    src: "../../../../config/node-runtime-policy.json"
+    dest: "{{ node_deploy_linux_deploy_dir }}/config/node-runtime-policy.json"
+    owner: root
+    group: "{{ node_deploy_native_root_group.stdout | trim }}"
+    mode: "0644"
+
 - name: Render Linux deployment config
   ansible.builtin.template:
     src: deploy.env.j2
-    dest: "{{ node_deploy_linux_config_path }}"
+    dest: "{{ node_deploy_linux_incoming_config_path }}"
     owner: root
-    group: root
+    group: "{{ node_deploy_native_root_group.stdout | trim }}"
     mode: "0640"
+  no_log: true
 
 - name: Optionally install Linux dependencies
   ansible.builtin.command:
     argv:
       - bash
       - "{{ node_deploy_linux_deploy_dir }}/scripts/linux/install-dependencies.sh"
-      - "{{ node_deploy_linux_config_path }}"
-  when: node_deploy_linux_install_dependencies | default(false) | bool
+      - "{{ node_deploy_linux_incoming_config_path }}"
+  when:
+    - node_deploy_linux_install_dependencies | default(false) | bool
+    - ansible_facts.system != 'Darwin'
+  become: true
+  changed_when: true
+
+- name: Optionally install macOS dependencies with Homebrew
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ node_deploy_linux_deploy_dir }}/scripts/linux/install-dependencies.sh"
+  environment:
+    REVERSE_PROXY: "{{ node_deploy_linux_reverse_proxy | default('none') }}"
+    APP_RUNTIME: "{{ node_deploy_app_runtime | default('node') }}"
+    NGINX_PACKAGE: "{{ node_deploy_linux_nginx_package | default('nginx') }}"
+    APACHE_PACKAGE: "{{ node_deploy_linux_apache_package | default('httpd', true) }}"
+    HAPROXY_PACKAGE: "{{ node_deploy_linux_haproxy_package | default('haproxy') }}"
+    TRAEFIK_PACKAGE: "{{ node_deploy_linux_traefik_package | default('traefik') }}"
+    TOMCAT_PACKAGE: "{{ node_deploy_tomcat_package | default('tomcat', true) }}"
+  when:
+    - node_deploy_linux_install_dependencies | default(false) | bool
+    - ansible_facts.system == 'Darwin'
+  become: false
   changed_when: true
 
 - name: Deploy Linux Node app using local orchestrator
@@ -101,5 +148,5 @@
     argv:
       - bash
       - "{{ node_deploy_linux_deploy_dir }}/deploy.sh"
-      - "{{ node_deploy_linux_config_path }}"
+      - "{{ node_deploy_linux_incoming_config_path }}"
   changed_when: true

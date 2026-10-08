@@ -69,17 +69,24 @@ these checks to work around an unexpectedly large or highly compressed package.
 | Skip preflight | script flag | `SKIP_PREFLIGHT` | Skip local deployment validation when intentionally bypassing checks |
 | Allow port in use | script flag | `ALLOW_PORT_IN_USE` | Permit updates while the configured port is already listening |
 | Deployment lock wait | `DeploymentLockTimeoutSeconds` | `DEPLOYMENT_LOCK_TIMEOUT_SECONDS` | Seconds to wait for another deployment of the same app; `0` fails immediately and the maximum is 3600 |
-| Deployment lock root | `DeploymentLockDirectory` | `DEPLOYMENT_LOCK_ROOT` | Optional absolute lock location; Windows defaults below `ServiceDirectory` or ProgramData, Unix-like hosts default to `/var/run/node-enterprise-deploy-kit` |
+| Existing monitor drain wait | n/a | `HEALTHCHECK_QUIESCE_TIMEOUT_SECONDS` | Seconds to wait for privileged invokers of an older Unix monitor after suspending its scheduler; defaults to 30, range 0–300; failure leaves application files untouched |
+| Deployment lock root | `DeploymentLockDirectory` | `DEPLOYMENT_LOCK_ROOT` | Optional absolute lock location; all Windows managers default to the common `%ProgramData%/node-enterprise-deploy-kit/deployment-locks` app-name namespace, Unix-like hosts default to `/var/run/node-enterprise-deploy-kit`. Keep any explicit override identical for every operation on one app. |
+| Deployment recovery root | Lock directory under `ServiceDirectory` or persistent ProgramData | `DEPLOYMENT_TRANSACTION_ROOT` | Persistent root-owned Unix recovery journals; defaults to `/var/lib/node-enterprise-deploy-kit/deployment-transactions`, separately from the volatile deployment mutex |
 | Skip reverse proxy | script flag | `SKIP_REVERSE_PROXY` | Install/update the service but leave proxy configuration unchanged |
 | Skip health check | script flag | `SKIP_HEALTH_CHECK` | Install/update the service but leave health-check scheduling unchanged |
 | Runtime env keys | `Environment` | `RUNTIME_ENV_KEYS` | Extra Linux config variables to write into the private service env file; the managed env already includes `NODE_ENV`, `PORT`, `APP_PORT`, `APP_NAME`, `BIND_ADDRESS`, `HOST`, and `HOSTNAME` |
 | Health failures | `HealthCheckFailureThreshold` | `HEALTHCHECK_FAILURE_THRESHOLD` | Consecutive failures before restart |
 | Restart cooldown | `HealthCheckRestartCooldownMinutes` | `HEALTHCHECK_RESTART_COOLDOWN` | Minimum time between health-check restarts |
 | Health timeout | `HealthCheckTimeoutSeconds` | `HEALTHCHECK_TIMEOUT` | HTTP health probe timeout |
+| Monitor log directory | n/a | `HEALTHCHECK_LOG_DIR` | Protected Unix monitor log directory; defaults to `HEALTHCHECK_STATE_DIR/logs` |
+| Monitor log rotation | n/a | `HEALTHCHECK_LOG_MAX_BYTES`, `HEALTHCHECK_LOG_GENERATIONS` | Unix rotation threshold and generations; defaults to 10485760 bytes and 7 |
+| Application log rotation | n/a | `APP_LOG_MAX_BYTES`, `APP_LOG_GENERATIONS` | Unix service-user copy/truncate rotation; defaults to 10485760 bytes and 7 |
+| Proxy logs | n/a | `PROXY_LOG_DIR` | Root-protected Nginx/Apache log directory; default `/var/log/node-enterprise-deploy-kit/proxy/<APP_NAME>` |
+| Proxy log rotation | n/a | `PROXY_LOG_MAX_BYTES`, `PROXY_LOG_GENERATIONS` | Trusted proxy copy/truncate rotation; defaults to 10485760 bytes and 7 |
 | Require post-deploy health | `RequirePostDeployHealthCheck` | `REQUIRE_POST_DEPLOY_HEALTH_CHECK` | Require a successful loopback HTTP 2xx response before service/Tomcat installation can report success; defaults to true |
 | Post-deploy attempts | `PostDeployHealthAttempts` | `POST_DEPLOY_HEALTH_ATTEMPTS` | Maximum startup health attempts; defaults to 12 |
 | Post-deploy delay | `PostDeployHealthDelaySeconds` | `POST_DEPLOY_HEALTH_DELAY_SECONDS` | Seconds between startup health attempts; defaults to 5 |
-| Log retention | `LogRetentionDays` | `LOG_RETENTION_DAYS` | Days to retain managed log files |
+| Log retention | `LogRetentionDays` | `LOG_RETENTION_DAYS` | Days to retain managed logs; Unix age cleanup applies to rotated protected monitor logs, never active application logs |
 | Backup retention | `BackupRetentionDays` | `BACKUP_RETENTION_DAYS` | Days to retain managed backup files |
 | Diagnostic retention | `DiagnosticRetentionDays` | `DIAGNOSTIC_RETENTION_DAYS` | Days to retain generated diagnostic bundles |
 | IIS site | `IisSiteName` | n/a | Windows IIS site name |

@@ -9,6 +9,7 @@ load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 if [[ "${EUID}" -ne 0 ]]; then echo "Run as root or with sudo." >&2; exit 1; fi
 if ! command -v nginx >/dev/null 2>&1; then echo "nginx is not installed. Install nginx first, then rerun this script." >&2; exit 1; fi
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
+PROXY_LOG_DIR="${PROXY_LOG_DIR:-/var/log/node-enterprise-deploy-kit/proxy/$APP_NAME}"
 PROXY_LISTEN_PORT="$(proxy_listen_port)"
 FORWARDED_PROTO="$(proxy_forwarded_proto)"
 FORWARDED_PORT="$(proxy_forwarded_port)"
@@ -27,14 +28,16 @@ if [[ -z "${NGINX_CONFIG_DIR:-}" ]]; then
   esac
 fi
 OUT="${NGINX_CONFIG_DIR}/${NGINX_SITE_NAME}.conf"
-mkdir -p "$LOG_DIR" "$NGINX_CONFIG_DIR"
+managed_mutation_begin
+hardening_prepare_control_directory "$PROXY_LOG_DIR"
+mkdir -p "$NGINX_CONFIG_DIR"
 render_template_file "$TEMPLATE" "$OUT" \
   APP_NAME "$APP_NAME" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
   PROXY_LISTEN_PORT "$PROXY_LISTEN_PORT" \
   APP_PORT "$APP_PORT" \
   HEALTH_URL "$HEALTH_URL" \
-  LOG_DIR "$LOG_DIR" \
+  LOG_DIR "$PROXY_LOG_DIR" \
   FORWARDED_PROTO "$FORWARDED_PROTO" \
   FORWARDED_PORT "$FORWARDED_PORT"
 backup_path="$(get_last_backup_path)"

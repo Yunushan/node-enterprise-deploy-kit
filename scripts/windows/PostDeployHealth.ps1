@@ -114,8 +114,9 @@ function Test-PostDeployHealth {
         }
         catch {
             $statusCode = 0
-            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
+            $responseProperty = $_.Exception.PSObject.Properties['Response']
+            if ($responseProperty -and $responseProperty.Value -and $responseProperty.Value.PSObject.Properties['StatusCode']) {
+                $statusCode = [int]$responseProperty.Value.StatusCode
             }
             $lastResult = if ($statusCode -gt 0) { "HTTP $statusCode" } else { $_.Exception.GetType().Name }
         }

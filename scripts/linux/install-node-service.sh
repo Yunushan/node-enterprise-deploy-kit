@@ -59,7 +59,12 @@ run_as_service_user() {
   if command -v runuser >/dev/null 2>&1; then
     runuser -u "$SERVICE_USER" -- env "${PREPARATION_ENV_ASSIGNMENTS[@]}" bash -lc "cd \"$APP_DIR\" && $command_text"
   elif command -v su >/dev/null 2>&1; then
-    env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text"
+    case "$PLATFORM_FAMILY" in
+      macos|freebsd|openbsd|netbsd)
+        env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m "$SERVICE_USER" -c "bash -c $(shell_single_quote "cd \"$APP_DIR\" && $command_text")"
+        ;;
+      *) env "${PREPARATION_ENV_ASSIGNMENTS[@]}" su -m -s /bin/sh "$SERVICE_USER" -c "cd \"$APP_DIR\" && $command_text" ;;
+    esac
   else
     echo "Cannot run $label as $SERVICE_USER; install runuser/su or run the command manually." >&2
     exit 1
@@ -159,10 +164,42 @@ ensure_user() {
 prepare_runtime() {
   ensure_group
   ensure_user
+  hardening_assert_trusted_directory "$(dirname "$APP_DIR")"
+  hardening_assert_trusted_directory "$(dirname "$LOG_DIR")"
+  hardening_assert_trusted_directory "$(dirname "$ENV_FILE")"
+  [[ ! -L "$APP_DIR" && ! -L "$LOG_DIR" ]] || { echo 'Runtime directories must not be symbolic links.' >&2; return 1; }
   mkdir -p "$APP_DIR" "$LOG_DIR" "$(dirname "$ENV_FILE")"
-  touch "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log"
-  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR" "$LOG_DIR"
+  local service_uid metadata app_owner original_mode log_owner unsafe_entries
+  service_uid="$(id -u "$SERVICE_USER")"
+  metadata="$(hardening_stat "$APP_DIR")"; read -r app_owner original_mode <<< "$metadata"
+  if [[ "$app_owner" == 0 ]]; then
+    # Keep the whole imported tree inaccessible to the runtime account while
+    # transferring ownership. Root-owned hardlinks or foreign-owned children
+    # are unsafe to chown because they may reference another managed object.
+    chmod 0700 "$APP_DIR"
+    if ! unsafe_entries="$(find -P "$APP_DIR" \( ! -user root -o \( -type f -links +1 \) \) -print -quit)"; then
+      chmod "$original_mode" "$APP_DIR"
+      return 1
+    fi
+    if [[ -n "$unsafe_entries" ]]; then
+      chmod "$original_mode" "$APP_DIR"
+      echo 'Root-owned APP_DIR contains foreign-owned entries or hardlinks; refusing recursive ownership transfer.' >&2
+      return 1
+    fi
+    if ! find -P "$APP_DIR" -depth -exec chown -h "$SERVICE_USER:$SERVICE_GROUP" {} +; then
+      chmod "$original_mode" "$APP_DIR"
+      return 1
+    fi
+  elif [[ "$app_owner" != "$service_uid" ]]; then
+    echo 'APP_DIR must be owned by root for a fresh import or by SERVICE_USER for an existing runtime.' >&2
+    return 1
+  fi
+  metadata="$(hardening_stat "$LOG_DIR")"; read -r log_owner _ <<< "$metadata"
+  [[ "$log_owner" == 0 || "$log_owner" == "$service_uid" ]] || { echo 'LOG_DIR is owned by another account.' >&2; return 1; }
+  # Do not touch or recursively chown runtime-controlled filenames as root.
+  chown "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR"
   chmod 0750 "$LOG_DIR"
+  run_as_service_user "touch $(shell_single_quote "$LOG_DIR/stdout.log") $(shell_single_quote "$LOG_DIR/stderr.log")" 'log initialization'
   write_runtime_env_file
   chmod 0640 "$ENV_FILE"
   chown root:"$SERVICE_GROUP" "$ENV_FILE"
@@ -248,6 +285,13 @@ install_launchd_service() {
 }
 
 install_bsdrc_service() {
+  local rc_config_name
+  rc_config_name="$(printf '%s' "$APP_NAME" | tr '.-' '__')"
+  case "$rc_config_name" in [A-Za-z_]*) ;; *) rc_config_name="node_$rc_config_name" ;; esac
+  if [[ "$PLATFORM_FAMILY" == "openbsd" && ! "$APP_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "OpenBSD APP_NAME must be a shell identifier for native rcctl; use letters, digits, and underscores with a letter or underscore first." >&2
+    return 1
+  fi
   local init_dir="/usr/local/etc/rc.d"
   if [[ ! -d "$init_dir" ]]; then
     init_dir="/etc/rc.d"
@@ -259,19 +303,23 @@ install_bsdrc_service() {
 
   case "$PLATFORM_FAMILY" in
     freebsd)
+      if declare -F transaction_record_rc_setting >/dev/null; then transaction_record_rc_setting /etc/rc.conf "${rc_config_name}_enable"; fi
       if command -v sysrc >/dev/null 2>&1; then
-        sysrc "${APP_NAME}_enable=YES" >/dev/null || true
+        sysrc "${rc_config_name}_enable=YES" >/dev/null
       else
-        echo "${APP_NAME}_enable=\"YES\"" >> /etc/rc.conf
+        echo "${rc_config_name}_enable=\"YES\"" >> /etc/rc.conf
       fi
       ;;
     openbsd)
       require_command rcctl "OpenBSD rc service registration requires rcctl."
+      if declare -F transaction_record_rc_setting >/dev/null; then transaction_record_rc_setting /etc/rc.conf.local pkg_scripts; fi
+      if declare -F transaction_record_rc_setting >/dev/null; then transaction_record_rc_setting /etc/rc.conf.local "${APP_NAME}_flags"; fi
       rcctl enable "$APP_NAME"
       ;;
     netbsd)
-      if ! grep -q "^${APP_NAME}=YES" /etc/rc.conf 2>/dev/null; then
-        echo "${APP_NAME}=YES" >> /etc/rc.conf
+      if declare -F transaction_record_rc_setting >/dev/null; then transaction_record_rc_setting /etc/rc.conf "$rc_config_name"; fi
+      if ! grep -q "^${rc_config_name}=YES" /etc/rc.conf 2>/dev/null; then
+        echo "${rc_config_name}=YES" >> /etc/rc.conf
       fi
       ;;
   esac
@@ -290,10 +338,18 @@ install_bsdrc_service() {
 }
 
 require_root
+managed_mutation_begin
+# shellcheck source=scripts/linux/app-package-lifecycle.sh
+source "$SCRIPT_DIR/app-package-lifecycle.sh"
+SERVICE_MANAGER_NORMALIZED="$(normalize_name "$SERVICE_MANAGER")"
+if [[ "$SERVICE_MANAGER_NORMALIZED" == systemd && "$APP_NAME" =~ \.(service|timer|socket|target|path|mount)$ ]]; then
+  echo "APP_NAME must not end in a native systemd unit extension." >&2
+  exit 1
+fi
+package_stop_app_service "$SERVICE_MANAGER_NORMALIZED" "$APP_NAME"
 prepare_runtime
 prepare_app
 
-SERVICE_MANAGER_NORMALIZED="$(normalize_name "$SERVICE_MANAGER")"
 case "$SERVICE_MANAGER_NORMALIZED" in
   systemd)
     install_systemd_service

@@ -10,7 +10,11 @@ Run the same verification script used by CI:
 .\scripts\dev\Test-Repository.ps1
 ```
 
-The verifier checks:
+The local verifier checks syntax, fixture behavior, and the release-evidence
+validators. Hosted container, real Next.js build/runtime, native service, and
+reverse-proxy integration checks below run in separate CI jobs; a local
+`Test-Repository.ps1` success does not run those jobs or replace their results.
+The complete verification program includes:
 
 - PowerShell parser errors in `.ps1` files
 - Bash syntax for Linux and dev shell scripts
@@ -584,6 +588,12 @@ available. If Ansible or the required collections are not installed on the
 validation machine, that optional check is skipped. CI installs `ansible-core`
 and `ansible/requirements.yml` before repository verification so the playbook
 syntax check runs deterministically in GitHub Actions.
+
+The Python tooling hash lock is generated with Python 3.14, and both CI tooling
+jobs use that interpreter minor. Regenerate the lock when changing it: an older
+minor can select extra conditional dependencies that the existing lock omits.
+The dependency regression checks this interpreter agreement. Local template
+checks alone do not establish that Ansible syntax or hosted CI passed.
 
 ShellCheck is a required GitHub Actions gate for Bash deployment scripts. The
 main repository verifier runs ShellCheck when it is installed and reports a

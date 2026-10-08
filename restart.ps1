@@ -29,6 +29,8 @@ if (-not (Test-Path $ConfigPath)) {
 
 Assert-Admin
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $repoRoot 'scripts/windows/WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
 
 Write-Host "Restarting service: $($config.AppName)" -ForegroundColor Cyan
 Restart-Service -Name $config.AppName -Force -ErrorAction Stop

@@ -17,9 +17,15 @@
 - NetBSD
 - Apple macOS
 
-Current Next.js requires Node.js `20.9.0` or newer. The production-recommended
-GNU/Linux rows assume the host meets the Node.js 20.x kernel/glibc runtime
-floor. Alpine/musl and FreeBSD are tracked as Experimental Node runtime
+The framework minimum remains Node.js `20.9.0`, while production deployment
+requires a maintained release line. The reviewed policy permits Node.js 22, 24,
+and 26 during their support windows and recommends 24. Node.js 20 reached its
+policy end date on 2026-04-30. Preflight reads `config/node-runtime-policy.json`
+and rejects expired, future, and unreviewed release lines, including generic
+Node applications and the Node validator used by Tomcat with Traefik. It also
+checks the selected Node line's macOS minimum when running on macOS.
+GNU/Linux rows require the selected line's kernel/glibc runtime floor.
+Alpine/musl and FreeBSD are tracked as Experimental Node runtime
 targets, while OpenBSD and NetBSD require an OS package or locally maintained
 Node runtime. All of those rows still require real-host evidence before they
 can be claimed for a release.
@@ -202,8 +208,10 @@ Linux package import supports `.tar.gz`, `.tgz`, `.tar`, and `.zip`. It
 copies the selected artifact to a unique temporary work directory, verifies the
 caller-supplied SHA-256, validates archive member paths, rejects duplicate or
 case-colliding paths and link/special-file entries before extraction, and
-extracts to a temporary directory, checks `PACKAGE_EXPECTED_FILES`, stops the existing service when
-present, backs up `APP_DIR`, then imports the new contents.
+extracts to a temporary directory, checks `PACKAGE_EXPECTED_FILES`, backs up
+`APP_DIR`, then imports the new contents within the wrapper's quiesced transaction.
+Direct standalone import is limited to staging without a registered service or
+installed monitor; use `deploy.sh` to update an existing deployment.
 `REQUIRE_PACKAGE_SHA256` defaults to `true`; a missing, malformed, or mismatched
 digest fails before the service is stopped or `APP_DIR` is replaced.
 Preflight and import also cap archive bytes, extracted logical bytes, entry
@@ -215,7 +223,10 @@ or live-directory replacement. See [Variables](VARIABLES.md) for defaults.
 
 After validation, import records whether the configured systemd, SysV,
 OpenRC, launchd, or BSD rc service is running and verifies that it stops before
-replacing files. The existing `APP_DIR` is moved to a timestamped backup. If
+replacing files. The persistent package record names the planned backup before
+the existing `APP_DIR` moves, and distinguishes a prepared replacement from a
+completed copy. This preserves recovery information if import is interrupted
+before its manifest is written. If
 copying the release or writing its deployment manifest fails, import removes
 the partial directory, restores the previous one, and restarts the service only
 when it was running before import. If directory restoration fails, the service
@@ -226,13 +237,54 @@ When import runs through `deploy.sh`, its transaction remains active through
 service installation, reverse-proxy configuration, and health-scheduler setup.
 A downstream failure restores the previous `APP_DIR` and running/stopped state;
 on a failed first deployment it also removes the newly created native service.
-The root-owned transaction record contains operational paths and booleans only,
-not environment values. It is removed after success or successful rollback. If
-rollback fails, the record is preserved beside the per-app lock under
-`DEPLOYMENT_LOCK_ROOT` and its path is printed; the lock itself is still
-released. Leave the service stopped, inspect the referenced application backup,
-and use timestamped managed-config backups if service or proxy configuration
-also needs restoration.
+The wrapper also journals managed environment files, native units, proxy files,
+Apache module/site links, scheduler files, and application boot registration.
+Recovery restores previous service and scheduler running intent and enablement,
+then validates the previous HTTP endpoint. Shared crontab and BSD rc settings
+are restored only for this application so unrelated entries are preserved.
+Installers called directly use the same protected journal for their changes.
+Before application mutation the wrapper stops existing native health timers,
+workers, or launchd jobs and removes this application's marked cron block.
+Already running privileged cron invokers must exit within
+`HEALTHCHECK_QUIESCE_TIMEOUT_SECONDS` (default 30, range 0–300); otherwise the
+deployment fails before changing application files. This also protects upgrades
+from older monitor scripts that did not understand the deployment lock.
+Standalone installers and deployments that skip health installation resume the
+previous scheduler after success.
+
+The package transaction record contains operational paths and booleans. The
+managed configuration journal also contains previous private configuration and
+file contents and is protected by a root-owned mode `0700` directory. Journals
+are removed after success or successful recovery. A recovery failure preserves
+the journal under `DEPLOYMENT_TRANSACTION_ROOT` (default
+`/var/lib/node-enterprise-deploy-kit/deployment-transactions`) and prints its
+path. This protected directory persists across reboot; keep any override on
+persistent storage. Leave the application stopped when directory recovery was unsafe; inspect
+the recorded backup and journal before attempting manual recovery.
+New deployments and standalone installers refuse retained managed journals or
+package transaction state for the application. The health monitor also defers
+HTTP probing, restarts, rotation, and retention while that recovery evidence is
+present, even if an abandoned mutex was removed. Recovery is explicit; retained
+journals are never automatically replayed or discarded by a later deployment.
+The guard checks both the persistent directory and legacy journals beside the
+volatile app lock, so removing or losing `/var/run` does not remove recovery
+evidence from a new deployment.
+
+Mutations hold both the application lock and a shared native-service/proxy lock.
+The shared lock serializes repository operations across application names,
+including Apache registration and proxy reloads. It waits up to 60 seconds by
+default (`SHARED_CONTROL_LOCK_TIMEOUT_SECONDS`, range 0–3600), uses
+`SHARED_CONTROL_LOCK_ROOT` (default `/var/run/node-enterprise-deploy-kit`), and
+never steals an apparently stale lock. Children inherit a protected ownership
+token and cannot release their parent's lock. An operator must inspect an
+abandoned lock's owner before removing it after confirming no operation remains.
+
+Updates preserve the service manager, Node/Tomcat runtime, proxy type, and
+Tomcat service identity recorded in the previous protected monitor config.
+Changing those selections requires an explicit migration: use the previous
+configuration to stop and unregister its service and monitoring, remove its old
+proxy routes, then deploy the new selection. The update wrapper rejects a known
+identity change before stopping either service or modifying application files.
 
 Service installation is fail closed. Required ownership changes must succeed,
 the native service must be registered for boot, and the manager must report it
@@ -366,11 +418,14 @@ replacing existing env files, service units/init scripts, reverse proxy configs,
 or health-check files. If `BACKUP_DIR` is not set, the scripts use
 `/var/backups/<APP_NAME>`.
 
-Health checks record `healthcheck.log` under `LOG_DIR` and `healthcheck.state`
-under the root-owned `HEALTHCHECK_STATE_DIR`, which must stay outside
-app-writable log directories. They prune old managed logs, diagnostics, and
-backups using `LOG_RETENTION_DAYS`, `DIAGNOSTIC_RETENTION_DAYS`, and
-`BACKUP_RETENTION_DAYS`.
+Health checks record `healthcheck.log` under `HEALTHCHECK_LOG_DIR` (default
+`HEALTHCHECK_STATE_DIR/logs`) and `healthcheck.state` under the root-owned
+`HEALTHCHECK_STATE_DIR`. Diagnostics default to `HEALTHCHECK_STATE_DIR/diagnostics`.
+These directories must stay outside app-writable paths. Monitor and application
+logs rotate at 10 MiB with seven generations by default; application logs rotate
+as the service user and keep the active inode. Age cleanup targets rotated
+monitor logs, diagnostics, configuration backups, and timestamped application
+backup directories. See [Health Checks](HEALTH_CHECKS.md) for rotation settings.
 
 8. Manual service install:
 
@@ -381,6 +436,16 @@ sudo bash scripts/linux/install-node-service.sh config/linux/app.env
 The service installer runs configured `INSTALL_COMMAND` and `BUILD_COMMAND`
 inside `APP_DIR` as the configured service user. Set `SKIP_INSTALL="true"` or
 `SKIP_BUILD="true"` for artifact-only releases.
+
+System V and BSD services keep root-owned PID and process-identity files. When
+upgrading from a legacy service-owned PID directory, stop the old service and
+remove its old `/var/run/<APP_NAME>` PID directory before installation. The new
+scripts refuse to signal processes based on untrusted or mismatched PID data.
+Identity uses the service UID and process start time (kernel start ticks on
+Linux), so legitimate changes to Node's `process.title` remain supported.
+BSD scripts use native `rc.subr`; OpenBSD requires `APP_NAME` to be a shell
+identifier, such as `example_next_bsd`. Native reboot and lifecycle evidence is
+still required for each supported BSD platform.
 
 9. Optional config-selected reverse proxy:
 
@@ -412,8 +477,29 @@ includes.
 
 The Traefik installer writes a dynamic file provider config under
 `TRAEFIK_DYNAMIC_DIR`. Your static Traefik config must already watch that
-directory. The installer validates the rendered dynamic file through a temporary
-Traefik file-provider config before reloading the service.
+directory. The installer starts a disposable actual Traefik instance using
+loopback and ephemeral ports, then verifies that its API reports the managed
+router and service as enabled before reloading the installed service. This
+validation requires the approved `NODE_BIN`, including Tomcat deployments that
+choose Traefik. The application entrypoint name cannot be `traefik`, which the
+validator reserves for its loopback API. A production proxy health probe and
+native provider-watch configuration remain part of host verification.
+
+The default status proxy probe connects over HTTP to the loopback proxy port,
+preserves `HEALTHCHECK_PATH` (including `/`), and sends `PUBLIC_HOSTNAME` as the
+Host header for virtual-host routing. If the proxy itself terminates TLS, set
+`PROXY_HEALTH_URL` to the actual HTTPS endpoint and configure trusted certificate
+and hostname resolution for the collector. Status evidence requires HTTP 2xx
+and does not follow redirects, matching deployment checks and the health monitor.
+
+The generated route contains no credentials and is installed root-owned with
+mode `0644`, so a non-root Traefik process can read it. New provider directories
+use mode `0755`; permissions on existing directories are preserved. Ensure the
+proxy account can traverse those directories and read its separate TLS
+configuration and certificates. Keep certificate private keys restricted to
+the proxy account and administrators. The disposable validator runs as the
+installer's privileged user, so its success does not prove that the installed
+proxy account can read the provider files; verify the actual HTTPS route.
 
 10. Optional Tomcat WAR deployment:
 

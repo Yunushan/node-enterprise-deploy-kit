@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+. (Join-Path $ScriptDir "NodeRuntimePolicy.ps1")
 
 function Normalize-Token {
   param([string]$Value)
@@ -574,6 +575,9 @@ function Get-NextJsPlatformRuntimeIssues {
   }
   if ($minimumWindowsBuilds.ContainsKey($target)) {
     $minimumBuild = [int]$minimumWindowsBuilds[$target]
+    $windowsRuntime = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $windowsNodeMajor = Get-NodeRuntimeMajor -Version (Get-StringValue -Object $windowsRuntime -Names @("NodeVersion", "nodeVersion"))
+    if ($windowsNodeMajor -ge 24 -and $target -in @("windows-server-2012", "windows-server-2012-r2")) { $minimumBuild = 14393 }
     if ($null -eq $osBuild) {
       $issues.Add("$Context does not prove a Windows build number for the Next.js Node runtime platform floor.") | Out-Null
     } elseif ($osBuild -lt $minimumBuild) {
@@ -606,12 +610,18 @@ function Get-NextJsPlatformRuntimeIssues {
     if ([string]::IsNullOrWhiteSpace($machine)) {
       $issues.Add("$Context does not prove macOS machine architecture for the Next.js Node runtime platform floor.") | Out-Null
     }
-    $minimumMacosVersion = if ($machine -in @("arm64", "aarch64")) { "11.0" } else { "10.15" }
+    $runtimeEvidence = Get-PropertyValue -Object $Evidence -Names @("NextJsRuntime", "nextJsRuntime")
+    $reportedNodeVersion = Get-StringValue -Object $runtimeEvidence -Names @("NodeVersion", "nodeVersion")
+    $minimumMacosVersion = Get-NodeRuntimeMacosMinimumVersion -Version $reportedNodeVersion -Architecture $machine
+    if (-not $minimumMacosVersion) {
+      $issues.Add("$Context does not prove a reviewed Node.js release and macOS architecture for runtime platform support.") | Out-Null
+      return @($issues)
+    }
     $macosOk = Test-VersionAtLeast -Actual $osVersion -Minimum $minimumMacosVersion -Count 2
     if ($null -eq $macosOk) {
       $issues.Add("$Context does not prove macOS product version for the Next.js Node runtime platform floor.") | Out-Null
     } elseif ($macosOk -ne $true) {
-      $issues.Add("$Context has macOS version '$osVersion', below the Node.js 20.x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
+      $issues.Add("$Context has macOS version '$osVersion', below the Node.js $(Get-NodeRuntimeMajor -Version $reportedNodeVersion).x floor of $minimumMacosVersion for architecture '$machine'.") | Out-Null
     }
   }
 

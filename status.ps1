@@ -26,6 +26,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
+. (Join-Path $repoRoot 'scripts\windows\WindowsServiceSecurity.ps1')
+. (Join-Path $repoRoot 'scripts\windows\WindowsRuntimeStatus.ps1')
 $DefaultNextJsMinimumNodeVersion = "20.9.0"
 
 if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
@@ -37,10 +39,12 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+Assert-WindowsDeploymentConfigIdentity -Config $config
+$statusServiceManager = Get-WindowsStatusServiceManager -Config $config
 $serviceName = [string]$config.AppName
 $escapedServiceName = $serviceName.Replace("'", "''")
-$configuredPort = [int]$config.Port
-$healthUrl = [string]$config.HealthUrl
+$configuredPort = [int](Get-WindowsServiceSecurityConfigString $config 'Port' '0')
+$healthUrl = Get-WindowsServiceSecurityConfigString $config 'HealthUrl' ''
 $script:findings = New-Object System.Collections.Generic.List[object]
 $script:nextJsRuntimeEvidence = [pscustomobject]@{
     Applicable = $false
@@ -135,7 +139,9 @@ $script:healthMonitorEvidence = [pscustomobject]@{
     TaskExists = $false
     TaskPrincipalChecked = $false
     TaskRunsAsSystem = $null
+    TaskRunsAsPm2Owner = $null
     TaskRunLevelHighest = $null
+    TaskRunLevelLimited = $null
     TaskActionChecked = $false
     TaskActionUsesSystemPowerShell = $null
     TaskActionUsesWorkingDirectory = $null
@@ -153,6 +159,16 @@ $script:healthMonitorEvidence = [pscustomobject]@{
     LogExists = $false
     LogFailureCount = $null
     LogRestartCount = $null
+}
+
+function Test-HealthyHttpStatusCode {
+    param([int]$StatusCode)
+    return $StatusCode -ge 200 -and $StatusCode -lt 300
+}
+
+function Invoke-StatusHealthRequest {
+    param([uri]$Uri, [int]$TimeoutSeconds)
+    Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSeconds -MaximumRedirection 0 -ErrorAction Stop
 }
 
 function Add-Finding {
@@ -192,7 +208,7 @@ function Get-ChildProcessTree {
         }
     }
 
-    return @($result)
+    return ,$result.ToArray()
 }
 
 function Format-Uptime {
@@ -533,17 +549,24 @@ function Get-NormalizedPathForCompare([string]$Path) {
     }
 }
 function Get-HealthTaskDirectory($Config) {
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
     $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
     if ([string]::IsNullOrWhiteSpace($programData)) { return "" }
     return (Join-Path (Join-Path $programData "node-enterprise-deploy-kit\healthchecks") ([string]$Config.AppName))
 }
 function New-ExpectedHealthMonitorConfig($Config) {
-    return [ordered]@{
+    Assert-WindowsDeploymentConfigIdentity -Config $Config
+    $manager = Get-WindowsStatusServiceManager $Config
+    $isStatic = $manager -eq 'static-iis'
+    $logDirectory = if ($isStatic -and -not (Get-ConfigString $Config 'LogDirectory')) { Get-HealthTaskDirectory $Config } else { Get-ConfigString $Config 'LogDirectory' }
+    $result = [ordered]@{
         Schema = "node-enterprise-deploy-kit/windows-health-monitor/v1"
         AppName = [string]$Config.AppName
-        HealthUrl = [string]$Config.HealthUrl
-        LogDirectory = [System.IO.Path]::GetFullPath([string]$Config.LogDirectory)
+        ServiceManager = $manager
+        HealthUrl = if ($isStatic) { 'http://127.0.0.1/' } else { [string]$Config.HealthUrl }
+        LogDirectory = [System.IO.Path]::GetFullPath($logDirectory)
         BackupDirectory = [System.IO.Path]::GetFullPath((Get-BackupDirectory $Config))
+        DeploymentLockPath = Join-Path (Get-DeploymentLockDirectory $Config) (([string]$Config.AppName -creplace '[^A-Za-z0-9_.-]', '_') + '.lock')
         HealthCheckFailureThreshold = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckFailureThreshold" 2))
         HealthCheckRestartCooldownMinutes = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckRestartCooldownMinutes" 5))
         HealthCheckTimeoutSeconds = [Math]::Max(1, (Get-ConfigInt $Config "HealthCheckTimeoutSeconds" 10))
@@ -551,6 +574,14 @@ function New-ExpectedHealthMonitorConfig($Config) {
         BackupRetentionDays = [Math]::Max(1, (Get-ConfigInt $Config "BackupRetentionDays" 90))
         DiagnosticRetentionDays = [Math]::Max(1, (Get-ConfigInt $Config "DiagnosticRetentionDays" 14))
     }
+    if ($isStatic) { $result.RetentionOnly = $true }
+    if ($manager -eq 'pm2') {
+        $context = Get-WindowsPm2RuntimeContext $Config
+        $result.PM2Home = $context.Home
+        $result.PM2Command = $context.CommandName
+        $result.PM2OwnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
+    return $result
 }
 function Test-HealthMonitorConfigMatchesDeployment([string]$Path, $Config) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
@@ -561,7 +592,7 @@ function Test-HealthMonitorConfigMatchesDeployment([string]$Path, $Config) {
         if ($actualNames.Count -ne $expected.Keys.Count) { return $false }
         foreach ($name in $expected.Keys) {
             if (-not $actual.PSObject.Properties[$name]) { return $false }
-            if ($name -in @("LogDirectory", "BackupDirectory")) {
+            if ($name -in @("LogDirectory", "BackupDirectory", "DeploymentLockPath", "PM2Home", "PM2Command")) {
                 if ((Get-NormalizedPathForCompare ([string]$actual.$name)) -ine (Get-NormalizedPathForCompare ([string]$expected[$name]))) { return $false }
             } elseif ($expected[$name] -is [int]) {
                 if ([int]$actual.$name -ne [int]$expected[$name]) { return $false }
@@ -574,12 +605,13 @@ function Test-HealthMonitorConfigMatchesDeployment([string]$Path, $Config) {
         return $false
     }
 }
-function Test-PathAclPreventsUntrustedWrite([string]$Path) {
+function Test-PathAclPreventsUntrustedWrite([string]$Path, [string]$AllowedCreateFilesSid = '', [bool]$AllowCreatorOwnerDataFiles = $false) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     try {
         $acl = Get-Acl -LiteralPath $Path
         if (-not $acl.AreAccessRulesProtected) { return $false }
         $trustedSids = @("S-1-5-18", "S-1-5-32-544")
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { return $false }
         # Use only atomic write rights here. Composite values such as FullControl
         # overlap read bits and would incorrectly classify ReadAndExecute as writable.
         $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
@@ -593,19 +625,31 @@ function Test-PathAclPreventsUntrustedWrite([string]$Path) {
         foreach ($rule in $acl.Access) {
             if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
             $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-            if ($sid -notin $trustedSids -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false }
+            # The PM2 owner may create state/log files, whose inherited ACE is
+            # replaced by their creator's SID. This exact inherit-only rule
+            # grants no access to the task directory or protected definitions.
+            $creatorDataRights = [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::Synchronize
+            if ($AllowCreatorOwnerDataFiles -and $sid -eq 'S-1-3-0' -and
+                $rule.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::ObjectInherit -and
+                $rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::InheritOnly -and
+                ($rule.FileSystemRights -band (-bnot [Security.AccessControl.FileSystemRights]::Synchronize)) -eq [Security.AccessControl.FileSystemRights]::Modify -and
+                ($rule.FileSystemRights -band (-bnot $creatorDataRights)) -eq 0) { continue }
+            $applicableMask = $writeMask
+            if ($AllowedCreateFilesSid -and $sid -eq $AllowedCreateFilesSid) { $applicableMask = $applicableMask -band (-bnot [Security.AccessControl.FileSystemRights]::CreateFiles) }
+            if ($sid -notin $trustedSids -and (($rule.FileSystemRights -band $applicableMask) -ne 0)) { return $false }
         }
         return $true
     } catch {
         return $false
     }
 }
-function Test-HealthTaskFilesAclProtected([string]$TaskDirectory, [string]$ScriptPath, [string]$MonitorConfigPath) {
+function Test-HealthTaskFilesAclProtected([string]$TaskDirectory, [string]$ScriptPath, [string]$MonitorConfigPath, [string]$Manager = 'winsw') {
     if ([string]::IsNullOrWhiteSpace($TaskDirectory)) { return $false }
     $healthRoot = Split-Path -Parent $TaskDirectory
     $kitRoot = Split-Path -Parent $healthRoot
-    foreach ($path in @($kitRoot, $healthRoot, $TaskDirectory, $ScriptPath, $MonitorConfigPath)) {
-        if (-not (Test-PathAclPreventsUntrustedWrite $path)) { return $false }
+    foreach ($path in @($kitRoot, $healthRoot, $TaskDirectory, $ScriptPath, $MonitorConfigPath, (Join-Path $TaskDirectory 'WindowsPm2ExecutionPolicy.ps1'), (Join-Path $TaskDirectory 'WindowsDeploymentIdentity.ps1'))) {
+        $createSid = if ($Manager -eq 'pm2' -and $path -eq $TaskDirectory) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { '' }
+        if (-not (Test-PathAclPreventsUntrustedWrite $path $createSid ([bool]$createSid))) { return $false }
     }
     return $true
 }
@@ -648,9 +692,11 @@ function Test-TextContainsConfiguredPath {
     )
     if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
 
-    $normalizedExpected = Get-NormalizedPathForCompare $Expected
-    if ([string]::IsNullOrWhiteSpace($normalizedExpected)) { return $false }
-    return ($Text.IndexOf($normalizedExpected, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $executable = [regex]::Match($Text.Trim(), '^(?:"([^"\r\n]+)"|([^"\r\n]+?\.exe))(?=\s|$)', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $executable.Success) { return $false }
+    $actual = if ($executable.Groups[1].Success) { $executable.Groups[1].Value } else { $executable.Groups[2].Value }
+    if (-not $executable.Groups[1].Success -and $actual -match '\s') { return $false }
+    return (Get-NormalizedPathForCompare $actual) -ieq (Get-NormalizedPathForCompare $Expected)
 }
 function Get-ExpectedServiceArguments($Config) {
     $startCommand = Get-ConfigString $Config "StartCommand" ""
@@ -722,6 +768,8 @@ function Get-WindowsServiceDefinitionEvidence($Config, $ServiceProcess) {
             }
         }
         "nssm" {
+            $serviceExe = if ($serviceDirectory -and $appName) { Join-Path $serviceDirectory "$appName.nssm.exe" } else { '' }
+            if ($ServiceProcess -and $serviceExe) { $evidence.ServiceWrapperMatchesConfig = Test-TextContainsConfiguredPath -Text ([string]$ServiceProcess.PathName) -Expected $serviceExe }
             $evidence.DefinitionSource = "nssm-registry"
             $registryPath = Join-Path "HKLM:\SYSTEM\CurrentControlSet\Services" "$appName\Parameters"
             if (Test-Path -LiteralPath $registryPath) {
@@ -790,7 +838,7 @@ function Get-IisSitesForBinding([string]$Protocol, [string]$BindingInformation) 
             }
         }
     }
-    return @($matches)
+    return $matches.ToArray()
 }
 function Get-IisReverseProxyEvidence($Config, [string]$Mode) {
     $empty = [pscustomobject]@{
@@ -1257,6 +1305,32 @@ function Show-NextJsRuntimeLayout {
     $script:nextJsRuntimeEvidence | Format-List
 }
 
+if ($statusServiceManager -eq 'static-iis') {
+    $iis = Get-IisReverseProxyEvidence -Config $config -Mode 'iis'
+    $staticSite = if ($iis.ModuleAvailable) { Get-Website -Name $iis.SiteName -ErrorAction SilentlyContinue } else { $null }
+    if ($staticSite -and [string]$staticSite.ApplicationPool -ne $iis.AppPoolName) { Add-Finding -Severity Critical -Message 'Configured static IIS site does not use the expected app pool.' }
+    $staticEvidence = [pscustomobject]@{
+        Schema = 'node-enterprise-deploy-kit/static-iis-status/v1'
+        GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        AppName = $serviceName
+        Scope = 'Static IIS site, physical path, app pool and binding. Node service, Node port ownership and Node uptime are not applicable.'
+        NodeServiceApplicable = $false
+        Iis = $iis
+        Verdict = Get-WorstFindingSeverity
+        Critical = @($script:findings | Where-Object { $_.Severity -eq 'Critical' }).Count
+        Warnings = @($script:findings | Where-Object { $_.Severity -eq 'Warning' }).Count
+    }
+    $staticEvidence | Format-List
+    if ($JsonPath) {
+        $staticJsonPath = if ([IO.Path]::IsPathRooted($JsonPath)) { $JsonPath } else { Join-Path $repoRoot $JsonPath }
+        $staticParent = Split-Path -Parent $staticJsonPath
+        if ($staticParent) { New-Item -ItemType Directory -Path $staticParent -Force | Out-Null }
+        $staticEvidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $staticJsonPath -Encoding UTF8
+    }
+    if (($FailOnCritical -and $staticEvidence.Critical -gt 0) -or ($FailOnWarnings -and $staticEvidence.Warnings -gt 0)) { exit 1 }
+    return
+}
+
 Write-Host "Status for: $serviceName" -ForegroundColor Cyan
 Write-Host "Config: $ConfigPath"
 Write-Host ""
@@ -1296,6 +1370,21 @@ if ($os -and $os.LastBootUpTime) {
 }
 
 Write-Host "Service" -ForegroundColor Yellow
+$service = $null
+$serviceProcess = $null
+if ($statusServiceManager -eq 'pm2') {
+    try {
+        $pm2Runtime = Get-WindowsPm2RuntimeEvidence -Config $config
+        $pm2Runtime | Format-List
+        if (-not $pm2Runtime.Exists -or -not $pm2Runtime.Online) { Add-Finding -Severity Critical -Message 'Configured PM2 app is missing or not online.' }
+        elseif (-not $pm2Runtime.OwnerMatches -or -not $pm2Runtime.RuntimeMatchesConfig -or -not $pm2Runtime.UptimeMatchesProcess) { Add-Finding -Severity Critical -Message 'PM2 PID, process owner, runtime definition or uptime does not match the deployment.' }
+        if ($pm2Runtime.Exists) {
+            $service = [pscustomobject]@{ Name = $serviceName; DisplayName = $serviceName; Status = $(if ($pm2Runtime.Online) { 'Running' } else { 'Stopped' }); StartType = 'Manual' }
+            $serviceProcess = [pscustomobject]@{ ProcessId = $pm2Runtime.ProcessId; State = $service.Status; StartMode = 'PM2'; PathName = [string]$config.NodeExe }
+        }
+        Add-Finding -Severity Warning -Message 'PM2 saved state does not prove automatic startup after reboot; native SCM boot-enablement evidence is not applicable.'
+    } catch { Add-Finding -Severity Critical -Message 'PM2 runtime metadata could not be verified for the configured owner and home.' }
+} else {
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($service) {
     $service | Select-Object Name, DisplayName, Status, StartType | Format-Table -AutoSize
@@ -1320,6 +1409,7 @@ if ($serviceProcess) {
         Add-Finding -Severity Critical -Message "Service reports Running but has no process ID."
     }
 }
+}
 
 $script:serviceDefinitionEvidence = Get-WindowsServiceDefinitionEvidence -Config $config -ServiceProcess $serviceProcess
 $script:serviceDefinitionEvidence |
@@ -1340,7 +1430,7 @@ if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessI
             # Allow a small tolerance for CIM/process sampling around boot.
             $script:uptimeEvidence.ServiceStartedDuringCurrentBoot = ($wrapper.StartTime -ge $os.LastBootUpTime.AddMinutes(-5))
             if ($script:uptimeEvidence.ServiceStartedDuringCurrentBoot -ne $true) {
-                Add-Finding -Severity Critical -Message "Service wrapper start time predates the current host boot session."
+                Add-Finding -Severity Critical -Message "Configured runtime process start time predates the current host boot session."
             }
         }
         if ($MinimumUptimeHours -gt 0) {
@@ -1356,7 +1446,7 @@ if ($serviceProcess -and $serviceProcess.ProcessId -and $serviceProcess.ProcessI
             }
         }
     } else {
-        Add-Finding -Severity Critical -Message "Service process ID $($serviceProcess.ProcessId) was reported by SCM but the process was not found."
+        Add-Finding -Severity Critical -Message "Configured manager reported process ID $($serviceProcess.ProcessId) but the process was not found."
     }
 
     $children = Get-ChildProcessTree -ParentProcessId ([int]$serviceProcess.ProcessId)
@@ -1448,9 +1538,9 @@ $script:healthEvidence.TimeoutSeconds = $HealthTimeoutSeconds
 if ($healthUrl) {
     try {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
-        $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec $HealthTimeoutSeconds
+        $response = Invoke-StatusHealthRequest -Uri $healthUrl -TimeoutSeconds $HealthTimeoutSeconds
         $timer.Stop()
-        $healthStatus = if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { "ok" } else { "failed" }
+        $healthStatus = if (Test-HealthyHttpStatusCode $response.StatusCode) { "ok" } else { "failed" }
         $healthResult = [pscustomobject]@{
             StatusCode = $response.StatusCode
             StatusDescription = $response.StatusDescription
@@ -1461,7 +1551,7 @@ if ($healthUrl) {
         $script:healthEvidence.StatusCode = [int]$response.StatusCode
         $script:healthEvidence.ResponseMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 0)
         $healthResult | Format-Table -AutoSize
-        if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 400) {
+        if (-not (Test-HealthyHttpStatusCode $response.StatusCode)) {
             Add-Finding -Severity Critical -Message "Health probe returned HTTP $($response.StatusCode) for $(Get-SafeUrl $healthUrl)."
         }
     } catch {
@@ -1490,9 +1580,9 @@ if ([string]::IsNullOrWhiteSpace($reverseProxyMode) -or $reverseProxyMode -eq "n
 } else {
     try {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
-        $proxyResponse = Invoke-WebRequest -Uri $proxyHealthUrl -UseBasicParsing -TimeoutSec $HealthTimeoutSeconds
+        $proxyResponse = Invoke-StatusHealthRequest -Uri $proxyHealthUrl -TimeoutSeconds $HealthTimeoutSeconds
         $timer.Stop()
-        $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $true -Mode $reverseProxyMode -Status $(if ($proxyResponse.StatusCode -ge 200 -and $proxyResponse.StatusCode -lt 400) { "ok" } else { "failed" }) -ProbeUrl (Get-SafeUrl $proxyHealthUrl) -StatusCode ([int]$proxyResponse.StatusCode) -ResponseMs ([Math]::Round($timer.Elapsed.TotalMilliseconds, 0)) -IisEvidence $iisReverseProxyEvidence
+        $script:reverseProxyEvidence = New-ReverseProxyEvidence -Applicable $true -Mode $reverseProxyMode -Status $(if (Test-HealthyHttpStatusCode $proxyResponse.StatusCode) { "ok" } else { "failed" }) -ProbeUrl (Get-SafeUrl $proxyHealthUrl) -StatusCode ([int]$proxyResponse.StatusCode) -ResponseMs ([Math]::Round($timer.Elapsed.TotalMilliseconds, 0)) -IisEvidence $iisReverseProxyEvidence
         $script:reverseProxyEvidence | Format-Table Mode, Status, StatusCode, ResponseMs, ProbeUrl -AutoSize
         if ($script:reverseProxyEvidence.Status -ne "ok") {
             Add-Finding -Severity Warning -Message "Reverse proxy probe returned HTTP $($proxyResponse.StatusCode) for $(Get-SafeUrl $proxyHealthUrl)."
@@ -1520,17 +1610,26 @@ if ($task) {
     $expectedHealthCheckScript = Join-Path $healthTaskDirectory "Invoke-NodeHealthCheck.ps1"
     $expectedHealthMonitorConfig = Join-Path $healthTaskDirectory "health-monitor.config.json"
     $sourceHealthCheckScript = Join-Path $repoRoot "scripts\windows\Invoke-NodeHealthCheck.ps1"
+    $expectedPm2PolicyScript = Join-Path $healthTaskDirectory 'WindowsPm2ExecutionPolicy.ps1'
+    $sourcePm2PolicyScript = Join-Path $repoRoot 'scripts\windows\WindowsPm2ExecutionPolicy.ps1'
+    $expectedIdentityScript = Join-Path $healthTaskDirectory 'WindowsDeploymentIdentity.ps1'
+    $sourceIdentityScript = Join-Path $repoRoot 'scripts/windows/WindowsDeploymentIdentity.ps1'
     $expectedSystemPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
     if ($task.Principal) {
         $script:healthMonitorEvidence.TaskPrincipalChecked = $true
         $taskPrincipalUser = [string]$task.Principal.UserId
         $script:healthMonitorEvidence.TaskRunsAsSystem = ($taskPrincipalUser -in @("SYSTEM", "NT AUTHORITY\SYSTEM", "S-1-5-18"))
-        $script:healthMonitorEvidence.TaskRunLevelHighest = ([string]$task.Principal.RunLevel -ieq "Highest")
-        if ($script:healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
+        $script:healthMonitorEvidence.TaskRunsAsPm2Owner = if ($statusServiceManager -eq 'pm2') { Test-WindowsPm2TaskPrincipal $taskPrincipalUser } else { $null }
+        $script:healthMonitorEvidence.TaskRunLevelHighest = Test-WindowsHealthTaskRunLevel -ServiceManager 'winsw' -RunLevel ([string]$task.Principal.RunLevel)
+        $script:healthMonitorEvidence.TaskRunLevelLimited = Test-WindowsHealthTaskRunLevel -ServiceManager 'pm2' -RunLevel ([string]$task.Principal.RunLevel)
+        if ($statusServiceManager -eq 'pm2' -and $script:healthMonitorEvidence.TaskRunsAsPm2Owner -ne $true) {
+            Add-Finding -Severity Critical -Message 'Health check scheduled task does not run as the configured PM2 deployment owner.'
+        } elseif ($statusServiceManager -ne 'pm2' -and $script:healthMonitorEvidence.TaskRunsAsSystem -ne $true) {
             Add-Finding -Severity Critical -Message "Health check scheduled task does not run as Windows SYSTEM."
         }
-        if ($script:healthMonitorEvidence.TaskRunLevelHighest -ne $true) {
-            Add-Finding -Severity Critical -Message "Health check scheduled task is not registered at the highest run level."
+        if (-not (Test-WindowsHealthTaskRunLevel -ServiceManager $statusServiceManager -RunLevel ([string]$task.Principal.RunLevel))) {
+            $expectedRunLevel = if ($statusServiceManager -eq 'pm2') { 'Limited' } else { 'Highest' }
+            Add-Finding -Severity Critical -Message "Health check scheduled task is not registered at the required $expectedRunLevel run level."
         }
     } else {
         Add-Finding -Severity Critical -Message "Health check scheduled task principal could not be read."
@@ -1573,14 +1672,20 @@ if ($task) {
         Add-Finding -Severity Critical -Message "Health check scheduled task exists, but no task action could be read."
     }
     $script:healthMonitorEvidence.TaskScriptHashMatchesSource = $false
-    if ((Test-Path -LiteralPath $sourceHealthCheckScript -PathType Leaf) -and (Test-Path -LiteralPath $expectedHealthCheckScript -PathType Leaf)) {
+    if ((Test-Path -LiteralPath $sourceHealthCheckScript -PathType Leaf) -and (Test-Path -LiteralPath $expectedHealthCheckScript -PathType Leaf) -and
+        (Test-Path -LiteralPath $sourcePm2PolicyScript -PathType Leaf) -and (Test-Path -LiteralPath $expectedPm2PolicyScript -PathType Leaf) -and
+        (Test-Path -LiteralPath $sourceIdentityScript -PathType Leaf) -and (Test-Path -LiteralPath $expectedIdentityScript -PathType Leaf)) {
         $script:healthMonitorEvidence.TaskScriptHashMatchesSource = (
             (Get-FileHash -LiteralPath $sourceHealthCheckScript -Algorithm SHA256).Hash -eq
-            (Get-FileHash -LiteralPath $expectedHealthCheckScript -Algorithm SHA256).Hash
+            (Get-FileHash -LiteralPath $expectedHealthCheckScript -Algorithm SHA256).Hash -and
+            (Get-FileHash -LiteralPath $sourcePm2PolicyScript -Algorithm SHA256).Hash -eq
+            (Get-FileHash -LiteralPath $expectedPm2PolicyScript -Algorithm SHA256).Hash -and
+            (Get-FileHash -LiteralPath $sourceIdentityScript -Algorithm SHA256).Hash -eq
+            (Get-FileHash -LiteralPath $expectedIdentityScript -Algorithm SHA256).Hash
         )
     }
     $script:healthMonitorEvidence.TaskConfigMatchesDeployment = Test-HealthMonitorConfigMatchesDeployment -Path $expectedHealthMonitorConfig -Config $config
-    $script:healthMonitorEvidence.TaskFilesAclProtected = Test-HealthTaskFilesAclProtected -TaskDirectory $healthTaskDirectory -ScriptPath $expectedHealthCheckScript -MonitorConfigPath $expectedHealthMonitorConfig
+    $script:healthMonitorEvidence.TaskFilesAclProtected = Test-HealthTaskFilesAclProtected -TaskDirectory $healthTaskDirectory -ScriptPath $expectedHealthCheckScript -MonitorConfigPath $expectedHealthMonitorConfig -Manager $statusServiceManager
     if ($script:healthMonitorEvidence.TaskScriptHashMatchesSource -ne $true) {
         Add-Finding -Severity Critical -Message "Protected health-check script is missing or does not match the current kit source."
     }
@@ -1683,8 +1788,8 @@ if ($healthLogSummary) {
 $script:healthMonitorEvidence.Status = if (
     $script:healthMonitorEvidence.TaskExists -and
     $script:healthMonitorEvidence.TaskPrincipalChecked -and
-    ($script:healthMonitorEvidence.TaskRunsAsSystem -eq $true) -and
-    ($script:healthMonitorEvidence.TaskRunLevelHighest -eq $true) -and
+    ($(if ($statusServiceManager -eq 'pm2') { $script:healthMonitorEvidence.TaskRunsAsPm2Owner } else { $script:healthMonitorEvidence.TaskRunsAsSystem }) -eq $true) -and
+    ($(if ($statusServiceManager -eq 'pm2') { $script:healthMonitorEvidence.TaskRunLevelLimited -eq $true -and $script:healthMonitorEvidence.TaskRunLevelHighest -eq $false } else { $script:healthMonitorEvidence.TaskRunLevelHighest -eq $true })) -and
     $script:healthMonitorEvidence.TaskActionChecked -and
     ($script:healthMonitorEvidence.TaskActionUsesSystemPowerShell -eq $true) -and
     ($script:healthMonitorEvidence.TaskActionUsesWorkingDirectory -eq $true) -and
@@ -1770,8 +1875,8 @@ $statusEvidence = [pscustomobject]@{
         Installed = [bool]$service
         Status = if ($service) { [string]$service.Status } else { "NotFound" }
         StartType = if ($service) { [string]$service.StartType } else { "" }
-        Win32State = if ($serviceProcess) { [string]$serviceProcess.State } else { "" }
-        Win32StartMode = if ($serviceProcess) { [string]$serviceProcess.StartMode } else { "" }
+        Win32State = if ($serviceProcess -and $statusServiceManager -ne 'pm2') { [string]$serviceProcess.State } else { "" }
+        Win32StartMode = if ($serviceProcess -and $statusServiceManager -ne 'pm2') { [string]$serviceProcess.StartMode } else { "" }
         ProcessId = if ($serviceProcess) { [int]$serviceProcess.ProcessId } else { 0 }
     }
     ServiceDefinition = [pscustomobject]@{
@@ -1817,7 +1922,9 @@ $statusEvidence = [pscustomobject]@{
         TaskExists = [bool]$script:healthMonitorEvidence.TaskExists
         TaskPrincipalChecked = [bool]$script:healthMonitorEvidence.TaskPrincipalChecked
         TaskRunsAsSystem = $script:healthMonitorEvidence.TaskRunsAsSystem
+        TaskRunsAsPm2Owner = $script:healthMonitorEvidence.TaskRunsAsPm2Owner
         TaskRunLevelHighest = $script:healthMonitorEvidence.TaskRunLevelHighest
+        TaskRunLevelLimited = $script:healthMonitorEvidence.TaskRunLevelLimited
         TaskActionChecked = [bool]$script:healthMonitorEvidence.TaskActionChecked
         TaskActionUsesSystemPowerShell = $script:healthMonitorEvidence.TaskActionUsesSystemPowerShell
         TaskActionUsesWorkingDirectory = $script:healthMonitorEvidence.TaskActionUsesWorkingDirectory

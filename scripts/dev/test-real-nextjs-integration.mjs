@@ -25,6 +25,13 @@ const integrationVersionConfig = JSON.parse(readFileSync(path.join(repoRoot, 'co
 const nextVersion = readPinnedVersion('next', 'NEXTJS_INTEGRATION_NEXT_VERSION');
 const reactVersion = readPinnedVersion('react', 'NEXTJS_INTEGRATION_REACT_VERSION');
 const reactDomVersion = readPinnedVersion('reactDom', 'NEXTJS_INTEGRATION_REACT_DOM_VERSION');
+const fixtureRoot = path.join(repoRoot, 'tests', 'fixtures', 'nextjs');
+const fixtureManifest = JSON.parse(readFileSync(path.join(fixtureRoot, 'package.json'), 'utf8'));
+for (const [name, version] of Object.entries({ next: nextVersion, react: reactVersion, 'react-dom': reactDomVersion })) {
+  if (fixtureManifest.dependencies[name] !== version) {
+    throw new Error(`Integration ${name} version must match the reviewed fixture package.json and package-lock.json; update the manifest, lockfile, and version config together.`);
+  }
+}
 const keepTestRoot = process.env.KEEP_REAL_NEXTJS_INTEGRATION === 'true';
 const runWindowsServiceIntegration = process.env.RUN_WINSW_SERVICE_INTEGRATION === 'true';
 const runWindowsNssmServiceIntegration = process.env.RUN_NSSM_SERVICE_INTEGRATION === 'true';
@@ -424,11 +431,8 @@ async function writeFixture(projectPath, standalone) {
   await fs.mkdir(path.join(projectPath, 'app'), { recursive: true });
   await fs.mkdir(path.join(projectPath, 'app', 'api', 'proxy-evidence'), { recursive: true });
   await fs.mkdir(path.join(projectPath, 'public'), { recursive: true });
-  await fs.writeFile(path.join(projectPath, 'package.json'), JSON.stringify({
-    name: 'node-enterprise-deploy-kit-real-nextjs-integration',
-    private: true,
-    scripts: { build: 'next build' }
-  }, null, 2));
+  await fs.copyFile(path.join(fixtureRoot, 'package.json'), path.join(projectPath, 'package.json'));
+  await fs.copyFile(path.join(fixtureRoot, 'package-lock.json'), path.join(projectPath, 'package-lock.json'));
   if (standalone) {
     await fs.writeFile(path.join(projectPath, 'next.config.mjs'), "export default { output: 'standalone' };\n");
   }
@@ -451,7 +455,7 @@ async function buildProject(projectPath, standalone) {
     npm_config_fetch_timeout: '30000'
   };
 
-  await run(npm, ['install', '--save-exact', '--no-audit', '--no-fund', `next@${nextVersion}`, `react@${reactVersion}`, `react-dom@${reactDomVersion}`], {
+  await run(npm, ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: projectPath,
     env,
     timeoutMs: npmInstallTimeoutMs
@@ -486,6 +490,7 @@ async function packageProject(projectPath, mode, outputPath) {
     path.join(repoRoot, 'scripts', 'linux', 'package-nextjs-standalone.sh'),
     '--project-path', projectPath,
     '--mode', mode,
+    '--node-bin', process.execPath,
     '--output-path', outputPath
   ]);
 }
@@ -583,8 +588,8 @@ async function runAsRoot(command, args) {
   await run('sudo', ['--non-interactive', command, ...args]);
 }
 
-async function getUnixPrimaryGroup() {
-  const child = spawn('id', ['-gn'], { cwd: repoRoot, env: process.env, windowsHide: true });
+async function getUnixPrimaryGroup(userName = null) {
+  const child = spawn('id', ['-gn', ...(userName ? [userName] : [])], { cwd: repoRoot, env: process.env, windowsHide: true });
   let output = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { output += chunk; });
@@ -625,6 +630,7 @@ async function importPackage(packagePath, mode) {
       : ['package.json', 'package-lock.json', '.next/BUILD_ID', '.next', 'node_modules/next/package.json', 'node_modules/next/dist/bin/next'];
     await fs.writeFile(configPath, JSON.stringify({
       AppName: `NodeDeployKitRealNextImport${Date.now()}${mode}`,
+      DeploymentLockDirectory: path.join(testRoot, `import-${mode}-deployment-locks`),
       AppFramework: 'nextjs',
       NextjsDeploymentMode: mode,
       NextjsRequirePackageProvenance: true,
@@ -654,8 +660,11 @@ async function importPackage(packagePath, mode) {
       'APP_FRAMEWORK="nextjs"',
       `NEXTJS_DEPLOYMENT_MODE=${shellQuote(mode)}`,
       'NEXTJS_REQUIRE_PACKAGE_PROVENANCE="true"',
+      `NODE_BIN=${shellQuote(process.execPath)}`,
       `APP_DIR=${shellQuote(importedPath)}`,
       `BACKUP_DIR=${shellQuote(backupPath)}`,
+      `DEPLOYMENT_LOCK_ROOT=${shellQuote(path.join(testRoot, `import-${mode}-deployment-locks`))}`,
+      `DEPLOYMENT_TRANSACTION_ROOT=${shellQuote(path.join(testRoot, `import-${mode}-deployment-transactions`))}`,
       `PACKAGE_PATH=${shellQuote(packagePath)}`,
       'REQUIRE_PACKAGE_SHA256="true"',
       `PACKAGE_EXPECTED_SHA256=${shellQuote(packageExpectedSha256)}`,
@@ -753,9 +762,10 @@ function createWindowsServiceConfig({ serviceName, runtimePath, mode, port, publ
     NextjsMinimumNodeVersion: '20.9.0',
     ServiceManager: serviceManager,
     ReverseProxy: runWindowsIisIntegration ? 'iis' : 'none',
-    ServiceAccount: 'LocalSystem',
+    ServiceAccount: 'NT AUTHORITY\\NetworkService',
     AppDirectory: runtimePath,
     ServiceDirectory: path.join(serviceRoot, 'service'),
+    DeploymentLockDirectory: path.join(serviceRoot, 'deployment-locks'),
     LogDirectory: path.join(serviceRoot, 'logs'),
     BackupDirectory: path.join(serviceRoot, 'backups'),
     NodeExe: process.execPath,
@@ -889,8 +899,8 @@ async function verifyMacosLaunchdService(runtimePath, mode, port, afterServiceRe
   const backupDirectory = path.join(serviceRoot, 'backups');
   const environmentFile = path.join(serviceRoot, 'runtime.env');
   const runnerScript = path.join(serviceRoot, 'runner.sh');
-  const serviceUser = os.userInfo().username;
-  const serviceGroup = await getUnixPrimaryGroup();
+  const serviceUser = process.env.SUDO_USER || os.userInfo().username;
+  const serviceGroup = await getUnixPrimaryGroup(serviceUser);
   const startScript = mode === 'standalone'
     ? 'server.js'
     : path.join('node_modules', 'next', 'dist', 'bin', 'next');
@@ -916,6 +926,7 @@ async function verifyMacosLaunchdService(runtimePath, mode, port, afterServiceRe
     'SKIP_BUILD="true"',
     'NODE_ENV="production"',
     `APP_PORT=${shellQuote(String(port))}`,
+    `HEALTH_URL=${shellQuote(`http://127.0.0.1:${port}/`)}`,
     'BIND_ADDRESS="127.0.0.1"',
     'HOST="127.0.0.1"',
     'HOSTNAME="127.0.0.1"'

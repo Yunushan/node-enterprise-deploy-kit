@@ -17,10 +17,15 @@ TRAEFIK_ENTRYPOINT="${TRAEFIK_ENTRYPOINT:-web}"
 TRAEFIK_ROUTER_NAME="${TRAEFIK_ROUTER_NAME:-${APP_NAME}-router}"
 TRAEFIK_SERVICE_NAME="${TRAEFIK_SERVICE_NAME:-${APP_NAME}-service}"
 HEALTHCHECK_PATH="${HEALTHCHECK_PATH:-/health}"
-PROXY_LISTEN_PORT="$(proxy_listen_port)"
 TEMPLATE="$REPO_ROOT/templates/linux/traefik-dynamic.yml.tpl"
+VALIDATION_NODE_BIN="${NODE_BIN:-node}"
+require_command "$VALIDATION_NODE_BIN" "Traefik route validation requires the configured approved Node.js runtime."
+managed_mutation_begin
 
-mkdir -p "$LOG_DIR" "$TRAEFIK_DYNAMIC_DIR"
+mkdir -p "$LOG_DIR"
+# New public route directories must be traversable by an unprivileged proxy.
+# Leave permissions on existing provider/certificate directories unchanged.
+(umask 022; mkdir -p "$TRAEFIK_DYNAMIC_DIR")
 render_template_file "$TEMPLATE" "$TRAEFIK_DYNAMIC_FILE" \
   APP_NAME "$APP_NAME" \
   PUBLIC_HOSTNAME "$PUBLIC_HOSTNAME" \
@@ -30,26 +35,15 @@ render_template_file "$TEMPLATE" "$TRAEFIK_DYNAMIC_FILE" \
   TRAEFIK_SERVICE_NAME "$TRAEFIK_SERVICE_NAME" \
   HEALTHCHECK_PATH "$HEALTHCHECK_PATH"
 backup_path="$(get_last_backup_path)"
+# This generated route contains no credentials. mktemp creates mode 0600,
+# which the privileged validator can read but a non-root Traefik cannot.
+chown root:"$(root_group_name)" "$TRAEFIK_DYNAMIC_FILE"
+chmod 0644 "$TRAEFIK_DYNAMIC_FILE"
 
-tmp_static="$(mktemp)"
-cat > "$tmp_static" <<EOF
-entryPoints:
-  ${TRAEFIK_ENTRYPOINT}:
-    address: ":${PROXY_LISTEN_PORT}"
-providers:
-  file:
-    filename: "${TRAEFIK_DYNAMIC_FILE}"
-EOF
-
-if ! traefik check --configFile="$tmp_static"; then
-  rm -f "$tmp_static"
+if ! "$VALIDATION_NODE_BIN" "$REPO_ROOT/scripts/linux/validate-traefik-config.mjs" \
+  "$(command -v traefik)" "$TRAEFIK_DYNAMIC_FILE" "$TRAEFIK_ENTRYPOINT" "$TRAEFIK_ROUTER_NAME" "$TRAEFIK_SERVICE_NAME"; then
   restore_file_from_backup "$backup_path" "$TRAEFIK_DYNAMIC_FILE"
   exit 1
-fi
-rm -f "$tmp_static"
-
-if [[ -n "${TRAEFIK_STATIC_CONFIG:-}" && -f "$TRAEFIK_STATIC_CONFIG" ]]; then
-  traefik check --configFile="$TRAEFIK_STATIC_CONFIG" || true
 fi
 
 reload_or_restart_service "$TRAEFIK_SERVICE" "Traefik"

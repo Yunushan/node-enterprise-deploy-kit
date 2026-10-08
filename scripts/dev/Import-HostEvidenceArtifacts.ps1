@@ -803,7 +803,7 @@ function New-SelfTestEvidence {
       Status = "ok"
       AppFramework = "nextjs"
       Mode = "standalone"
-      NodeVersion = "v20.11.1"
+      NodeVersion = "v22.11.1"
       MinimumNodeVersion = "20.9.0"
       NodeVersionSatisfied = $true
       NextVersion = "14.2.3"
@@ -975,6 +975,10 @@ function New-FallbackServiceOnlySelfTestEvidence {
   $status.Platform.OsVersion = "10.0.19045"
   $status.Platform.OsBuildNumber = "19045"
   $status.Platform.ServiceManager = "pm2"
+  $status.HealthMonitor.TaskRunsAsSystem = $false
+  Set-ObjectProperty -Object $status.HealthMonitor -Name "TaskRunsAsPm2Owner" -Value $true
+  $status.HealthMonitor.TaskRunLevelHighest = $false
+  Set-ObjectProperty -Object $status.HealthMonitor -Name "TaskRunLevelLimited" -Value $true
   $status.EvidenceCollection.WorkflowDispatch = [ordered]@{
     EvidenceName = "windows-10-standalone-pm2-none-fallback"
     ExpectedTargetId = "windows-10"

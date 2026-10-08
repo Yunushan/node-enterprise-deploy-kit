@@ -22,7 +22,15 @@
 - Prefer `NetworkService`, `LocalService`, a dedicated local/domain account, or
   a gMSA over `LocalSystem`.
 - Collect Windows Event Logs into Wazuh or Graylog.
-- Restrict write permissions to app and log directories.
+- Keep application code and service/control files read-only to the service
+  identity; grant write access only to logs and dedicated runtime cache paths.
+- WinSW/NSSM protect generated secret-bearing config and backups with exact
+  ACLs and reject reparse paths. Next.js defaults to writable `.next/cache`;
+  configure dedicated `RuntimeWritableDirectories` for custom cache/ISR storage.
+- PM2 runs as its invoking owner. Its private config ACLs exclude other users,
+  but cannot isolate its application from that same owner's control files.
+  Its health task runs at Limited, without elevating that owner's writable PM2
+  command or modules. Use a dedicated owner and an unelevated daemon.
 
 ## Linux
 

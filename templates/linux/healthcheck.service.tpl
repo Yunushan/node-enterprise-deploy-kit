@@ -10,4 +10,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths={{LOG_DIR}} {{BACKUP_DIR}} {{HEALTHCHECK_STATE_DIR}}
+ReadWritePaths="{{LOG_DIR}}" "{{BACKUP_DIR}}" "{{HEALTHCHECK_STATE_DIR}}"

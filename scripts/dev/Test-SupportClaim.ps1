@@ -750,7 +750,7 @@ function New-ClaimSelfTestEvidence {
                 default { "winsw-xml" }
               }
               DefinitionExists = $true
-              ServiceWrapperMatchesConfig = if ($serviceManagerValue -eq "winsw") { $true } else { $null }
+              ServiceWrapperMatchesConfig = if ($serviceManagerValue -in @("winsw", "nssm")) { $true } else { $null }
               NodeExeMatchesConfig = $true
               WorkingDirectoryMatchesConfig = $true
               ArgumentsMatchConfig = $true
@@ -758,13 +758,21 @@ function New-ClaimSelfTestEvidence {
             Port = $windowsPort
             Health = $windowsHealth
             Uptime = $windowsUptime
-            HealthMonitor = $windowsMonitor
+            HealthMonitor = $(
+              $managerMonitor = [ordered]@{}
+              foreach ($key in $windowsMonitor.Keys) { $managerMonitor[$key] = $windowsMonitor[$key] }
+              $managerMonitor["TaskRunsAsSystem"] = $serviceManagerValue -ne "pm2"
+              $managerMonitor["TaskRunsAsPm2Owner"] = $serviceManagerValue -eq "pm2"
+              $managerMonitor["TaskRunLevelHighest"] = $serviceManagerValue -ne "pm2"
+              $managerMonitor["TaskRunLevelLimited"] = $serviceManagerValue -eq "pm2"
+              $managerMonitor
+            )
             NextJsRuntime = [ordered]@{
               Applicable = $true
               Status = "ok"
               AppFramework = "nextjs"
               Mode = $mode
-              NodeVersion = "v20.11.1"
+              NodeVersion = "v22.0.0"
               MinimumNodeVersion = "20.9.0"
               NodeVersionSatisfied = $true
               NextVersion = "14.2.3"
@@ -906,7 +914,7 @@ function New-ClaimSelfTestEvidence {
               status = "ok"
               appFramework = "nextjs"
               mode = $mode
-              nodeVersion = "v20.11.1"
+              nodeVersion = "v22.0.0"
               minimumNodeVersion = "20.9.0"
               nodeVersionSatisfied = $true
               nextVersion = "14.2.3"

@@ -1,0 +1,13 @@
+{
+  "name": "node-enterprise-deploy-kit-real-nextjs-integration",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

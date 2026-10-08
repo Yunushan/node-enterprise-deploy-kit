@@ -79,8 +79,11 @@ foreach ($expected in @(
     "RUN_LAUNCHD_SERVICE_INTEGRATION:",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "real-windows-service-nextjs:",
-    "real-windows-service-nextjs (`${{ matrix.os }})",
-    "RUN_WINSW_SERVICE_INTEGRATION: `"true`"",
+    "real-windows-service-nextjs (`${{ matrix.os }}, `${{ matrix.manager }})",
+    "Install NSSM for service-only integration",
+    "RUN_WINSW_SERVICE_INTEGRATION: `"`${{ matrix.manager == 'winsw' && 'true' || 'false' }}`"",
+    "RUN_NSSM_SERVICE_INTEGRATION: `"`${{ matrix.manager == 'nssm' && 'true' || 'false' }}`"",
+    "name: real-windows-service-nextjs-`${{ matrix.os }}-`${{ matrix.manager }}",
     "real-windows-service-iis-nextjs:",
     "real-windows-service-iis-nextjs (`${{ matrix.os }}, `${{ matrix.manager }})",
     "RUN_WINDOWS_IIS_INTEGRATION: `"true`"",
@@ -135,7 +138,7 @@ foreach ($expected in @(
     "NEXTJS_INTEGRATION_TEMP_ROOT=/srv/node-enterprise-deploy-kit-ci",
     "NEXTJS_INTEGRATION_RESULT_PATH",
     "NEXTJS_INTEGRATION_TARGET",
-    'GITHUB_JOB="$GITHUB_JOB"',
+    'bash scripts/dev/run-real-nextjs-integration.sh',
     "Upload real Next.js integration result",
     "Upload Linux container Next.js integration result",
     "uses: ./.github/actions/upload-nextjs-integration-result",
@@ -153,10 +156,13 @@ foreach ($expected in @(
 }
 
 foreach ($expected in @(
-    "next@`${nextVersion}",
-    "react@`${reactVersion}",
-    "react-dom@`${reactDomVersion}",
+    "fixtureManifest.dependencies[name] !== version",
+    "['ci', '--ignore-scripts', '--no-audit', '--no-fund']",
+    "tests', 'fixtures', 'nextjs'",
     "readPinnedVersion",
+    "'--node-bin', process.execPath",
+    'NODE_BIN=${shellQuote(process.execPath)}',
+    'HEALTH_URL=${shellQuote(`http://127.0.0.1:${port}/`)}',
     "package-lock.json",
     "npm package lock",
     "NEXTJS_INTEGRATION_RESULT_PATH",
@@ -276,6 +282,11 @@ foreach ($expected in @(
     "Cannot reach the configured npm registry with a trusted TLS certificate"
   )) {
   Assert-Contains -Text $script -Expected $expected -Context "scripts/dev/test-real-nextjs-integration.mjs"
+}
+
+$nativeEntryPoint = Get-Content -LiteralPath (Join-Path $ScriptDir 'run-real-nextjs-integration.sh') -Raw
+foreach ($expected in @('PATH=$PATH', 'command -v node', 'sudo --non-interactive env', 'GITHUB_JOB', 'GITHUB_SHA', 'NEXTJS_INTEGRATION_RESULT_PATH', 'RUN_LAUNCHD_SERVICE_INTEGRATION', 'RUN_SYSTEMD_SERVICE_INTEGRATION')) {
+  Assert-Contains -Text $nativeEntryPoint -Expected $expected -Context 'Native CI entrypoint'
 }
 
 foreach ($expected in @(

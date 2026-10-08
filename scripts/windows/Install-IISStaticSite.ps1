@@ -11,7 +11,9 @@
 param(
     [string] $ConfigPath,
     [switch] $RenderWebConfigOnly,
-    [switch] $LoadFunctionsOnly
+    [switch] $LoadFunctionsOnly,
+    [string]$IisDeploymentLockLeasePath = '', [string]$IisDeploymentLockToken = '',
+    [object]$ExistingDeploymentLock
 )
 
 $ErrorActionPreference = "Stop"
@@ -313,12 +315,12 @@ function Backup-StaticSiteIfPresent {
     )
 
     if (-not (Test-Path -LiteralPath $SitePath -PathType Container)) { return "" }
-    $items = @(Get-ChildItem -LiteralPath $SitePath -Force -ErrorAction SilentlyContinue)
+    $items = @(Get-ChildItem -LiteralPath $SitePath -Force -ErrorAction Stop)
     if ($items.Count -eq 0) { return "" }
 
     New-Item -ItemType Directory -Force -Path $BackupDirectory | Out-Null
     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss")
-    $backupPath = Join-Path $BackupDirectory ("static-site.{0}.{1}.bak" -f $timestamp, $PID)
+    $backupPath = Join-Path $BackupDirectory ("static-site.{0}.{1}.{2}.bak" -f $timestamp, $PID, [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $backupPath | Out-Null
     foreach ($item in $items) {
         Copy-Item -LiteralPath $item.FullName -Destination $backupPath -Recurse -Force
@@ -417,6 +419,12 @@ function Restore-StaticSiteContent {
         [bool]$SitePathExisted
     )
 
+    # Validate a recorded backup before deleting replacement content. An empty
+    # backup path is valid only when the completed snapshot contained no files.
+    if (-not [string]::IsNullOrWhiteSpace($BackupPath) -and
+        -not (Test-Path -LiteralPath $BackupPath -PathType Container)) {
+        throw "Cannot restore static site content because its backup directory is missing: $BackupPath"
+    }
     if (Test-Path -LiteralPath $SitePath -PathType Container) {
         Clear-DirectoryContents -Path $SitePath
     } else {
@@ -489,7 +497,14 @@ function Ensure-WebBinding([string]$SiteName, [string]$Protocol, [int]$Port, [st
             ($HostHeader -eq "" -and $_.bindingInformation -eq "*:${Port}:")
         }
     if (-not $binding) {
-        New-WebBinding -Name $SiteName -Protocol $Protocol -Port $Port -HostHeader $HostHeader | Out-Null
+        $bindingArgs = @{ Name = $SiteName; Protocol = $Protocol; Port = $Port; HostHeader = $HostHeader }
+        if ($Protocol -eq "https") { $bindingArgs.SslFlags = if ($HostHeader) { 1 } else { 0 } }
+        New-WebBinding @bindingArgs | Out-Null
+    } elseif ($Protocol -eq "https") {
+        $expectedSslFlags = ([int]$binding.sslFlags -band (-bnot 1)) -bor $(if ($HostHeader) { 1 } else { 0 })
+        if ([int]$binding.sslFlags -ne $expectedSslFlags) {
+            Set-WebBinding -Name $SiteName -BindingInformation ([string]$binding.bindingInformation) -PropertyName sslFlags -Value $expectedSslFlags -ErrorAction Stop
+        }
     }
 }
 
@@ -597,6 +612,8 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'WindowsDeploymentIdentity.ps1')
+Assert-WindowsDeploymentConfigIdentity -Config $config
 $deploymentMode = Normalize-Name (Get-ConfigString $config "DeploymentMode" "")
 if ($deploymentMode -ne "static-iis") {
     throw "Install-IISStaticSite.ps1 requires DeploymentMode=static_iis."
@@ -617,6 +634,31 @@ if ($RenderWebConfigOnly) {
 }
 
 Assert-Admin
+. (Join-Path $PSScriptRoot 'IisDeploymentState.ps1')
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $coreTransaction = $null
+    $coreFailed = $true
+    try {
+    if (-not $WhatIfPreference) {
+        $coreTransaction = Start-IisInstallerTransaction -Config $config -LeasePath $IisDeploymentLockLeasePath -Token $IisDeploymentLockToken -ExistingDeploymentLock $ExistingDeploymentLock
+        if ($coreTransaction.OwnsLock) { $IisDeploymentLockLeasePath = $coreTransaction.IisLockLeasePath; $IisDeploymentLockToken = $coreTransaction.IisLockToken }
+    }
+    $native = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $nativeArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-ConfigPath', $ConfigPath)
+    if ($WhatIfPreference) { $nativeArguments += '-WhatIf' }
+    if ($PSBoundParameters.ContainsKey('Confirm')) { $nativeArguments += "-Confirm:$([bool]$PSBoundParameters['Confirm'])" }
+    if ($IisDeploymentLockLeasePath -or $IisDeploymentLockToken) { $nativeArguments += @('-IisDeploymentLockLeasePath', $IisDeploymentLockLeasePath, '-IisDeploymentLockToken', $IisDeploymentLockToken) }
+    & $native @nativeArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Native Windows PowerShell failed while deploying the static IIS site.' }
+    $coreFailed = $false
+    } finally { Complete-IisInstallerTransaction -Transaction $coreTransaction -Failed:$coreFailed }
+    return
+}
+. (Join-Path $PSScriptRoot 'IisDeploymentState.ps1')
+$iisInstallerTransaction = $null
+$iisInstallerFailed = $true
+try {
+if (-not $WhatIfPreference) { $iisInstallerTransaction = Start-IisInstallerTransaction -Config $config -LeasePath $IisDeploymentLockLeasePath -Token $IisDeploymentLockToken -ExistingDeploymentLock $ExistingDeploymentLock }
 Assert-IisStaticPrerequisites
 Import-Module WebAdministration -ErrorAction Stop
 
@@ -647,11 +689,13 @@ if ($PSCmdlet.ShouldProcess($siteName, "Transactionally deploy static_iis output
         -HostHeader $publicHostName `
         -TlsEnabled $tlsEnabled
     $backupPath = ""
+    $siteContentReplacementStarted = $false
     try {
         New-Item -ItemType Directory -Force -Path $sitePath | Out-Null
         Test-DirectoryWriteAccess -Path $sitePath
         $backupPath = Backup-StaticSiteIfPresent -SitePath $sitePath -BackupDirectory $backupDirectory
         Stop-StaticIisSiteForDeployment -SiteName $siteName -Snapshot $snapshot
+        $siteContentReplacementStarted = $true
         Clear-DirectoryContents -Path $sitePath
         Copy-StaticOutputContents -SourcePath $sourcePath -DestinationPath $sitePath
 
@@ -695,11 +739,13 @@ if ($PSCmdlet.ShouldProcess($siteName, "Transactionally deploy static_iis output
     } catch {
         $deploymentFailure = $_
         $rollbackFailures = New-Object System.Collections.Generic.List[string]
-        try {
-            Restore-StaticSiteContent -SitePath $sitePath -BackupPath $backupPath -SitePathExisted $sitePathExisted
-            Write-Warning "Restored previous IIS static folder after deployment failure."
-        } catch {
-            $rollbackFailures.Add("content: $($_.Exception.Message)") | Out-Null
+        if ($siteContentReplacementStarted) {
+            try {
+                Restore-StaticSiteContent -SitePath $sitePath -BackupPath $backupPath -SitePathExisted $sitePathExisted
+                Write-Warning "Restored previous IIS static folder after deployment failure."
+            } catch {
+                $rollbackFailures.Add("content: $($_.Exception.Message)") | Out-Null
+            }
         }
         try {
             Restore-StaticIisDeploymentSnapshot `
@@ -722,3 +768,5 @@ if ($PSCmdlet.ShouldProcess($siteName, "Transactionally deploy static_iis output
 
 Write-Host "Static IIS deployment finished: $siteName"
 Write-Host "IIS app pool configured for No Managed Code: $appPoolName"
+$iisInstallerFailed = $false
+} finally { Complete-IisInstallerTransaction -Transaction $iisInstallerTransaction -Failed:$iisInstallerFailed }

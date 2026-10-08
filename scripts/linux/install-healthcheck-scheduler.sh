@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/linux/common.sh
 source "$REPO_ROOT/scripts/linux/common.sh"
+# shellcheck source=scripts/linux/runtime-hardening.sh
+source "$REPO_ROOT/scripts/linux/runtime-hardening.sh"
 load_config_file CONFIG_FILE "$REPO_ROOT" "$CONFIG_FILE"
 
 PLATFORM_FAMILY="$(detect_platform_family)"
@@ -14,6 +16,8 @@ SERVICE_MANAGER_NORMALIZED="$(normalize_name "${SERVICE_MANAGER:-$(default_servi
 if [[ "$SERVICE_MANAGER_NORMALIZED" == "systemd" ]]; then
   exec bash "$REPO_ROOT/scripts/linux/install-healthcheck-timer.sh" "$CONFIG_FILE"
 fi
+MANAGED_MUTATION_REPLACES_HEALTH_SCHEDULER=true
+managed_mutation_begin
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/${APP_NAME}}"
 HEALTHCHECK_STATE_DIR="${HEALTHCHECK_STATE_DIR:-/var/lib/node-enterprise-deploy-kit/${APP_NAME}}"
@@ -25,7 +29,9 @@ if [[ "$HEALTHCHECK_STATE_DIR_NORMALIZED" == "$LOG_DIR_NORMALIZED" || "$HEALTHCH
 fi
 
 HC_SCRIPT="/usr/local/sbin/${APP_NAME}-healthcheck.sh"
+HC_HELPER="/usr/local/sbin/${APP_NAME}-healthcheck-hardening.sh"
 HC_CONFIG="/etc/node-enterprise-deploy-kit/${APP_NAME}.env"
+HEALTHCHECK_LOG_DIR="${HEALTHCHECK_LOG_DIR:-$HEALTHCHECK_STATE_DIR/logs}"
 HEALTHCHECK_INTERVAL="${HEALTHCHECK_INTERVAL:-60}"
 if [[ ! "$HEALTHCHECK_INTERVAL" =~ ^[0-9]+$ || "$HEALTHCHECK_INTERVAL" -lt 1 ]]; then
   HEALTHCHECK_INTERVAL="60"
@@ -34,14 +40,17 @@ fi
 prepare_healthcheck_files() {
   local root_group
   root_group="$(root_group_name)"
-  mkdir -p /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$LOG_DIR" "$BACKUP_DIR"
-  chown root:"$root_group" /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
-  chmod 0750 /etc/node-enterprise-deploy-kit "$HEALTHCHECK_STATE_DIR" "$BACKUP_DIR"
+  hardening_prepare_control_directory /etc/node-enterprise-deploy-kit
+  hardening_prepare_control_directory "$HEALTHCHECK_STATE_DIR"
+  hardening_prepare_control_directory "$HEALTHCHECK_LOG_DIR"
+  hardening_prepare_control_directory "$BACKUP_DIR"
   copy_file_with_backup "$CONFIG_FILE" "$HC_CONFIG" "$BACKUP_DIR"
+  copy_file_with_backup "$REPO_ROOT/scripts/linux/runtime-hardening.sh" "$HC_HELPER" "$BACKUP_DIR"
   copy_file_with_backup "$REPO_ROOT/scripts/linux/node-healthcheck.sh" "$HC_SCRIPT" "$BACKUP_DIR"
-  chown root:"$root_group" "$HC_CONFIG" "$HC_SCRIPT"
+  chown root:"$root_group" "$HC_CONFIG" "$HC_SCRIPT" "$HC_HELPER"
   chmod 0640 "$HC_CONFIG"
   chmod 0755 "$HC_SCRIPT"
+  chmod 0644 "$HC_HELPER"
 }
 
 install_launchd_scheduler() {
@@ -56,7 +65,7 @@ install_launchd_scheduler() {
     HEALTHCHECK_SCRIPT "$HC_SCRIPT" \
     HEALTHCHECK_CONFIG "$HC_CONFIG" \
     HEALTHCHECK_INTERVAL "$HEALTHCHECK_INTERVAL" \
-    LOG_DIR "$LOG_DIR"
+    LOG_DIR "$HEALTHCHECK_LOG_DIR"
   chmod 0644 "$plist_file"
   chown root:"$root_group" "$plist_file"
 
@@ -110,6 +119,7 @@ install_cron_scheduler() {
     printf '%s %s\n' "$schedule" "$command_line"
     printf '%s\n' "$marker_end"
   } >> "$new_file"
+  if declare -F transaction_record_root_crontab >/dev/null; then transaction_record_root_crontab; fi
   crontab "$new_file"
   if ! crontab -l | grep -Fq -- "$marker_start"; then
     echo "Healthcheck cron entry verification failed for ${APP_NAME}." >&2
